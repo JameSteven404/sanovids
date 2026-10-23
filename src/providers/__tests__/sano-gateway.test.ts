@@ -60,6 +60,7 @@ function fakeSano() {
       const body = JSON.parse(String(init.body))
       const had = [...jobs.values()].find((j) => j.key === body.idempotencyKey)
       if (had) return json(200, { id: had.id, status: had.status, mode: had.mode })
+      if (body.expectMode && body.expectMode !== opts.mode) return json(409, { error: 'Máy chủ SANO vừa đổi chế độ chạy — chưa tạo job, không tính phí.', mode: opts.mode })
       const job: Job = { id: `job_${jobs.size + 1}`, key: body.idempotencyKey, status: 'queued', mode: opts.mode }
       jobs.set(job.id, job)
       if (opts.dropNextAnswer) {
@@ -194,17 +195,24 @@ describe('sano-gateway provider', () => {
     expect(p.mode()).toBeNull()
   })
 
-  it('a take queued under the simulator (no fee said) reads the mode again before its POST: live now → refused, nothing made; a job of its earlier send is that one', async () => {
+  it("a take queued under the simulator (no fee said) is POSTed expecting it: SANO live now → 409, refused (never uncertain), nothing made; a job of its earlier send is that one", async () => {
     const s = fakeSano()
     const p = make(s)
     s.opts.mode = 'simulator'
     await p.refreshLimits({ force: true })
-    s.opts.mode = 'live' // the read above stays firm for 10 min: only a read now sees it
-    await expect(p.submit(req({ expectSimulated: true }))).rejects.toMatchObject({ code: 'refused', message: SANO_NOW_LIVE })
-    expect(s.calls('POST', '/api/video/jobs')).toHaveLength(0)
+    s.opts.mode = 'live' // the read above stays firm for 10 min: only SANO's POST sees it
+    const err = await p.submit(req({ expectSimulated: true })).catch((e: unknown) => e)
+    expect(err).toMatchObject({ code: 'refused', message: SANO_NOW_LIVE })
+    expect(isSubmitUncertain(err)).toBe(false)
+    expect(JSON.parse(String(s.calls('POST', '/api/video/jobs')[0][1].body))).toMatchObject({ expectMode: 'simulator' })
+    expect(s.jobs.size).toBe(0)
+    expect(p.mode()).toBe('live') // the Run dialog no longer promises no fee
     s.jobs.set('job_9', { id: 'job_9', key: 'take_1', status: 'done', mode: 'simulator' }) // its earlier answer was lost
     expect(await p.submit(req({ expectSimulated: true }), { retryOfUnknown: true })).toEqual({ remoteId: 'job_9', simulated: true })
-    expect(s.calls('POST', '/api/video/jobs')).toHaveLength(0)
+    // a 409 naming no mode (this key already used for another request) stays SANO's own refusal
+    const inner = s.fetch.getMockImplementation()!
+    s.fetch.mockImplementation(async (url, init) => (init.method === 'POST' ? json(409, { error: 'idempotencyKey này đã dùng cho một yêu cầu khác.' }) : inner(url, init)))
+    await expect(p.submit(req({ key: 'take_2', expectSimulated: true }))).rejects.toMatchObject({ code: 'refused', message: expect.stringContaining('đã dùng cho một yêu cầu khác') })
   })
 
   it('recover: a 5xx or a lost connection is no answer (deferred, asked again later); only a 404 says there is no job', async () => {

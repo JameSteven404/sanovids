@@ -2,17 +2,19 @@
 // /sanovids/) sends its jobs to the SANO server instead of canvasapp. The SANO server owns the real video providers,
 // the login and the costs; this file is only its client. Contract (same origin as the page, base /api/video):
 //   GET  /capabilities                    → { mode?, models: [{ id, label, ratios, resolutions, durations, maxRefs }] }
-//   POST /jobs { idempotencyKey, model, prompt, settings: { ratio, resolution, duration }, refs: [{ name, mime, data }] }
-//                                         → 202 { id, status }; the same idempotencyKey again → 200, the same job
+//   POST /jobs { idempotencyKey, model, prompt, settings: { ratio, resolution, duration }, refs: [{ name, mime, data }],
+//                expectMode? }          → 202 { id, status }; the same idempotencyKey again → 200, the same job (first);
+//                                         expectMode ≠ what SANO runs → 409 { error, mode }, nothing created
 //   GET  /jobs?idempotencyKey=<k>         → { id, status } | 404 (recover after a crash / reload)
 //   GET  /jobs/<id>                       → { id, status: queued|running|done|failed|unknown, progress?, error? }
 //   GET  /jobs/<id>/result                → the MP4
 //   POST /jobs/<id>/cancel                → { id, status } (only while queued)
 // `mode` ('simulator' | 'live', on /capabilities and on every job): what SANO runs. Missing (no backend) = unknown,
 // never taken as 'live'; a job answered 'simulator' marks its take `simulated` (a sample clip, nothing billed). Only
-// /capabilities and a newly created job (202) say what SANO runs now: an old job's poll / recover marks its take only.
-// A take queued while SANO said 'simulator' (JobRequest.expectSimulated: no fee was promised) reads /capabilities again
-// before its POST and is never sent once SANO says otherwise (SANO_NOW_LIVE).
+// /capabilities, a newly created job (202) and a 409 { mode } say what SANO runs now: an old job's poll / recover marks
+// its take only.
+// A take queued while SANO said 'simulator' (JobRequest.expectSimulated: no fee was promised) is POSTed with expectMode
+// 'simulator': once SANO runs otherwise its 409 creates nothing and the take is refused (SANO_NOW_LIVE).
 // Auth: `Authorization: Bearer <the host page's token>` only (SANO's /api/video has no cookie auth): SANO's Google ID
 // token, null until sign-in, never renewed (refused after ~1 h). Its state (tokenState: 'none' | 'refused' — this very
 // token got a 401 | 'ok') is read from the gateway's creation inside SANO, on every request and every 3 s. A dead token
@@ -56,7 +58,7 @@ export const SANO_UNAVAILABLE = 'Nhà cung cấp SANO chỉ dùng được khi m
 export const SANO_OTHER_ACCOUNT = 'Take này thuộc tài khoản SANO khác — đăng nhập lại tài khoản đó trong app SANO để SanoVids theo dõi tiếp.'
 /** SANO_OTHER_ACCOUNT for takes that wait in the queue (store/runs parkedReason). */
 export const SANO_OTHER_ACCOUNT_WAIT = 'Chờ tài khoản SANO khác — đăng nhập lại trong app SANO bằng tài khoản đã gửi take, take tự chạy tiếp.'
-/** A take queued while SANO ran its simulator (JobRequest.expectSimulated) when SANO no longer says so: not sent. */
+/** A take queued while SANO ran its simulator (JobRequest.expectSimulated) when SANO no longer runs it: no job made. */
 export const SANO_NOW_LIVE = 'Take này vào hàng đợi khi máy chủ SANO còn chạy giả lập (không phát sinh phí), nay SANO không còn báo giả lập — SanoVids không gửi. Chạy lại cảnh để xem chi phí rồi gửi.'
 /** How often the host's token is read besides each request (SANO signs in / switches account without telling). */
 export const TOKEN_RECHECK_MS = 3_000
@@ -345,15 +347,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
       const want = wanted()
       stopIfCancelled()
       const refs = await refsOf(req)
-      // queued under SANO's simulator (the Run dialog said: no fee): its mode is read again now, never trusted from cache
-      const models = req.expectSimulated ? await readCaps() : (freshCaps() ?? (await readCaps()))
-      // shortcut: a switch to live between this read and the POST is not seen; send the expected mode once SANO's POST /jobs checks it.
-      if (req.expectSimulated && mode !== 'simulator') {
-        // an earlier send of this take (a lost answer) may have made its job: that one, never a new one under the new mode
-        const found = await provider.recover(req)
-        if (found) return found
-        throw new ProviderError('refused', SANO_NOW_LIVE)
-      }
+      const models = freshCaps() ?? (await readCaps())
       const refused = sanoIssues(models, req, refs.length)[0]
       if (refused) throw new ProviderError('refused', refused.reason)
       // opts.retryOfUnknown needs nothing more: the same idempotency key never makes a second job.
@@ -363,6 +357,8 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
         prompt: req.prompt,
         settings: { ratio: req.ratio, resolution: req.resolution, duration: req.duration },
         refs,
+        // checked by SANO at the POST itself (no gap after a read), after it answers an earlier job of this key
+        ...(req.expectSimulated ? { expectMode: 'simulator' } : {}),
       })
       let res: Response
       let posted = false
@@ -389,6 +385,15 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
           deps.onLimitsChange?.()
         }
         return job(b.id, b)
+      }
+      if (res.status === 409) {
+        // expectMode refused: SANO runs `mode` now and created nothing; another 409 (key reused) is SANO's own refusal below
+        const m = modeOf(await bodyOf(res.clone()))
+        if (m) {
+          mode = m
+          deps.onLimitsChange?.()
+          throw new ProviderError('refused', SANO_NOW_LIVE)
+        }
       }
       if (res.status === 413) throw new ProviderError('too-large', 'Máy chủ SANO từ chối vì yêu cầu quá lớn — dùng ảnh nhỏ hơn hoặc bớt ảnh.')
       // 5xx: the server may have created the job before failing

@@ -1213,9 +1213,11 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
         return job?.owner === owner && job.status === 'done' ? new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'video/mp4' } }) : json(404, { error: 'not found' })
       }
       if (init?.method === 'POST' && u.pathname.endsWith('/jobs')) {
-        const key = String(JSON.parse(String(init.body)).idempotencyKey)
+        const body = JSON.parse(String(init.body))
+        const key = String(body.idempotencyKey)
         const id = `${owner}_${key}`
         if (jobs.has(id)) return json(200, { id, status: jobs.get(id)!.status })
+        if (body.expectMode && body.expectMode !== opts.mode) return json(409, { error: 'Máy chủ SANO vừa đổi chế độ chạy — chưa tạo job, không tính phí.', mode: opts.mode })
         jobs.set(id, { owner, key, status: 'queued' })
         return json(202, { id, status: 'queued' })
       }
@@ -1428,7 +1430,7 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
     }
   })
 
-  it('▶ under the simulator: bound to the account read now (before the fresh read ends) and, SANO live by its POST, refused with nothing posted', async () => {
+  it('▶ under the simulator: bound to the account read now (before the fresh read ends) and, SANO live by its POST, refused with nothing created', async () => {
     const { server, sano, done } = twoAccounts()
     try {
       server.opts.mode = 'simulator'
@@ -1441,7 +1443,9 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
       server.opts.mode = 'live' // within the 10 min the last read stays firm
       await vi.advanceTimersByTimeAsync(2000)
       expect(take(id)).toMatchObject({ status: 'failed', error: SANO_NOW_LIVE, remoteId: null })
-      expect(server.sent('/jobs')).toBe(0)
+      expect(take(id).submitUnknown).toBeFalsy() // SANO's 409 said nothing was made: never "maybe billed"
+      expect(server.sent('/jobs')).toBe(1)
+      expect(server.jobs.size).toBe(0)
     } finally {
       done()
     }
