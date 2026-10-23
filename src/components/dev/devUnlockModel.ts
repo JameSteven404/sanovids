@@ -218,9 +218,12 @@ export const DEV_HIDDEN_NOTICE_KEY = 'bdp:notice:devHidden'
 /** Traces of the simulated server (providers/dev/server.ts DEV_STATE_KEY / DEV_CONFIG_KEY). */
 export const DEV_TRACE_KEYS: readonly string[] = ['bdp:dev:state', 'bdp:dev:config']
 
-/** Show the one-time notice: locked, development mode was used on this device, not shown before. */
-export function shouldNoticeHidden(o: { access: DevAccessState['access']; hasDevTraces: boolean; noticed: boolean }): boolean {
-  return o.access === 'locked' && o.hasDevTraces && !o.noticed
+/**
+ * Show the one-time notice: locked, development mode was used on this device, not shown before. `inSano`: canvasapp is
+ * hidden inside SANO (D226) and the notice sends the user to it — SanoVids itself shows it.
+ */
+export function shouldNoticeHidden(o: { access: DevAccessState['access']; hasDevTraces: boolean; noticed: boolean; inSano?: boolean }): boolean {
+  return o.access === 'locked' && o.hasDevTraces && !o.noticed && !o.inSano
 }
 
 // ---- the canvasapp gateway while locked (GatewaySection) ----

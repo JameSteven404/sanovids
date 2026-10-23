@@ -13,7 +13,7 @@
 import { FlaskConical, LoaderCircle, LogIn, Plus, Power, TriangleAlert, Wallet } from 'lucide-react'
 import { memo, useState } from 'react'
 import { openSettings, openTopUp } from '../../actions'
-import { activeGateway, refreshProviderLimits, type Gateway } from '../../providers'
+import { activeGateway, refreshProviderLimits, useVideoPausedInSano, type Gateway } from '../../providers'
 import { refreshRealCredits, useCreditInfo } from '../../store/credits'
 import { useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
@@ -84,6 +84,8 @@ export const CreditPill = memo(function CreditPill({ size = 'md' }: CreditPillPr
   const info = useCreditInfo()
   const spent = useRuns((s) => s.spent)
   const [loggingIn, setLoggingIn] = useState(false)
+  // D226: nothing to pay for while video generation is paused in SANO.
+  const paused = useVideoPausedInSano()
   const v = creditPillView(info, { spent })
   const busy = v.busy || loggingIn
 
@@ -97,6 +99,7 @@ export const CreditPill = memo(function CreditPill({ size = 'md' }: CreditPillPr
     } else void refreshWithFeedback()
   }
 
+  if (paused) return null
   const icon = busy ? (
     <LoaderCircle size={13} className="tb-cp-spin" />
   ) : v.tone === 'demo' || v.tone === 'dev' ? (

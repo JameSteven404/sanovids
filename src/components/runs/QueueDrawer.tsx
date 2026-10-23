@@ -8,6 +8,7 @@ import {
   CloudDownload,
   Download,
   Eye,
+  Info,
   ListVideo,
   LoaderCircle,
   LocateFixed,
@@ -25,7 +26,7 @@ import { sceneCode } from '../../core/compile'
 import { MODELS } from '../../core/models'
 import type { Scene, Take } from '../../core/types'
 import { CREDIT_MARK, formatCredits } from '../../lib/credits'
-import { PROVIDER_LABEL } from '../../providers'
+import { PROVIDER_LABEL, SANO_PAUSED_REASON, useVideoPausedInSano } from '../../providers'
 import { useDevAllowed } from '../../providers/devAccess'
 import { providerOf } from '../../providers/types'
 import { useDevServer, type DevSpeed } from '../../providers/dev'
@@ -184,11 +185,12 @@ interface Group {
   takes: Take[]
 }
 
-function QueuePanel() {
+export function QueuePanel() {
   const takes = useRuns((s) => s.takes)
   const issue = useRuns((s) => s.providerIssue)
   const elsewhere = useRuns((s) => s.engineElsewhere)
   const provider = useActiveProvider()
+  const paused = useVideoPausedInSano()
   const runKey = useShortcutLabel('scene.run')
   // 'Bảng phát triển' only while development mode is open (a DEV take may still finish while it is locked)
   const devOpen = useDevAllowed()
@@ -226,7 +228,11 @@ function QueuePanel() {
   return (
     <div className="rq-panel">
       <div className="rq-panel-head">
-        {provider === 'dev' ? (
+        {paused ? (
+          <span className="rq-demo-note">
+            <Info size={12} /> {SANO_PAUSED_REASON}
+          </span>
+        ) : provider === 'dev' ? (
           <span className="rq-demo-note dev">
             <Bug size={12} /> Chế độ Phát triển: canvasapp giả lập trong máy — credit dev, không gọi mạng, không tốn tiền thật
           </span>
@@ -236,18 +242,20 @@ function QueuePanel() {
           </span>
         )}
         <span className="rq-spacer" />
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm"
-          onClick={() => openImportJobs()}
-          title={`Tìm video đã tạo trực tiếp trên ${provider === 'dev' ? 'canvasapp giả lập' : 'canvasapp.io.vn'} (phiên “SanoVids bridge”) và đưa vào dự án thành take — chỉ đọc, không trừ ${provider === 'dev' ? 'credit dev' : 'credit'}`}
-        >
-          <CloudDownload size={13} />
-          <span className="rq-btn-label">Nhập job</span>
-        </button>
+        {!paused && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => openImportJobs()}
+            title={`Tìm video đã tạo trực tiếp trên ${provider === 'dev' ? 'canvasapp giả lập' : 'canvasapp.io.vn'} (phiên “SanoVids bridge”) và đưa vào dự án thành take — chỉ đọc, không trừ ${provider === 'dev' ? 'credit dev' : 'credit'}`}
+          >
+            <CloudDownload size={13} />
+            <span className="rq-btn-label">Nhập job</span>
+          </button>
+        )}
         {provider === 'dev' ? (
           <DevPanelButton />
-        ) : (
+        ) : paused ? null : (
           <button type="button" className="btn btn-ghost btn-sm" onClick={openSettings} title="Đăng nhập, số credit và nhà cung cấp video (Cài đặt)">
             <Settings2 size={13} />
             <span className="rq-btn-label">Cổng canvasapp</span>

@@ -14,7 +14,7 @@ import { useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { openDevPanel, openTopUp } from '../../actions'
 import { openImportJobs } from '../../siteJobActions'
-import { activeGateway, activeProviderId, PROVIDER_LABEL, selectableProviders, useDevAllowed, useProviderPrefs, type ProviderId } from '../../providers'
+import { activeGateway, activeProviderId, canvasappHiddenInSano, PROVIDER_LABEL, SANO_PAUSED_REASON, selectableProviders, useDevAllowed, useProviderPrefs, useVideoPausedInSano, type ProviderId } from '../../providers'
 import { canvasappBridge, WEB_UNAVAILABLE, type CanvasappBridge } from '../../providers/canvasapp/transport'
 import { DEV_CREDIT_HINT, formatCredits, formatVnd, refreshRealCredits, resetRealCredits, useRealCredits } from '../../store/credits'
 import { activeCount, useRuns } from '../../store/runs'
@@ -46,6 +46,9 @@ import {
 import { Segmented } from './Segmented'
 import { Toggle } from './settingsUi'
 import { gatewayLoginFromCredits, type GatewayCreditsView } from './shared'
+
+/** D226: development mode open inside SANO — the only provider left there. */
+const SANO_DEV_ONLY = 'Trong SANO, tạo video thật đang tạm dừng — chỉ có chế độ Phát triển (giả lập, không tốn tiền) để thử.'
 
 /** logout() of a bridge; a rejected IPC call becomes an ok:false answer (shown, never "Đã đăng xuất"). */
 function bridgeLogout(bridge: CanvasappBridge): Promise<unknown> {
@@ -183,6 +186,8 @@ export function GatewaySection() {
   const setProvider = useProviderPrefs((s) => s.setProvider)
   // Re-renders when the development-mode lock flips (the gateway below follows it).
   useProviderPrefs((s) => s.active)
+  const paused = useVideoPausedInSano()
+  const hidden = canvasappHiddenInSano()
   /** Locked and the canvasapp gateway not turned on: nothing here may talk to canvasapp. */
   const off = !devOpen && provider !== 'canvasapp'
   // The gateway new takes use (re-read on every render: it follows the Settings choice above).
@@ -257,6 +262,18 @@ export function GatewaySection() {
   const checking = login.state === 'checking' || real.refreshing
   const site = dev ? 'canvasapp giả lập' : 'canvasapp.io.vn'
 
+  // D226: inside SANO nothing here names canvasapp; with development mode locked no provider is left.
+  if (paused) {
+    return (
+      <section className="dg-section dg-gateway">
+        <header>
+          <h3>Nhà cung cấp video</h3>
+          <p>{SANO_PAUSED_REASON}</p>
+        </header>
+      </section>
+    )
+  }
+
   return (
     <section className="dg-section dg-gateway">
       <header>
@@ -270,7 +287,9 @@ export function GatewaySection() {
             <span className="badge warn">thử nghiệm</span>
           )}
         </h3>
-        {devOpen ? (
+        {devOpen && hidden ? (
+          <p>{SANO_DEV_ONLY}</p>
+        ) : devOpen ? (
           <p>
             <b>Phát triển (giả lập)</b> chạy đúng mã của cổng canvasapp thật (đăng nhập, tải ảnh, canvas, tạo job, theo dõi, tải video, nạp credit) nhưng tới một canvasapp giả
             lập ngay trong SanoVids — không gọi mạng, không tốn tiền — để tìm và sửa lỗi. <b>canvasapp.io.vn</b> tạo video thật bằng tài khoản canvasapp của chính bạn (bản
@@ -282,7 +301,7 @@ export function GatewaySection() {
       </header>
 
       {!devOpen && <CanvasappSwitch desktop={desktop} />}
-      {devOpen && (
+      {devOpen && !hidden && (
         <div className="dg-field">
           <span className="label">Nhà cung cấp video cho take mới</span>
           <Segmented

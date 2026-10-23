@@ -17,7 +17,7 @@ import {
   settingsFileText,
   SETTINGS_FILE_NAME,
 } from '../../lib/settings'
-import { PROVIDER_LABEL, useDevAllowed } from '../../providers'
+import { canvasappHiddenInSano, PROVIDER_LABEL, useDevAllowed } from '../../providers'
 import { DEV_SPEED_LABEL, devServer, startDevSnapshotTicker, useDevServer, type DevSpeed } from '../../providers/dev'
 import { useProject } from '../../store/project'
 import { TOAST_BASE_MS, TOAST_SCALE, TOAST_TIME_LABEL, TOAST_TIMES, toast, useUI } from '../../store/ui'
@@ -348,6 +348,7 @@ export function ResetAllSetting({ label, hint }: RowProps) {
   const { resync } = useSettingsCtx()
   // Locked development mode: the saved provider back to its default means "the canvasapp gateway off".
   const devOpen = useDevAllowed()
+  const hidden = canvasappHiddenInSano()
   const [confirm, setConfirm] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
@@ -395,8 +396,8 @@ export function ResetAllSetting({ label, hint }: RowProps) {
           <TriangleAlert size={15} />
           <div>
             <b>Đặt mọi cài đặt trên máy này về mặc định?</b> Giao diện, tải video, âm thanh, dây nối, chuyển động, thông báo, tên file, tự động tải bản cập nhật;{' '}
-            {devOpen ? `nhà cung cấp video về ${PROVIDER_LABEL.dev}` : 'cổng canvasapp.io.vn về Tắt'}; khung bên về như mới; các mẹo hiện lại. Dự án, video, thư mục đã chọn và
-            đăng nhập canvasapp giữ nguyên.
+            {devOpen ? `nhà cung cấp video về ${PROVIDER_LABEL.dev}` : hidden ? 'nhà cung cấp video về mặc định' : 'cổng canvasapp.io.vn về Tắt'}; khung bên về như mới; các mẹo hiện
+            lại. Dự án, video, thư mục đã chọn và {hidden ? 'đăng nhập' : 'đăng nhập canvasapp'} giữ nguyên.
           </div>
           <div className="dg-confirm-actions">
             <button ref={cancelRef} type="button" className="btn btn-sm" onClick={() => setConfirm(false)}>
