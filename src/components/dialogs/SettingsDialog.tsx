@@ -320,7 +320,7 @@ const GROUPS: Group[] = [
       {
         id: 'resetAll',
         label: 'Khôi phục cài đặt mặc định',
-        hint: `Đưa mọi cài đặt trên máy này về như lúc mới cài (có Hoàn tác). Đăng nhập ${HIDDEN ? '' : 'canvasapp '}và “Giữ đăng nhập” giữ nguyên.`,
+        hint: `Đưa mọi cài đặt trên máy này về như lúc mới cài (có Hoàn tác).${HIDDEN ? '' : ' Đăng nhập canvasapp và “Giữ đăng nhập” giữ nguyên.'}`,
         keywords: 'reset mặc định đặt lại',
         C: ResetAllSetting,
       },

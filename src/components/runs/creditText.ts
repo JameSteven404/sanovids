@@ -6,8 +6,9 @@
 import type { Take } from '../../core/types'
 import { chargedDemo, creditKindOf, formatCredits, type CreditKind } from '../../lib/credits'
 import { PROVIDER_LABEL } from '../../providers'
+import type { SanoMode } from '../../providers/sano/gateway'
 import { providerOf, type ProviderId } from '../../providers/types'
-import { isUncertainSubmit } from '../../store/runs'
+import { isUncertainSubmit, parkedReason } from '../../store/runs'
 import { takeCostInferred, takeCostKnown } from './importedTake'
 
 /** Wallet a take was paid from: its provider decides, never the provider chosen now. */
@@ -20,7 +21,8 @@ export const takeCreditKind = (t: Pick<Take, 'provider'>): CreditKind => creditK
 export function takeCostLabel(t: Pick<Take, 'provider' | 'cost'> & Partial<Pick<Take, 'imported' | 'foreignProvider'>>): string {
   const kind = takeCreditKind(t)
   const amount = formatCredits(takeCostKnown(t), kind)
-  const said = kind === 'canvasapp' && amount !== '—' ? `${amount} canvasapp` : amount
+  const site = providerOf(t) === 'sano-gateway' ? 'SANO' : 'canvasapp'
+  const said = kind === 'canvasapp' && amount !== '—' ? `${amount} ${site}` : amount
   return said !== '—' && takeCostInferred(t) ? `≈ ${said}` : said
 }
 
@@ -52,6 +54,20 @@ export const GATEWAY_WORDS: Record<'canvasapp' | 'dev', GatewayWords> = {
   },
 }
 
+/** A take sent through the SANO app's gateway: SANO accepts and bills the job, never canvasapp. */
+export const SANO_WORDS: GatewayWords = {
+  credit: 'credit SANO',
+  site: 'máy chủ SANO',
+  check: 'kiểm tra trong app SANO',
+  approx: true,
+  paidNote: ' · chi phí do SANO quản lý',
+  siteName: 'SANO',
+}
+
+/** What SANO said it runs (sanoGatewayProvider().mode()), in the notes on new SANO takes: real costs only when 'live'. */
+export const sanoModeNote = (mode: SanoMode | null): string =>
+  mode === 'live' ? 'video thật, chi phí do SANO quản lý' : mode === 'simulator' ? 'giả lập — clip mẫu, không phát sinh phí' : 'SANO chưa báo chạy thật hay giả lập'
+
 export interface TakeCostLine {
   kind: CreditKind
   /** "20 credit demo" | "20 credit dev" | "≈ 20 credit" (canvasapp: SanoVids' estimate of what canvasapp bills). */
@@ -68,7 +84,7 @@ export interface TakeCostLine {
 }
 
 type CostTake = Pick<Take, 'provider' | 'charged' | 'cost' | 'status' | 'remoteId' | 'error'> &
-  Partial<Pick<Take, 'startedAt' | 'submitUnknown' | 'imported' | 'foreignProvider' | 'foreignCharged' | 'foreignStatus'>>
+  Partial<Pick<Take, 'startedAt' | 'submitUnknown' | 'imported' | 'foreignProvider' | 'foreignCharged' | 'foreignStatus' | 'simulated' | 'expectSimulated' | 'account'>>
 
 /** Take viewer "Chi phí" line: the amount and which credits paid it (take.provider / take.charged / remoteId). */
 export function takeCostLine(t: CostTake): TakeCostLine {
@@ -81,7 +97,7 @@ export function takeCostLine(t: CostTake): TakeCostLine {
     if (ended) return { kind, amount, note: 'đã trả bằng credit demo · đã hoàn lại', struck: true }
     return { kind, amount, note: 'đã trả bằng credit demo (giả lập, không phải tiền thật)', struck: false }
   }
-  const w = GATEWAY_WORDS[kind]
+  const w = providerOf(t) === 'sano-gateway' ? SANO_WORDS : GATEWAY_WORDS[kind]
   if (t.imported) {
     // made on the site, outside SanoVids: paid there when it was made; importing it costs nothing
     const known = formatCredits(takeCostKnown(t), kind)
@@ -94,20 +110,32 @@ export function takeCostLine(t: CostTake): TakeCostLine {
   }
   const est = formatCredits(t.cost, kind)
   const amount = est === '—' || !w.approx ? est : `≈ ${est}`
+  // SANO's simulator made a sample clip: never billed, whatever became of the job (same words as the Run dialog)
+  if (t.simulated) return { kind, amount, note: 'giả lập — clip mẫu, không phát sinh phí', struck: true }
+  // a SANO take that waits here (outside SANO, signed out, another SANO account's): say why, before what is (maybe) billed
+  const waits = t.status === 'queued' || t.status === 'processing' ? parkedReason(t) : null
+  const why = (note: string) => (waits ? `${waits.replace(/\.$/, '')} · ${note}` : note)
+  // queued under SANO's simulator (no fee promised): SANO refuses it unless it still runs the simulator (expectMode), so
+  // whatever became of it (an answer lost, a cancel on the way) SANO made a sample clip at most, never a billed job
+  if (t.expectSimulated && !t.remoteId) {
+    return { kind, amount, note: why('giả lập — clip mẫu, không phát sinh phí'), struck: true }
+  }
   if (t.remoteId) {
     return {
       kind,
       amount,
-      note: ended ? `đã trả bằng ${w.credit} · hoàn hay không do ${w.site} quyết định` : `đã trả bằng ${w.credit}${w.paidNote}`,
+      note: ended ? `đã trả bằng ${w.credit} · hoàn hay không do ${w.site} quyết định` : why(`đã trả bằng ${w.credit}${w.paidNote}`),
       struck: false,
     }
   }
   // An earlier send of this take lost its answer: it may already be billed, whatever happened after (retry, cancel).
   if (t.submitUnknown && (t.status === 'queued' || t.status === 'processing')) {
-    return { kind, amount, note: `${w.credit} · lần gửi trước không rõ đã bị trừ chưa — SanoVids tìm job cũ trước khi gửi lại`, struck: false }
+    return { kind, amount, note: why(`${w.credit} · lần gửi trước không rõ đã bị trừ chưa — SanoVids tìm job cũ trước khi gửi lại`), struck: false }
   }
   if (isUncertainSubmit(t)) return { kind, amount, note: `${w.credit} · không rõ đã bị trừ chưa — ${w.check}`, struck: false }
-  if (t.status === 'queued' || t.status === 'processing') return { kind, amount, note: `${w.credit} · trừ trên ${w.site} khi job được nhận`, struck: false }
+  if (t.status === 'queued' || t.status === 'processing') {
+    return { kind, amount, note: waits ?? `${w.credit} · trừ trên ${w.site} khi job được nhận`, struck: false }
+  }
   if (t.status === 'failed') return { kind, amount, note: `${w.site} không nhận job — không bị trừ credit`, struck: true }
   if (t.status === 'cancelled') {
     // Started (startedAt) but no remote id: cancelled while the request was on its way — the site may still have
@@ -174,6 +202,9 @@ export interface CancelFacts {
  */
 export function cancelQuestion(f: CancelFacts): string | null {
   if (!f.videoReady || f.status !== 'processing' || f.provider === 'mock') return null
+  if (f.provider === 'sano-gateway') {
+    return `${f.label}: video đã tạo xong trên máy chủ SANO — SanoVids chưa tải về xong.\nHuỷ sẽ bỏ video này trong SanoVids (vẫn lấy được trong app SANO); chạy lại cảnh sẽ tính phí lần nữa.\nVẫn huỷ?`
+  }
   return f.provider === 'dev'
     ? `${f.label}: video đã tạo xong trên canvasapp giả lập và đã trừ credit dev — SanoVids chưa tải về xong.\nHuỷ sẽ bỏ video này trong SanoVids (job vẫn còn trong Bảng phát triển); chạy lại cảnh sẽ trừ credit dev lần nữa.\nVẫn huỷ?`
     : `${f.label}: video đã tạo xong trên canvasapp và đã trừ credit — SanoVids chưa tải về xong.\nHuỷ sẽ bỏ video này trong SanoVids (vẫn tải được trên canvasapp.io.vn, phiên “SanoVids bridge”); chạy lại cảnh sẽ trừ credit lần nữa.\nVẫn huỷ?`
@@ -190,7 +221,9 @@ export function cancelToastText(f: CancelFacts): { text: string; warning: boolea
       text:
         f.provider === 'dev'
           ? `Đã huỷ ${f.label} trong SanoVids — video đã tạo xong (đã trừ credit dev) không được tải về; job vẫn còn trong Bảng phát triển.`
-          : `Đã huỷ ${f.label} trong SanoVids — video đã tạo xong (đã trừ credit) không được tải về; vẫn tải được trên canvasapp.io.vn.`,
+          : f.provider === 'sano-gateway'
+            ? `Đã huỷ ${f.label} trong SanoVids — video đã tạo xong không được tải về; vẫn lấy được trong app SANO.`
+            : `Đã huỷ ${f.label} trong SanoVids — video đã tạo xong (đã trừ credit) không được tải về; vẫn tải được trên canvasapp.io.vn.`,
       warning: true,
     }
   }

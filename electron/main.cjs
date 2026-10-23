@@ -97,6 +97,7 @@ if (SANO === false) {
   process.exit(2)
 }
 // D226: tạm ẩn canvasapp phía SANO; đặt true khi Minh mở lại
+// Bản sao của CANVASAPP_IN_SANO trong src/providers/sano/index.ts (main không đọc được src/ khi đóng gói); test hardeningRules giữ hai giá trị bằng nhau.
 const CANVASAPP_IN_SANO = false
 /** SanoVids inside SANO without canvasapp: its page gets no gateway bridge (preload.cjs) and main refuses canvasapp:*. */
 const SANO_CANVASAPP_OFF = !!SANO && !CANVASAPP_IN_SANO
