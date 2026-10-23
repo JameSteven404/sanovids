@@ -358,8 +358,12 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(mainSource).toContain("if (SANO && url.startsWith('https://accounts.google.com/')) return { action: 'allow', overrideBrowserWindowOptions: { parent: win, autoHideMenuBar: true } }")
     expect(mainSource).toContain('void win.loadURL(SANO ? SANO.url : `${ORIGIN}/index.html`)')
     // server redirects of SANO's page are held to the same home; the Google popup is guarded, its cookies dropped on close
-    expect(mainSource).toMatch(/webContents\.on\('will-redirect', \(event, url\) => \{\s+if \(!event\.isMainFrame \|\| !leave\(event, url\) \|\| mainWindowShown\) return\s+console\.error\([^\n]*\)\s+app\.exit\(2\)/)
-    expect(mainSource).toContain('if (SANO) void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies)')
+    expect(mainSource).toMatch(/webContents\.on\('will-redirect', \(event, url\) => \{\s+if \(!event\.isMainFrame \|\| url\.startsWith\(home\)\) return\s+event\.preventDefault\(\)\s+if \(mainWindowShown\) return\s+console\.error\([^\n]*\)\s+app\.exit\(2\)\s+\}\)/)
+    // a redirect is the server's, never opened in the browser (only will-navigate, the user's click, is)
+    const redirect = mainSource.slice(at("webContents.on('will-redirect'"), at("webContents.on('will-redirect'") + 400)
+    expect(redirect.slice(0, redirect.indexOf('\n  })'))).not.toContain('openExternal')
+    // every start, either mode (same data folder): leftover Google account cookies of the default session go
+    expect(mainSource).toMatch(/\n {4}void keepLoginRules\.removeGoogleAccountCookies\(session\.defaultSession\.cookies\)\n/)
     expect(mainSource).toContain("if (SANO) webContents.on('did-create-window', (child) => guardGooglePopup(child))")
     const [gs, ge] = [mainSource.indexOf('function guardGooglePopup(child)'), mainSource.indexOf('function showMainWindow()')]
     const google = mainSource.slice(gs, ge)

@@ -199,8 +199,9 @@ if (!app.requestSingleInstanceLock()) {
     registerCanvasappGateway()
     registerFileBridge()
     registerAppBridge()
-    // SANO desktop: a run that quit with the Google sign-in popup open left its Google account cookies (guardGooglePopup).
-    if (SANO) void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies)
+    // A SANO desktop run that quit with the Google sign-in popup open left its Google account cookies (guardGooglePopup);
+    // nothing in the default session needs them, in either mode (same data folder).
+    void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies)
     try {
       updater = setupUpdater({ isAppSender: fromApp, getMainWindow: () => mainWindow, profileSource: profile.source, portableFile: portableFile() })
     } catch (e) {
@@ -420,17 +421,18 @@ function createWindow() {
     return { action: 'deny' }
   })
   if (SANO) webContents.on('did-create-window', (child) => guardGooglePopup(child))
-  const leave = (event, url) => {
-    if (url.startsWith(home)) return false
+  webContents.on('will-navigate', (event, url) => {
+    if (url.startsWith(home)) return
     event.preventDefault()
     if (isExternal(url)) void shell.openExternal(url)
-    return true
-  }
-  webContents.on('will-navigate', (event, url) => void leave(event, url))
+  })
   // SANO desktop: SANO's page comes from a server now, and a server redirect must not take the window elsewhere either.
-  // Refused on the very first load, the window would never show: say why and stop, like a wrong SANO_URL.
+  // A redirect is the server's, not the user's click: never opened in the browser. Refused on the very first load, the
+  // window would never show: say why and stop, like a wrong SANO_URL.
   webContents.on('will-redirect', (event, url) => {
-    if (!event.isMainFrame || !leave(event, url) || mainWindowShown) return
+    if (!event.isMainFrame || url.startsWith(home)) return
+    event.preventDefault()
+    if (mainWindowShown) return
     console.error(`[SanoVids] SANO_URL redirects to ${url}: set SANO_URL to the address it ends at`)
     app.exit(2)
   })
