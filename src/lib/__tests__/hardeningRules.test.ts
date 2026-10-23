@@ -82,6 +82,7 @@ interface MenuItem {
 }
 
 const h = createRequire(import.meta.url)('../../../electron/hardening-rules.cjs') as Hardening
+const sanoTeam = createRequire(import.meta.url)('../../../electron/sano-team-rules.cjs') as { SANO_TEAM_PARTITION: string }
 const indexBytes = readFileSync(new URL('../../../index.html', import.meta.url))
 const PIN = '7489ABFAC1A7CD23D5FFB0785CA7CAB414AE49ED'
 const AUTHOR = 'Nguyễn Giang Minh (Jame Steven)'
@@ -395,7 +396,40 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(preloadSource).toContain("expose('bdpDesktop', {")
     const direct = [...preloadSource.matchAll(/contextBridge\.exposeInMainWorld\('(\w+)'/g)].map((m) => m[1])
     expect(direct).toEqual(['sanoDesktop'])
-    expect(preloadSource).toContain("if (sanoArg && location.origin === sanoArg.slice('--bdp-sano-origin='.length)) contextBridge.exposeInMainWorld('sanoDesktop', { sanovidsUrl: 'app://bdp/' })")
+    expect(preloadSource).toContain("if (sanoArg && location.origin === sanoArg.slice('--bdp-sano-origin='.length)) {\n  contextBridge.exposeInMainWorld('sanoDesktop', {\n    sanovidsUrl: 'app://bdp/',")
+  })
+
+  it('TH-38 team connect: SANO branch of the preload only; main frame of SANO only; own in-memory partition; no redirect', () => {
+    const at = (src: string, s: string) => {
+      const i = src.indexOf(s)
+      expect(i, s).toBeGreaterThan(-1)
+      return i
+    }
+    // preload: inside the SANO-origin branch, before the app://bdp bridge; never in bdpDesktop
+    const invoke = "connectCanvasappTeam: (token) => ipcRenderer.invoke('sano:connectCanvasappTeam', { token: str(token).slice(0, 8192) }),"
+    expect(preloadSource.split("'sano:connectCanvasappTeam'").length - 1).toBe(1)
+    expect(at(preloadSource, invoke)).toBeGreaterThan(at(preloadSource, "if (sanoArg && location.origin === sanoArg.slice('--bdp-sano-origin='.length)) {"))
+    expect(at(preloadSource, invoke)).toBeLessThan(at(preloadSource, 'const expose ='))
+    // main: registered only in SANO mode, and the handler first checks the sender (SANO's page, main frame)
+    expect(mainSource).toContain('    if (SANO) registerSanoTeamConnect()\n')
+    expect(mainSource.match(/(?<!function )registerSanoTeamConnect\(\)/g)).toHaveLength(1)
+    expect(mainSource.split("'sano:connectCanvasappTeam'").length - 1).toBe(1)
+    expect(mainSource).toMatch(/ipcMain\.handle\('sano:connectCanvasappTeam', \(event, args\) => \{\n\s+if \(!fromSanoPage\(event\)\) return /)
+    expect(mainSource).toContain('return !!SANO && !!event.senderFrame && event.senderFrame === event.sender.mainFrame && event.senderFrame.url.startsWith(SANO.url)')
+    const body = mainSource.slice(at(mainSource, 'function registerSanoTeamConnect()'), at(mainSource, '// Files: "Lưu video"'))
+    expect(body.indexOf("ipcMain.handle('sano:connectCanvasappTeam'")).toBeGreaterThan(0)
+    // its own in-memory partition (never persist:, never the user's gateway partition), restricted, no downloads
+    expect(sanoTeam.SANO_TEAM_PARTITION).toBe('canvasapp-team')
+    expect(body).toContain('const ses = session.fromPartition(sanoTeamRules.SANO_TEAM_PARTITION)')
+    expect(body).toContain('partition: sanoTeamRules.SANO_TEAM_PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true, devTools: DEVTOOLS')
+    expect(body).not.toMatch(/CANVASAPP_PARTITION|canvasappSession\(|persist:|preload/)
+    expect(body).toContain('restrictCanvasappPermissions(ses)')
+    expect(body).toContain("ses.on('will-download', (event) => event.preventDefault())")
+    expect(body).toContain('guardLoginPopups(win, webPreferences)')
+    // the session goes to SANO's own origin only, never through a redirect; never a canvasapp logout (it would end it)
+    expect(body).toContain('await fetch(SANO.origin + sanoTeamRules.SANO_TEAM_SESSION_PATH, {')
+    expect(body).toContain("redirect: 'error',")
+    expect(body).not.toMatch(/logout|LOGOUT|console\./)
   })
 
   it('sano-desktop.bat: SANO_URL expands inside quotes only (cmd runs & | > of a query string as operators)', () => {
@@ -811,8 +845,8 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     for (const later of ['app.enableSandbox()', "app.setPath('userData'", 'requestSingleInstanceLock', 'app.whenReady()']) expect(strip, later).toBeLessThan(idx(later))
   })
 
-  it('DevTools: devTools: DEVTOOLS on the 3 webPreferences, shortcuts only inside if (DEVTOOLS)', () => {
-    expect(count('devTools: DEVTOOLS')).toBe(3)
+  it('DevTools: devTools: DEVTOOLS on the 4 webPreferences, shortcuts only inside if (DEVTOOLS)', () => {
+    expect(count('devTools: DEVTOOLS')).toBe(4) // main, canvasapp login, checkout, SANO team login
     expect(mainSource).toContain('const DEVTOOLS = hardening.allowDevTools({ isPackaged: PACKAGED, profileSource: profile.source, testBuild: TEST_BUILD })')
     const [start, end] = blockAt(idx('if (DEVTOOLS) {'))
     const toggles = [...mainSource.matchAll(/toggleDevTools|openDevTools/g)].map((m) => m.index!)
@@ -1094,7 +1128,9 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
   })
 
   it('downloads: one will-download listener on the default session, registered at ready (never per window); the page is not told', () => {
-    expect(count("'will-download'")).toBe(1)
+    // + the SANO team login's session, which refuses every download (TH-38)
+    expect(count("'will-download'")).toBe(2)
+    expect(fnBody('registerSanoTeamConnect')).toContain("ses.on('will-download', (event) => event.preventDefault())")
     expect(fnBody('registerDownloads')).toContain("session.defaultSession.on('will-download', (_event, item) => {")
     expect(fnBody('createWindow')).not.toContain('will-download')
     const [rs, re] = blockAt(idx('app.whenReady().then(() => {'))

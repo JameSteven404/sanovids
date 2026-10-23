@@ -7,7 +7,7 @@
 
 Mở app SANO trong cửa sổ desktop của SanoVids. Khu “Dựng phim” của SANO là chính SanoVids bản desktop, nên tạo được
 **video thật** bằng tài khoản canvasapp.io.vn của từng người qua cổng canvasapp ([GATEWAY-CANVASAPP.md](GATEWAY-CANVASAPP.md)).
-Máy chủ SANO không giữ phiên hay cookie canvasapp nào.
+Máy chủ SANO chỉ giữ phiên của tài khoản team khi QTV kết nối (TH-38), mã hoá trên máy chủ (§5).
 
 ## 2. Chạy
 
@@ -26,8 +26,8 @@ Máy chủ SANO không giữ phiên hay cookie canvasapp nào.
 - Riêng popup `https://accounts.google.com/` (“Đăng nhập bằng Google” của SANO) mở thành cửa sổ con. Popup chỉ đi trong các
   trang đăng nhập của Google (`accounts.google.com`, `accounts.youtube.com`); link và popup con của nó mở trình duyệt. Đóng
   popup thì cookie tài khoản Google nó để lại trong thư mục dữ liệu bị xoá (SANO đã nhận token).
-- Trang SANO thấy `window.sanoDesktop = { sanovidsUrl: 'app://bdp/' }` và đặt khung Dựng phim vào địa chỉ đó: bản SanoVids
-  nằm trong app (`dist/`), không tải từ máy chủ SANO.
+- Trang SANO thấy `window.sanoDesktop = { sanovidsUrl: 'app://bdp/', connectCanvasappTeam }` và đặt khung Dựng phim vào
+  `sanovidsUrl`: bản SanoVids nằm trong app (`dist/`), không tải từ máy chủ SANO. `connectCanvasappTeam` ở §5.
 - Preload chạy ở mọi khung (`nodeIntegrationInSubFrames`), nhưng chỉ trang `app://bdp` nhận `window.bdpDesktop`. Mọi lời gọi
   cổng vẫn bị main kiểm khung gửi (`fromApp`: chỉ `app://bdp/…`). SANO và SanoVids khác origin: trang SANO không đọc hay
   điều khiển được trang SanoVids.
@@ -51,3 +51,41 @@ Máy chủ SANO không giữ phiên hay cookie canvasapp nào.
   Chạy từ mã nguồn không ảnh hưởng (chế độ Phát triển mở sẵn, không có cập nhật tự động); cần sửa trước khi có bản cài SANO.
 - Tải tệp từ trang SANO bị chặn (chỉ cho tải `blob:app://bdp/…`).
 - Chưa có bản cài: Minh đã chốt tên **Sano Agent**, ký số như SanoVids và kênh cập nhật trên GitHub (D220); đang làm.
+
+## 5. Kết nối canvasapp cho team (QTV)
+
+TH-38 (D224–D225): máy chủ SANO tạo video cho SanoVids bản web trong SANO bằng phiên đăng nhập canvasapp của **một tài
+khoản team**. Khung Dựng phim của app (`app://bdp`) vẫn dùng đăng nhập riêng của từng người, không đổi.
+
+1. QTV mở SANO trong app (chế độ SANO desktop), vào **Kết nối công cụ** → **Kết nối tài khoản team**.
+2. App mở cửa sổ “Đăng nhập tài khoản canvasapp của team — Sano Agent” trên trang thật `https://canvasapp.io.vn/`. QTV tự
+   đăng nhập tài khoản team ở đó (kể cả “Đăng nhập bằng Google”); app không thấy mật khẩu.
+3. Khi canvasapp xác nhận đã đăng nhập (`GET /api/auth/state` → `authenticated: true`, kiểm lúc trang chuyển và mỗi 5 giây),
+   app gửi cookie của phiên lên máy chủ SANO rồi đóng cửa sổ và xoá sạch phiên trên máy. Không đăng xuất canvasapp: làm vậy
+   sẽ kết thúc đúng phiên vừa giao cho máy chủ.
+
+Yêu cầu gửi lên SANO (main gửi bằng `fetch` của Node, thẳng tới origin của `SANO_URL`, không theo chuyển hướng, 60 giây):
+
+```
+POST <origin SANO>/api/video/admin/canvasapp-session
+Authorization: Bearer <token Google của QTV trên SANO>
+Content-Type: application/json
+{ "v": 1, "cookies": [ { "name", "value", "hostOnly", "path", "secure", "httpOnly", "sameSite", "expirationDate"? } ] }
+```
+
+- Chỉ cookie của chính `canvasapp.io.vn` (`hostOnly: true`) hoặc `.canvasapp.io.vn`, theo luật của “Giữ đăng nhập”
+  (`keeplogin-rules.keptCookieEntry`): không cookie Cloudflare, Google hay trang khác; cookie phiên và cookie có hạn chưa
+  hết hạn (giữ `expirationDate`, tính bằng giây); bỏ giá trị có `;` hay ký tự điều khiển; 1–30 cookie, phải có `canvas_csrf`.
+- Máy chủ SANO tự quyết ai là QTV, kiểm lại dữ liệu và thử phiên với canvasapp trước khi lưu (mã hoá bằng `SANO_SECRET_KEY`).
+  Câu từ chối của máy chủ hiện nguyên văn trên bảng Kết nối công cụ.
+- Token SANO phải còn hạn ít nhất 20 phút (cửa sổ đăng nhập chờ tối đa 15 phút); sắp hết hạn thì app không mở cửa sổ.
+- Mỗi lúc chỉ một lần kết nối. Đóng cửa sổ, quá 15 phút, thiếu `canvas_csrf`, lỗi mạng hay máy chủ từ chối: không lưu gì
+  trên máy, phiên vẫn bị xoá.
+
+Cách giữ an toàn (`electron/sano-team-rules.cjs`, `main.cjs registerSanoTeamConnect`):
+
+- Chỉ có ở chế độ SANO desktop. Lệnh `sano:connectCanvasappTeam` chỉ nhận từ khung chính của trang SANO (`fromSanoPage`):
+  khung con, trang SanoVids hay cửa sổ khác đều bị từ chối.
+- Cửa sổ dùng phân vùng riêng trong bộ nhớ `canvasapp-team` (không ghi đĩa, không phải `persist:canvasapp` của người dùng),
+  sandbox, không preload, không tải tệp, quyền web như cửa sổ đăng nhập canvasapp, popup chỉ https.
+- Cookie không tới trang nào, không nằm trong câu trả lời IPC hay dòng log nào.

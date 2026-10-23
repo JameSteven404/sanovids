@@ -200,6 +200,7 @@ if (!app.requestSingleInstanceLock()) {
     registerDownloads()
     protocol.handle(SCHEME, serveDist)
     registerCanvasappGateway()
+    if (SANO) registerSanoTeamConnect()
     registerFileBridge()
     registerAppBridge()
     // A SANO desktop run that quit with the Google sign-in popup open left its Google account cookies (guardGooglePopup);
@@ -714,6 +715,7 @@ function registerAppBridge() {
 // ---------------------------------------------------------------------------------------------------------------
 
 const keepLoginRules = require('./keeplogin-rules.cjs')
+const sanoTeamRules = require('./sano-team-rules.cjs')
 const CANVASAPP_ORIGIN = 'https://canvasapp.io.vn'
 const CANVASAPP_HOST = 'canvasapp.io.vn'
 const CANVASAPP_PARTITION = 'persist:canvasapp'
@@ -822,6 +824,11 @@ function canvasappSession() {
 function fromApp(event) {
   const url = (event.senderFrame && event.senderFrame.url) || ''
   return url.startsWith(ORIGIN + '/')
+}
+
+/** SANO desktop: only SANO's own page, in the window's main frame (never a frame inside it), may hand a session to SANO. */
+function fromSanoPage(event) {
+  return !!SANO && !!event.senderFrame && event.senderFrame === event.sender.mainFrame && event.senderFrame.url.startsWith(SANO.url)
 }
 
 function gatewayError(code, message) {
@@ -1774,6 +1781,21 @@ async function canvasappStatus() {
   return { ok: true, authenticated: res.json.authenticated === true }
 }
 
+/**
+ * Sign-in popups (e.g. Google) of a canvasapp login window stay in its partition so the session ends up there. Every
+ * popup, and every popup of a popup, gets the same rule: https only, same webPreferences (sandbox, no DevTools in a real app).
+ */
+function guardLoginPopups(win, webPreferences) {
+  const guardPopups = (w) => {
+    w.webContents.setWindowOpenHandler(({ url }) => {
+      if (/^https:\/\//i.test(url)) return { action: 'allow', overrideBrowserWindowOptions: { parent: win, autoHideMenuBar: true, webPreferences } }
+      return { action: 'deny' }
+    })
+    w.webContents.on('did-create-window', (child) => guardPopups(child))
+  }
+  guardPopups(win)
+}
+
 function canvasappLogin(parent) {
   if (canvasappLoginWin && !canvasappLoginWin.isDestroyed()) {
     canvasappLoginWin.show()
@@ -1795,16 +1817,7 @@ function canvasappLogin(parent) {
       webPreferences,
     })
     canvasappLoginWin = win
-    // Sign-in popups (e.g. Google) stay in the same partition so the session ends up there. Every popup, and every
-    // popup of a popup, gets the same rule: https only, same webPreferences (sandbox, no DevTools in a real app).
-    const guardPopups = (w) => {
-      w.webContents.setWindowOpenHandler(({ url }) => {
-        if (/^https:\/\//i.test(url)) return { action: 'allow', overrideBrowserWindowOptions: { parent: win, autoHideMenuBar: true, webPreferences } }
-        return { action: 'deny' }
-      })
-      w.webContents.on('did-create-window', (child) => guardPopups(child))
-    }
-    guardPopups(win)
+    guardLoginPopups(win, webPreferences)
 
     return await new Promise((resolve) => {
       let done = false
@@ -2326,12 +2339,11 @@ async function canvasappCheckout(parent, args) {
 }
 
 /**
- * Web permissions in the canvasapp partition. Electron grants every permission by default: the checkout window
- * (SePay) gets only clipboard writes; the login window loses camera / mic / location / notifications / devices /
- * screen capture… No device (HID / USB / serial) is ever handed out.
+ * Web permissions in a canvasapp partition (the gateway's, and SANO's team login): Electron grants every permission by
+ * default: the checkout window (SePay) gets only clipboard writes; the login windows lose camera / mic / location /
+ * notifications / devices / screen capture… No device (HID / USB / serial) is ever handed out.
  */
-function restrictCanvasappPermissions() {
-  const ses = canvasappSession()
+function restrictCanvasappPermissions(ses) {
   const isCheckout = (wc) => !!wc && !!checkoutWin && !checkoutWin.isDestroyed() && wc === checkoutWin.webContents
   const allowed = (wc, permission) => (isCheckout(wc) ? checkoutPermissionAllowed(permission) : !CANVASAPP_DENIED_PERMISSIONS.has(permission))
   ses.setPermissionRequestHandler((wc, permission, callback) => callback(allowed(wc, permission)))
@@ -2340,7 +2352,7 @@ function restrictCanvasappPermissions() {
 }
 
 function registerCanvasappGateway() {
-  restrictCanvasappPermissions()
+  restrictCanvasappPermissions(canvasappSession())
   try {
     startCanvasappKeepLogin()
   } catch (e) {
@@ -2373,6 +2385,72 @@ function registerCanvasappGateway() {
   ipcMain.handle('canvasapp:checkout', guard((event, args) => canvasappCheckout(BrowserWindow.fromWebContents(event.sender), args)))
   ipcMain.handle('canvasapp:keepLogin', guard(() => canvasappKeepLoginState()))
   ipcMain.handle('canvasapp:setKeepLogin', guard((_event, on) => canvasappSetKeepLogin(on)))
+}
+
+/**
+ * SANO desktop, TH-38 (docs/SANO-DESKTOP.md §5): the QTV logs the team canvasapp account in on canvasapp's own page, in
+ * an in-memory partition of its own (never the user's persist:canvasapp); main posts that session's canvasapp.io.vn
+ * cookies to SANO's server with the QTV's SANO token, then wipes the partition (sano-team-rules.cjs). SANO's server
+ * decides who is a QTV. Nothing of the session reaches a page, an IPC reply or a log.
+ */
+function registerSanoTeamConnect() {
+  const ses = session.fromPartition(sanoTeamRules.SANO_TEAM_PARTITION)
+  restrictCanvasappPermissions(ses)
+  ses.on('will-download', (event) => event.preventDefault())
+  const webPreferences = { partition: sanoTeamRules.SANO_TEAM_PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true, devTools: DEVTOOLS, spellcheck: false }
+  const connect = sanoTeamRules.createSanoTeamConnect({
+    now: () => Date.now(),
+    host: CANVASAPP_HOST,
+    clear: async () => {
+      await ses.clearStorageData()
+      await ses.clearCache()
+    },
+    open: ({ onNavigate, onClosed }) => {
+      const win = new BrowserWindow({
+        width: 1120,
+        height: 840,
+        parent: mainWindow || undefined,
+        title: 'Đăng nhập tài khoản canvasapp của team — Sano Agent',
+        autoHideMenuBar: true,
+        backgroundColor: '#ffffff',
+        webPreferences,
+      })
+      guardLoginPopups(win, webPreferences)
+      // the QTV must know which login this window is for: canvasapp's page title never replaces it
+      win.on('page-title-updated', (event) => event.preventDefault())
+      win.webContents.on('did-navigate', onNavigate)
+      win.webContents.on('did-navigate-in-page', onNavigate)
+      win.once('closed', onClosed)
+      void win.loadURL(CANVASAPP_ORIGIN + '/')
+      return { close: () => !win.isDestroyed() && win.close() }
+    },
+    authenticated: async () => {
+      const res = await ses.fetch(CANVASAPP_ORIGIN + '/api/auth/state', {
+        headers: { Accept: 'application/json' },
+        credentials: 'include',
+        redirect: 'manual',
+        signal: AbortSignal.timeout(15_000),
+        bypassCustomProtocolHandlers: true,
+      })
+      return res.status === 200 && (await res.json()).authenticated === true
+    },
+    cookies: () => ses.cookies.get({ domain: CANVASAPP_HOST }),
+    // Node's fetch, straight to SANO's origin (https, or http on this machine: sanoShell); a redirect is refused
+    post: async (payload, token) => {
+      const res = await fetch(SANO.origin + sanoTeamRules.SANO_TEAM_SESSION_PATH, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify(payload),
+        redirect: 'error',
+        signal: AbortSignal.timeout(60_000),
+      })
+      return { status: res.status, json: await res.json().catch(() => null) }
+    },
+  })
+  ipcMain.handle('sano:connectCanvasappTeam', (event, args) => {
+    if (!fromSanoPage(event)) return gatewayError('not-allowed', sanoTeamRules.TEAM_TEXT['not-allowed'])
+    return connect(args && args.token).catch(() => gatewayError('error', sanoTeamRules.TEAM_TEXT.error))
+  })
 }
 
 // ---------------------------------------------------------------------------------------------------------------

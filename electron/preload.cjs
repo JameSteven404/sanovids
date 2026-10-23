@@ -37,9 +37,19 @@ const trashItems = (items) =>
     : []
 
 // SANO desktop (main.cjs SANO): this preload runs in every frame of SANO's page. SANO's own page only learns where
-// SanoVids is; the bridge below goes to SanoVids' page alone (main checks the sending frame again: fromApp).
+// SanoVids is and can ask main to connect the team canvasapp account (TH-38: main accepts it from SANO's main frame
+// only, fromSanoPage); the bridge below goes to SanoVids' page alone (main checks the sending frame again: fromApp).
 const sanoArg = process.argv.find((a) => a.startsWith('--bdp-sano-origin='))
-if (sanoArg && location.origin === sanoArg.slice('--bdp-sano-origin='.length)) contextBridge.exposeInMainWorld('sanoDesktop', { sanovidsUrl: 'app://bdp/' })
+if (sanoArg && location.origin === sanoArg.slice('--bdp-sano-origin='.length)) {
+  contextBridge.exposeInMainWorld('sanoDesktop', {
+    sanovidsUrl: 'app://bdp/',
+    /**
+     * (the QTV's SANO token) → opens canvasapp.io.vn's own login page; once logged in, main hands that session to SANO's
+     * server and wipes it here → { ok: true, status } | { ok: false, code, message }. No cookie ever crosses this bridge.
+     */
+    connectCanvasappTeam: (token) => ipcRenderer.invoke('sano:connectCanvasappTeam', { token: str(token).slice(0, 8192) }),
+  })
+}
 const expose = location.origin === 'app://bdp' ? (key, api) => contextBridge.exposeInMainWorld(key, api) : () => undefined
 // SANO removing SanoVids' frame (or sending it elsewhere) gives main no event of its own: the page ends its downloads as it goes.
 if (location.origin === 'app://bdp') window.addEventListener('pagehide', () => void ipcRenderer.invoke('canvasapp:downloadCloseAll').catch(() => undefined))

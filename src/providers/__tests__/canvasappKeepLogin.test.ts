@@ -1509,8 +1509,9 @@ describe('keep-login wiring (electron/main.cjs)', () => {
     expect(R.KEEP_LOGIN_DRAIN_CAP_MS).toBe(5000)
     const drain = fnBody('drainCanvasappRequests')
     order(drain, ['for (const r of pending) r.controller.abort()', 'Promise.allSettled(pending.map((r) => r.done))'])
-    // the only clearStorageData is Đăng xuất's
-    expect(count(mainCode, 'clearStorageData(')).toBe(1)
+    // the only clearStorageData is Đăng xuất's (+ the SANO team login's own in-memory partition, TH-38)
+    expect(count(mainCode, 'clearStorageData(')).toBe(2)
+    expect(count(fnBody('registerSanoTeamConnect'), 'await ses.clearStorageData()')).toBe(1)
   })
 
   it('the server logout is main-only (not in the allowlist), best effort, and the only other canvasapp fetch', () => {
@@ -1530,7 +1531,9 @@ describe('keep-login wiring (electron/main.cjs)', () => {
     // fetches through the canvasapp partition: canvasappRequest and canvasappServerLogout only
     expect(count(mainCode, 'canvasappSession().fetch(')).toBe(1)
     expect(count(fnBody('canvasappRequest'), 'canvasappSession().fetch(')).toBe(1)
-    expect(count(mainCode, 'ses.fetch(')).toBe(1)
+    // + the SANO team login's /api/auth/state check, in its own partition (TH-38)
+    expect(count(mainCode, 'ses.fetch(')).toBe(2)
+    expect(fnBody('registerSanoTeamConnect')).toContain("await ses.fetch(CANVASAPP_ORIGIN + '/api/auth/state', {")
   })
 
   it('login finish keeps a confirmed login (and reports it); checkout restores first; IPC behind guard', () => {

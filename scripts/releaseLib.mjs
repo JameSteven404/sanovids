@@ -344,6 +344,8 @@ export const REQUIRED_ASAR_FILES = Object.freeze([
   'electron/signature.cjs',
   'electron/hardening-rules.cjs',
   'electron/keeplogin-rules.cjs',
+  // main.cjs requires it at start (SANO desktop's team canvasapp connect)
+  'electron/sano-team-rules.cjs',
   // the development-mode lock (DV): without it a release build cannot lock or unlock development mode
   'electron/devaccess.cjs',
   'electron/devaccess-rules.cjs',
