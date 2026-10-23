@@ -59,7 +59,7 @@ export const SANO_OTHER_ACCOUNT = 'Take này thuộc tài khoản SANO khác —
 /** SANO_OTHER_ACCOUNT for takes that wait in the queue (store/runs parkedReason). */
 export const SANO_OTHER_ACCOUNT_WAIT = 'Chờ tài khoản SANO khác — đăng nhập lại trong app SANO bằng tài khoản đã gửi take, take tự chạy tiếp.'
 /** A take queued while SANO ran its simulator (JobRequest.expectSimulated) when SANO no longer runs it: no job made. */
-export const SANO_NOW_LIVE = 'Take này vào hàng đợi khi máy chủ SANO còn chạy giả lập (không phát sinh phí), nay SANO không còn báo giả lập — SanoVids không gửi. Chạy lại cảnh để xem chi phí rồi gửi.'
+export const SANO_NOW_LIVE = 'Take này vào hàng đợi khi máy chủ SANO còn chạy giả lập (không phát sinh phí), nay SANO không còn báo giả lập — SANO không tạo job, không tính phí. Chạy lại cảnh để xem chi phí rồi gửi.'
 /** How often the host's token is read besides each request (SANO signs in / switches account without telling). */
 export const TOKEN_RECHECK_MS = 3_000
 /** Cap on a job's reference images, measured on what is sent (the base64 text of every ref). */

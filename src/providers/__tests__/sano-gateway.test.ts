@@ -197,16 +197,19 @@ describe('sano-gateway provider', () => {
 
   it("a take queued under the simulator (no fee said) is POSTed expecting it: SANO live now → 409, refused (never uncertain), nothing made; a job of its earlier send is that one", async () => {
     const s = fakeSano()
-    const p = make(s)
+    const told = vi.fn()
+    const p = make(s, { onLimitsChange: told })
     s.opts.mode = 'simulator'
     await p.refreshLimits({ force: true })
     s.opts.mode = 'live' // the read above stays firm for 10 min: only SANO's POST sees it
+    told.mockClear()
     const err = await p.submit(req({ expectSimulated: true })).catch((e: unknown) => e)
     expect(err).toMatchObject({ code: 'refused', message: SANO_NOW_LIVE })
     expect(isSubmitUncertain(err)).toBe(false)
     expect(JSON.parse(String(s.calls('POST', '/api/video/jobs')[0][1].body))).toMatchObject({ expectMode: 'simulator' })
     expect(s.jobs.size).toBe(0)
     expect(p.mode()).toBe('live') // the Run dialog no longer promises no fee
+    expect(told).toHaveBeenCalled() // and an open dialog re-reads it now
     s.jobs.set('job_9', { id: 'job_9', key: 'take_1', status: 'done', mode: 'simulator' }) // its earlier answer was lost
     expect(await p.submit(req({ expectSimulated: true }), { retryOfUnknown: true })).toEqual({ remoteId: 'job_9', simulated: true })
     // a 409 naming no mode (this key already used for another request) stays SANO's own refusal
