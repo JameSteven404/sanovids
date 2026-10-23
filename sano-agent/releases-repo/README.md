@@ -1,6 +1,6 @@
 # Sano Agent — trang tải về chính thức
 
-**Sano Agent** là app SANO trên máy tính Windows. Khu **Dựng phim** của SANO trong app là chính SanoVids bản desktop: tạo video thật bằng tài khoản canvasapp.io.vn của bạn, và **dùng chung dự án với SanoVids** đã cài trên máy.
+**Sano Agent** là app SANO trên máy tính Windows. Khu **Dựng phim** của SANO trong app là chính SanoVids, **dùng chung dự án với SanoVids** đã cài trên máy. Tạo video trong SANO hiện đang tạm dừng: dự án, cảnh và video đã có vẫn mở, xem và sửa được.
 
 **Tác giả:** Nguyễn Giang Minh (Jame Steven) · **Đồng hành:** Sano Group
 
@@ -23,7 +23,7 @@ Cần **Windows 10 hoặc 11, 64-bit** và máy chủ SANO đang chạy ở `htt
 
 ### Trước khi cài
 
-- **Dùng chung dữ liệu với SanoVids.** Sano Agent mở đúng thư mục dữ liệu của SanoVids (`%APPDATA%\SanoVids`): cùng dự án, cùng đăng nhập canvasapp. Trước lần mở đầu, đóng SanoVids và chép thư mục đó ra chỗ khác để sao lưu.
+- **Dùng chung dữ liệu với SanoVids.** Sano Agent mở đúng thư mục dữ liệu của SanoVids (`%APPDATA%\SanoVids`): cùng dự án, cùng cài đặt. Trước lần mở đầu, đóng SanoVids và chép thư mục đó ra chỗ khác để sao lưu.
 - **Không mở cùng lúc** SanoVids và Sano Agent: mở app thứ hai thì nó tự thoát và đưa cửa sổ app đang mở lên trước.
 - **Cài vào thư mục riêng.** Đừng chọn thư mục cài của SanoVids: Sano Agent sẽ nằm bên trong thư mục đó, và lần cập nhật hay gỡ cài tiếp theo của SanoVids có thể xoá mất nó. Thư mục mặc định (`%LOCALAPPDATA%\Programs\Sano Agent`) là đúng.
 - Bộ cài hỏi ngôn ngữ, hiện **Giấy phép sử dụng** và cho chọn thư mục cài. Windows SmartScreen hỏi như với bộ cài SanoVids: bấm **Thông tin khác** (*More info*), xem **Nhà phát hành**, rồi **Vẫn chạy** (*Run anyway*) — chỉ sau khi đã [kiểm tra chữ ký số](#kiểm-tra-chữ-ký-số).

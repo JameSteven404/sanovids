@@ -10,10 +10,10 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 
 ✨ **SANO trong cửa sổ riêng**
 - Mở app SANO ở `http://127.0.0.1:8080`. Không mở được (máy chủ chưa chạy, hoặc chuyển hướng sang địa chỉ khác) thì app báo rõ, có nút **Thử lại**.
-- **SẢN XUẤT → Dựng phim** là SanoVids bản desktop: tạo video thật bằng tài khoản canvasapp.io.vn của bạn.
+- **SẢN XUẤT → Dựng phim** là SanoVids trong SANO. Tạo video trong SANO hiện đang tạm dừng: dự án, cảnh và video đã có vẫn mở, xem và sửa được.
 
 ✨ **Dùng chung dự án với SanoVids**
-- Cùng thư mục dữ liệu với SanoVids trên máy: cùng dự án, cùng đăng nhập canvasapp.
+- Cùng thư mục dữ liệu với SanoVids trên máy: cùng dự án, cùng cài đặt.
 
 ✨ **Ký số và tự cập nhật như SanoVids**
 - Bộ cài được ký bằng cùng chứng chỉ của tác giả; bản Setup tự cập nhật từ trang tải về riêng của Sano Agent.
