@@ -77,8 +77,8 @@ const POLL_MS = 15_000
 const MAX_DOWNLOADS = 2
 /** A SANO request not done after this long (its answer's body included) is cut; long enough for 20 MB of refs. */
 export const REQUEST_MS = 5 * 60_000
-/** Same for a video download (canvasapp's main cuts one at 60 min too). */
-const DOWNLOAD_MS = 60 * 60_000
+/** Same for a video download (canvasapp's main cuts one at 60 min too): 'too-slow', not tried again from 0 (no Range). */
+export const DOWNLOAD_MS = 60 * 60_000
 
 export type SanoMode = 'simulator' | 'live'
 export type SanoTokenState = 'none' | 'refused' | 'ok'
@@ -284,7 +284,11 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
     // a half-open connection never answers: cut, so one stalled job never holds the poll of every SANO job (or a
     // download slot) for good; a plain Error = a lost connection (no news / an uncertain submit / a retried download)
     const timeout = new AbortController()
-    const timer = setTimeout(() => timeout.abort(new Error(`Máy chủ SANO không trả lời sau ${ms / 60_000} phút`)), ms)
+    const cut = () =>
+      ms === DOWNLOAD_MS
+        ? new ProviderError('too-slow', 'Tải video từ máy chủ SANO quá 60 phút nên SanoVids dừng lại — lấy trực tiếp trong app SANO.')
+        : new Error(`Máy chủ SANO không trả lời sau ${ms / 60_000} phút`)
+    const timer = setTimeout(() => timeout.abort(cut()), ms)
     ;(timer as { unref?: () => void }).unref?.()
     const signal = init.signal ? AbortSignal.any([init.signal, timeout.signal]) : timeout.signal
     beforeSend?.() // same synchronous step as the request itself (mayHaveSent)

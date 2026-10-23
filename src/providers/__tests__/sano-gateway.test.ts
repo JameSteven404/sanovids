@@ -7,7 +7,7 @@ import { applyDevAccessState, bareState } from '../devAccess'
 import { sanoGatewayAvailable } from '../sano'
 import { stubInsideSano } from './insideSano'
 import { accountKey } from '../canvasapp/adapter'
-import { createSanoGatewayProvider, REQUEST_MS, SANO_LOGIN_TEXT, SANO_NOW_LIVE, SANO_OTHER_ACCOUNT, SANO_UNAVAILABLE, TOKEN_RECHECK_MS, tokenAccount, type SanoGatewayDeps } from '../sano/gateway'
+import { createSanoGatewayProvider, DOWNLOAD_MS, REQUEST_MS, SANO_LOGIN_TEXT, SANO_NOW_LIVE, SANO_OTHER_ACCOUNT, SANO_UNAVAILABLE, TOKEN_RECHECK_MS, tokenAccount, type SanoGatewayDeps } from '../sano/gateway'
 import { jwt } from './insideSano'
 import { isResultTooLarge, isSubmitUncertain, ProviderError, type JobRequest } from '../types'
 
@@ -367,6 +367,27 @@ describe('sano-gateway provider', () => {
       answers[0](jwt({ sub: 'A' })) // the older read answers last
       await vi.advanceTimersByTimeAsync(0)
       expect(p.account()).toBe(accountKey('B'))
+      p.reset()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("a download still open after DOWNLOAD_MS is cut as 'too-slow' (no Range: a new try from 0 would hit it again)", async () => {
+    vi.useFakeTimers()
+    try {
+      const s = fakeSano()
+      const p = make(s)
+      const { remoteId } = await p.submit(req())
+      const inner = s.fetch.getMockImplementation()!
+      s.fetch.mockImplementation(async (url, init) =>
+        url.endsWith('/result')
+          ? new Response(new ReadableStream({ start: (c) => (c.enqueue(new Uint8Array([1])), init.signal?.addEventListener('abort', () => c.error(init.signal!.reason))) }))
+          : inner(url, init),
+      )
+      const got = p.fetchResult(remoteId, { signal: new AbortController().signal }).catch((e: unknown) => e)
+      await vi.advanceTimersByTimeAsync(DOWNLOAD_MS)
+      expect(await got).toMatchObject({ code: 'too-slow' })
       p.reset()
     } finally {
       vi.useRealTimers()
