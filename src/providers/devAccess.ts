@@ -16,6 +16,7 @@
 // Initial access (computed ONCE at import — tests that stub `window` later keep 'build'):
 //   no window (vitest, node)                     build
 //   Electron (bdpDesktop or an Electron UA)      what main passed (--bdp-dev-access=…); missing / unknown → locked
+//   inside the SANO app (providers/sano)         locked, even on loopback / `npm run dev` (no simulation, no unlock)
 //   `npm run dev` (import.meta.env.DEV)          build
 //   perf build (__SANOVIDS_PERF__)               build
 //   loopback host (vite preview, perf on web)    build, or locked with the simulation's "Xem như bản phát hành"
@@ -23,6 +24,7 @@
 // The page never decides 'unlocked' by itself in Electron: no localStorage flag is ever read there.
 // NOTE: no store/* or lib/pwa import here (providers/index imports this module; avoid import cycles).
 import { create } from 'zustand'
+import { sanoGatewayAvailable } from './sano'
 
 export type DevAccessKind = 'build' | 'unlocked' | 'locked'
 export type DevKeepDays = 0 | 1 | 7 | 30
@@ -176,6 +178,8 @@ export interface DevAccessEnv {
   hostname?: string
   /** The browser simulation's "Xem như bản phát hành (đã khoá)" (never read in Electron). */
   simLocked?: boolean
+  /** Running inside the SANO app (providers/sano sanoGatewayAvailable()). */
+  sano?: boolean
 }
 
 /** Loopback hosts only (vite preview / perf on the web): the browser simulation may run there. */
@@ -187,6 +191,7 @@ export function isLoopbackHost(hostname: string | undefined): boolean {
 export function initialDevAccess(env: DevAccessEnv): DevAccessKind {
   if (!env.hasWindow) return 'build'
   if (env.electron) return isAccess(env.desktopInitial) ? env.desktopInitial : 'locked'
+  if (env.sano) return 'locked'
   if (env.viteDev || env.perfBuild) return env.simLocked && isLoopbackHost(env.hostname) ? 'locked' : 'build'
   if (isLoopbackHost(env.hostname)) return env.simLocked ? 'locked' : 'build'
   return 'locked'
@@ -242,6 +247,7 @@ function envNow(): DevAccessEnv {
     desktopInitial: desktop && typeof desktop === 'object' ? (desktop as { initial?: unknown }).initial : undefined,
     hostname,
     simLocked: !electron && readSimLocked(),
+    sano: !electron && sanoGatewayAvailable(),
   }
 }
 

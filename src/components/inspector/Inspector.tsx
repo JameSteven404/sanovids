@@ -6,12 +6,14 @@ import { shortcutText } from '../../lib/platformText'
 import { Bug, Cloud, Eye, FileText, Film, Info, Keyboard, Link2, MousePointerClick, Plus, Sparkles } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { newScene } from '../../actions'
-import { SANO_PAUSED_REASON, useVideoPausedInSano } from '../../providers'
+import { SANO_PAUSED_REASON, sanoGatewayProvider, useProviderLimits, useVideoPausedInSano } from '../../providers'
 import { useCreditKind } from '../../store/credits'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { AssetChip, MediaImg } from '../common/Media'
+import { sanoModeNote } from '../runs/creditText'
+import { useActiveProvider } from '../runs/shared'
 import { useFileDropGuard } from '../sidebar/shared'
 import { AssetInspector } from './AssetInspector'
 import './inspector.css'
@@ -128,6 +130,8 @@ function EmptyInspector() {
   // Which provider the next run uses (docs/SPEC-v2.md §9, §11): "no cost" is only true for simulated credits.
   const creditKind = useCreditKind()
   const paused = useVideoPausedInSano()
+  const sano = useActiveProvider() === 'sano-gateway'
+  useProviderLimits((s) => s.rev['sano-gateway']) // SANO's mode (the footer) changes with its revision
   return (
     <div className="in-empty">
       <div className="in-empty-icon">
@@ -200,6 +204,10 @@ function EmptyInspector() {
       ) : creditKind === 'demo' ? (
         <p className="in-empty-foot faint">
           <Sparkles size={12} /> Demo cũ: video giả, credit giả lập — không tốn tiền thật.
+        </p>
+      ) : sano ? (
+        <p className="in-empty-foot faint">
+          <Cloud size={12} /> Tạo video qua máy chủ SANO: {sanoModeNote(sanoGatewayProvider().mode())}.
         </p>
       ) : (
         <p className="in-empty-foot faint">

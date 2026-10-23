@@ -122,11 +122,6 @@ export function hasCanvasappBridge(): boolean {
   return canvasappBridge() !== null
 }
 
-/** D226: inside SANO's desktop frame canvasapp is hidden for now (electron/main.cjs CANVASAPP_IN_SANO). */
-export function canvasappHiddenInSano(): boolean {
-  return typeof window !== 'undefined' && window.bdpDesktop?.sano?.canvasapp === false
-}
-
 /** A cut download continues at most this many times in a row without a new byte (then it fails; the engine retries). */
 export const MAX_STALLED_RESUMES = 2
 /**

@@ -7,6 +7,7 @@ import { cancelTake, edgeId, PARKED_RETRY_TEXT, rerunTake } from '../../../actio
 import type { Asset, Project, Scene, Take } from '../../../core/types'
 import { useCanvasPrefs } from '../../../lib/canvasPrefs'
 import { bareState, useDevAccess } from '../../../providers/devAccess'
+import { activeProviderId, getProvider, registerProvider } from '../../../providers'
 import { useProject } from '../../../store/project'
 import { useRuns } from '../../../store/runs'
 import { useSceneEditor } from '../../../store/sceneEditor'
@@ -177,6 +178,17 @@ describe('scene card menu', () => {
     edit.run!()
     expect(useUI.getState()).toMatchObject({ rightOpen: true, selectedIds: ['s1'] })
     expect(useSceneEditor.getState().sceneId).toBeNull()
+  })
+  it('"Chạy" is off when the gateway caps the pictures the job sends (SANO maxRefs): the count of the Run dialog', () => {
+    const real = getProvider(activeProviderId())
+    registerProvider({ ...real, settingsLimits: () => ({ source: 'server', firm: true, issues: (_s, refs) => ((refs ?? 0) > 1 ? [{ field: 'model', reason: 'Tối đa 1 ảnh tham chiếu.' }] : []) }) })
+    try {
+      useProject.getState().loadProject({ ...project(), scenes: [scene('s1', 1, { refs: ['a'], prompt: '@image_1 đi' }), scene('s2', 2, { refs: ['b'], prompt: '@image_1 đi' })] })
+      expect(get(open({ kind: 'scene', id: 's1' }, ['s1']), 'scene.run').disabled).toBeUndefined()
+      expect(get(open({ kind: 'scene', id: 's2' }, ['s2']), 'scene.run').disabled).toBe('Tối đa 1 ảnh tham chiếu')
+    } finally {
+      registerProvider(real)
+    }
   })
   it('gateway blocked: "Chạy" stays clickable for that, but not when the scene itself cannot run', () => {
     const access = useDevAccess.getState().state

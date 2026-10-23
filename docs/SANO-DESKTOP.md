@@ -3,9 +3,10 @@
 > **Trạng thái:** chạy từ mã nguồn (quyết định D218 của SANO: canvasapp.io.vn là nhà cung cấp video chính, Minh chọn
 > làm bản desktop SANO). Chưa có bản cài riêng cho SANO.
 >
-> **D226 (2026-10-23): tạm ẩn canvasapp phía SANO.** Một hằng trong `electron/main.cjs`: `CANVASAPP_IN_SANO = false`
-> (đặt `true` khi Minh mở lại). Ở chế độ SANO, main báo trang `app://bdp` qua `--bdp-sano-canvasapp` →
-> `window.bdpDesktop.sano = { canvasapp: false }`, trang không có cầu `canvasapp`, main từ chối mọi `canvasapp:*`
+> **D226 (2026-10-23): tạm ẩn canvasapp phía SANO.** Một hằng `CANVASAPP_IN_SANO = false` trong
+> `src/providers/sano/index.ts` (đặt `true` khi Minh mở lại) cho cả bản web SANO lẫn khung desktop SANO; `electron/main.cjs`
+> giữ bản sao cùng tên (test `hardeningRules` bắt hai giá trị bằng nhau). Ở chế độ SANO, main báo trang `app://bdp` qua
+> `--bdp-sano-canvasapp` → `window.bdpDesktop.sano`, trang không có cầu `canvasapp`, main từ chối mọi `canvasapp:*`
 > (`sano-paused`). Trong SANO không còn lựa chọn, đăng nhập, credit hay chữ nào nhắc canvasapp; chế độ Phát triển (chạy
 > từ mã nguồn) vẫn là giả lập, còn khi chế độ Phát triển khoá (bản cài) trang nói “Tạo video trong SANO đang tạm dừng”.
 > Take canvasapp đã có giữ nguyên dữ liệu: hàng đợi trong SANO không gửi, theo dõi hay đánh lỗi chúng — SanoVids chạy

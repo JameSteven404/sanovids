@@ -14,8 +14,8 @@
 //                            answer. Main checks every one of them; nothing here decides an unlock.
 import { openSettings } from './actions'
 import { closesOnLock, DEV_HIDDEN_NOTICE, DEV_HIDDEN_NOTICE_KEY, DEV_TRACE_KEYS, lockToastText, shouldNoticeHidden } from './components/dev/devUnlockModel'
-import { effectiveProvider, useProviderPrefs } from './providers'
-import { canvasappHiddenInSano, hasCanvasappBridge } from './providers/canvasapp/transport'
+import { canvasappHiddenInSano, effectiveProvider, useProviderPrefs } from './providers'
+import { hasCanvasappBridge } from './providers/canvasapp/transport'
 import { installDevAccessSim } from './providers/dev/devAccess'
 import { closeDevPrompts } from './providers/dev/prompts'
 import {

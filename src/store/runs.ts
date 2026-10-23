@@ -57,10 +57,11 @@ import type { Asset, ModelId, Scene, Size, Take, XY } from '../core/types'
 import { chargedDemo, DEMO_CREDITS_DEFAULT, formatCreditNumber } from '../lib/credits'
 import { useDownloadPrefs } from '../lib/downloads'
 import { putBlob } from '../lib/imageStore'
-import { activeProviderId, getProvider, providerBlockedReason, providerLimits, providerPaused, registerProvider } from '../providers'
+import { activeProviderId, getProvider, providerBlockedReason, providerLimits, providerPaused, registerProvider, sanoGatewayProvider, useProviderLimits } from '../providers'
 import { decodeRemoteId } from '../providers/canvasapp/mapping'
 import type { SiteJobClaim, SiteTakeDraft } from '../providers/canvasapp/siteJobs'
-import { settingsRunBlock, settingsRunWarning } from '../providers/limits'
+import { jobRefCount, settingsRunBlock, settingsRunWarning } from '../providers/limits'
+import { SANO_LOGIN_TEXT, SANO_LOGIN_WAIT, SANO_OTHER_ACCOUNT, SANO_OTHER_ACCOUNT_WAIT, SANO_UNAVAILABLE } from '../providers/sano'
 import { createMockProvider, DEFAULT_MOCK_SETTINGS, parseMockSettings, type MockSettings } from '../providers/mock'
 import { posterFromVideo } from '../providers/poster'
 import {
@@ -225,6 +226,8 @@ let engine: ReturnType<typeof setInterval> | null = null
 const submitting = new Set<string>()
 /** Takes whose result is being downloaded / rendered. */
 const fetching = new Set<string>()
+/** Takes just queued (enqueue) whose account is being read: not started before they are bound to it. */
+const binding = new Set<string>()
 /** Providers with a poll() in flight. */
 const polling = new Set<ProviderId>()
 const lastPoll = new Map<ProviderId, number>()
@@ -237,6 +240,8 @@ const pollFailures = new Map<ProviderId, number>()
 let generation = 0
 /** Takes whose submit (or recovery) this engine started since the last loadRuns: never "adopted" as left over. */
 const ownedHere = new Set<string>()
+/** Look-ups their provider deferred (no news): take id → time before which recoverTake does not ask again. */
+const recoverAt = new Map<string, number>()
 /** Finished remote videos whose download failed: take id → failures so far / time before which not to retry. */
 const fetchFailures = new Map<string, number>()
 const fetchRetryAt = new Map<string, number>()
@@ -306,7 +311,11 @@ export function mayHaveBeenSent(takeId: string): boolean {
  * lost ("không rõ" / unverifiable text); or nothing was sent / it was refused (nothing created) — `unmark`: the mark its
  * own cancel put on the take goes (a take "maybe billed" by an earlier request keeps it).
  */
-type LateOutcome = { kind: 'job'; remoteId: string } | { kind: 'uncertain'; error: string } | { kind: 'nothing-sent'; unmark: boolean }
+type LateOutcome = { kind: 'job'; remoteId: string; simulated?: true } | { kind: 'uncertain'; error: string } | { kind: 'nothing-sent'; unmark: boolean }
+
+/** What a take keeps of a job its provider gave: the id, and SANO's simulator mark (a sample clip, nothing billed). */
+const jobOf = (j: { remoteId: string; simulated?: boolean }): { remoteId: string; simulated?: true } =>
+  j.simulated ? { remoteId: j.remoteId, simulated: true } : { remoteId: j.remoteId }
 /**
  * Which outcome wins when two requests of a take report (a submit and the look-up beside it): what is known best. The
  * take's own submit proving nothing went out (`by` 'submit') outranks a look-up that found nothing: that look-up was
@@ -343,7 +352,7 @@ export function requestInFlight(takeId: string): boolean {
 
 /** "Chạy lại" / retry() while requestInFlight(take): nothing new is sent before that request's outcome is known. */
 export const requestInFlightText = (pid: ProviderId): string =>
-  `Lần gửi trước của take này chưa xong — SanoVids đang chờ ${pid === 'dev' ? 'canvasapp giả lập' : 'canvasapp'} trả lời (có thể đã trừ ${pid === 'dev' ? 'credit dev' : 'credit'}). Đợi vài giây rồi bấm lại.`
+  `Lần gửi trước của take này chưa xong — SanoVids đang chờ ${pid === 'dev' ? 'canvasapp giả lập' : pid === 'sano-gateway' ? 'máy chủ SANO' : 'canvasapp'} trả lời (có thể đã trừ ${pid === 'dev' ? 'credit dev' : 'credit'}). Đợi vài giây rồi bấm lại.`
 
 /**
  * What check() reads from the takes of `sceneIds` (the newest take of each: its "maybe billed" / paid-cancelled warning),
@@ -364,7 +373,7 @@ export function checkTakesKey(takes: readonly Take[], sceneIds: readonly string[
 export function maybeBilledRunWarning(label: string, pid: ProviderId, unverifiable: boolean): string {
   const credit = pid === 'dev' ? 'credit dev' : 'credit'
   if (unverifiable) {
-    const where = pid === 'dev' ? 'Bảng phát triển › Job & đơn nạp' : 'lịch sử credit trên canvasapp.io.vn'
+    const where = pid === 'dev' ? 'Bảng phát triển › Job & đơn nạp' : pid === 'sano-gateway' ? 'lịch sử job trong app SANO' : 'lịch sử credit trên canvasapp.io.vn'
     return `${label}: lần gửi trước có thể đã bị trừ ${credit} (SanoVids không kiểm tra được) — xem ${where} trước; chạy ở đây là take MỚI, có thể trừ thêm.`
   }
   return `${label}: lần gửi trước không rõ đã bị trừ ${credit} chưa — “Chạy lại” trên ${label} tìm job cũ trước khi gửi; chạy ở đây là take MỚI, có thể trừ thêm.`
@@ -376,6 +385,9 @@ export function maybeBilledRunWarning(label: string, pid: ProviderId, unverifiab
  * not follow it any more (a canvasapp cancel is local) — so a run of the scene is a NEW take that pays again.
  */
 export function paidCancelledRunWarning(label: string, pid: ProviderId): string {
+  if (pid === 'sano-gateway') {
+    return `${label}: đã huỷ trong SanoVids nhưng job đã gửi sang máy chủ SANO (có thể đã tính phí) — video của job đó xem trong app SANO; chạy ở đây là take MỚI, tính phí thêm.`
+  }
   return pid === 'dev'
     ? `${label}: đã huỷ trong SanoVids nhưng job đã gửi sang canvasapp giả lập (đã trừ credit dev) — job vẫn còn trong Bảng phát triển; chạy ở đây là take MỚI, trừ thêm credit dev.`
     : `${label}: đã huỷ trong SanoVids nhưng job đã gửi sang canvasapp (đã trừ credit) — video của job đó vẫn tải được trên canvasapp.io.vn (phiên “SanoVids bridge”); chạy ở đây là take MỚI, trừ thêm credit.`
@@ -401,9 +413,13 @@ export const UNKNOWN_SUBMIT_ERROR =
 /** The same for a development-mode take: the simulated site never sent anything to canvasapp.io.vn. */
 export const DEV_UNKNOWN_SUBMIT_ERROR =
   'Không rõ yêu cầu đã tới canvasapp giả lập hay chưa (mất kết nối, hoặc trang bị đóng/tải lại đúng lúc đang gửi). Xem tab “Job & đơn nạp” của Bảng phát triển trước khi chạy lại để không trả credit dev hai lần.'
+/** The same for a SANO take: sending it again uses the same idempotency key (the take id), so SANO keeps one job. */
+export const SANO_UNKNOWN_SUBMIT_ERROR =
+  'Không rõ yêu cầu đã tới máy chủ SANO hay chưa (mất kết nối, hoặc trang bị đóng/tải lại đúng lúc đang gửi). Bấm “Thử lại”: SanoVids gửi lại đúng take này nên máy chủ SANO không tạo — và không tính tiền — job thứ hai.'
 
 /** UNKNOWN_SUBMIT_ERROR in the words of the take's provider ('dev': the Bảng phát triển, not canvasapp.io.vn). */
-export const unknownSubmitError = (pid: ProviderId): string => (pid === 'dev' ? DEV_UNKNOWN_SUBMIT_ERROR : UNKNOWN_SUBMIT_ERROR)
+export const unknownSubmitError = (pid: ProviderId): string =>
+  pid === 'dev' ? DEV_UNKNOWN_SUBMIT_ERROR : pid === 'sano-gateway' ? SANO_UNKNOWN_SUBMIT_ERROR : UNKNOWN_SUBMIT_ERROR
 
 /**
  * Error of a retried "unknown" take whose earlier request can no longer be checked (isSubmitUnverifiable: the job list
@@ -419,7 +435,11 @@ export const DEV_UNVERIFIABLE_SUBMIT_ERROR =
 export const unverifiableSubmitError = (pid: ProviderId): string => (pid === 'dev' ? DEV_UNVERIFIABLE_SUBMIT_ERROR : UNVERIFIABLE_SUBMIT_ERROR)
 const UNVERIFIABLE_PREFIX = 'Không kiểm tra được lần gửi trước'
 const isUnknownSubmitError = (error: string) =>
-  error === UNKNOWN_SUBMIT_ERROR || error === DEV_UNKNOWN_SUBMIT_ERROR || error === UNVERIFIABLE_SUBMIT_ERROR || error === DEV_UNVERIFIABLE_SUBMIT_ERROR
+  error === UNKNOWN_SUBMIT_ERROR ||
+  error === DEV_UNKNOWN_SUBMIT_ERROR ||
+  error === SANO_UNKNOWN_SUBMIT_ERROR ||
+  error === UNVERIFIABLE_SUBMIT_ERROR ||
+  error === DEV_UNVERIFIABLE_SUBMIT_ERROR
 
 /**
  * A remote take whose submit outcome is unknown (UNKNOWN_SUBMIT_ERROR, no job id): it may have been billed, so it is
@@ -432,7 +452,7 @@ export function isUncertainSubmit(t: Pick<Take, 'provider' | 'remoteId' | 'statu
 
 /** Takes saved before `submitUnknown` existed: recognised by their error text (current and earlier wordings). */
 export function hasUncertainSubmitText(error: string | null | undefined): boolean {
-  return !!error && (error.startsWith('Không rõ yêu cầu đã tới canvasapp') || error.includes('không trả mã job') || error.startsWith(UNVERIFIABLE_PREFIX))
+  return !!error && (error.startsWith('Không rõ yêu cầu đã tới canvasapp') || error === SANO_UNKNOWN_SUBMIT_ERROR || error.includes('không trả mã job') || error.startsWith(UNVERIFIABLE_PREFIX))
 }
 
 /**
@@ -446,6 +466,9 @@ export function isUnverifiableSubmit(t: Pick<Take, 'provider' | 'remoteId' | 'st
 /** A finished remote video could not be downloaded after several tries (it is paid: re-running pays again). */
 export const downloadFailedError = (detail: string, pid: ProviderId = 'canvasapp'): string => {
   const why = detail.trim().replace(/\.?$/, '.')
+  if (pid === 'sano-gateway') {
+    return `Video đã tạo xong trên máy chủ SANO nhưng SanoVids không tải về được: ${why} Lấy video trực tiếp trong app SANO — chạy lại cảnh sẽ tính phí lần nữa.`
+  }
   return pid === 'dev'
     ? `Video đã tạo xong trên canvasapp giả lập (đã trừ credit dev) nhưng SanoVids không tải về được: ${why} Xem job trong Bảng phát triển (tab “Job & đơn nạp”, “Nhật ký”) — chạy lại cảnh sẽ trừ credit dev lần nữa.`
     : `Video đã tạo xong trên canvasapp (đã trừ credit) nhưng SanoVids không tải về được: ${why} Tải video trực tiếp trên canvasapp.io.vn (phiên “SanoVids bridge”) — chạy lại cảnh sẽ trừ credit lần nữa.`
@@ -500,8 +523,28 @@ export function holdNewSubmits(on: boolean): void {
   submitHold = on === true
 }
 
+/**
+ * Why a SANO take waits here, or null: outside the SANO app (Electron, the public web build, SANO's /sanovids/ in a
+ * plain tab), no usable SANO token (not signed in, refused), or its job is another SANO account's (Take.account).
+ * Such a take is no work here (engine, lock, restart, update): never sent, polled, downloaded, looked up or failed — it
+ * keeps its state and goes on by itself once it can (the engine wakes on the gateway's signal: useProviderLimits.subscribe
+ * below). In the words of a take that waits (the queue's banner), not of the Run refusal.
+ */
+export const parkedReason = (t: Pick<Take, 'provider' | 'account'>): string | null => {
+  const why = providerOf(t) === 'sano-gateway' ? providerBlockedReason('sano-gateway', t.account) : null
+  return why === SANO_LOGIN_TEXT ? SANO_LOGIN_WAIT : why === SANO_OTHER_ACCOUNT ? SANO_OTHER_ACCOUNT_WAIT : why
+}
+
+export const cannotRunHere = (t: Pick<Take, 'provider' | 'account'>): boolean => !!parkedReason(t)
+
+/**
+ * Parked (or of a provider paused here, D226: canvasapp inside SANO) with no request of its own on its way: one whose
+ * POST / download is still out keeps the engine (and the lock).
+ */
+const noWorkHere = (t: Take): boolean => (cannotRunHere(t) || providerPaused(providerOf(t))) && !submitting.has(t.id) && !fetching.has(t.id)
+
 /** A running remote take whose submit has no remote id yet: it is being sent right now. */
-export const isSendingTake = (t: Take): boolean => t.status === 'processing' && providerOf(t) !== 'mock' && !remoteIdOf(t)
+export const isSendingTake = (t: Take): boolean => t.status === 'processing' && providerOf(t) !== 'mock' && !remoteIdOf(t) && !noWorkHere(t)
 
 /** Takes being sent to their provider right now (see isSendingTake). */
 export function sendingCount(): number {
@@ -545,14 +588,15 @@ export const UNKNOWN_MODEL_ERROR = 'Model của video này không có trong bả
 /**
  * What an app restart would interrupt (updateActions "Cập nhật khi xong", UpdateDialog, the update pill). A queued take
  * whose scene was deleted is left out: the queue never starts it (it waits for an Undo of the delete) and it is kept
- * across a restart, so waiting for it would wait forever. A newer build's take (isForeignTake) never counts either.
+ * across a restart, so waiting for it would wait forever. A newer build's take (isForeignTake), a parked SANO take
+ * (cannotRunHere) and a paused provider's take (providerPaused) with no request of its own on its way never count.
  */
 export function restartWork(takes: readonly Take[], sceneIds: ReadonlySet<string>): RestartWork {
   let queued = 0
   let processing = 0
   let sending = 0
   for (const t of takes) {
-    if (isForeignTake(t)) continue
+    if (isForeignTake(t) || noWorkHere(t)) continue
     if (t.status === 'queued') {
       if (sceneIds.has(t.sceneId)) queued++
     } else if (t.status === 'processing') {
@@ -643,7 +687,7 @@ export const useRuns = create<RunsState>()((set, get) => ({
         const compiled = compileScene(project, scene)
         // The one rule list (core/runRules) shared with every Run button (retired @video text blocks the scene); the
         // gateway's sure refusal of the settings comes last.
-        const settingsBlock = settingsRunBlock(limits, scene.settings)
+        const settingsBlock = settingsRunBlock(limits, scene.settings, jobRefCount(scene, compiled))
         const reason = runBlockReason({ scene, assets: project.assets, compiled, settingsBlock, spec: MODELS[scene.settings.model] })
         const warning = reason ? null : settingsRunWarning(limits, scene.settings, providerId)
         const before = reason ? undefined : newest.get(scene.id)
@@ -683,6 +727,12 @@ export const useRuns = create<RunsState>()((set, get) => ({
     }
 
     const now = Date.now()
+    const provider = getProvider(providerId)
+    // The account (SANO) their jobs are for — under another one they wait, never sent (and billed) there: the last read,
+    // on the takes now (kept even when the project is closed before the fresh read below ends), then read afresh.
+    const account = provider.account?.() ?? undefined
+    // SANO said it runs its simulator (the Run dialog: no fee): never sent once it says otherwise (providers/sano)
+    const expectSimulated = providerId === 'sano-gateway' && sanoGatewayProvider().mode() === 'simulator'
     const created: Take[] = ok.map((c, i) => {
       const scene = project.scenes.find((s) => s.id === c.sceneId)!
       const compiled = compileScene(project, scene)
@@ -713,10 +763,27 @@ export const useRuns = create<RunsState>()((set, get) => ({
         remoteId: null,
         charged: chargeLocal,
         framesSnapshot: { first: frameSnapshotKey(project.assets, scene.firstFrame), last: frameSnapshotKey(project.assets, scene.lastFrame) },
+        ...(account ? { account } : {}),
+        ...(expectSimulated ? { expectSimulated } : {}),
       }
     })
     const charge = chargeLocal ? cost : 0
     set((s) => ({ takes: [...s.takes, ...created], credits: s.credits - charge, spent: s.spent + charge }))
+    // Then read afresh (the last read may predate a switch made just before ▶): they start once it is known.
+    if (provider.freshAccount) {
+      const ids = new Set(created.map((t) => t.id))
+      for (const id of ids) binding.add(id)
+      void provider
+        .freshAccount()
+        .then((fresh) => {
+          if (fresh && fresh !== account) set((s) => ({ takes: s.takes.map((t) => (ids.has(t.id) ? { ...t, account: fresh } : t)) }))
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          for (const id of ids) binding.delete(id)
+          ensureEngine()
+        })
+    }
     ensureEngine()
     return { queued: created.length, cost, skipped }
   },
@@ -728,7 +795,8 @@ export const useRuns = create<RunsState>()((set, get) => ({
     fetchFailures.delete(takeId)
     fetchRetryAt.delete(takeId)
     const remoteId = remoteIdOf(take)
-    if (remoteId) {
+    // a parked take's job is another SANO account's (or cannot be reached from here): never asked under this one
+    if (remoteId && !cannotRunHere(take)) {
       try {
         void getProvider(providerOf(take)).cancel?.(remoteId)
       } catch {
@@ -765,7 +833,7 @@ export const useRuns = create<RunsState>()((set, get) => ({
     if (requestInFlight(takeId)) return { queued: 0, cost: 0, skipped: [], error: requestInFlightText(providerOf(take)) }
     if (isUncertainSubmit(take)) {
       // Never a new take (new key) here: the first request may have been billed. The same take goes again.
-      const blocked = providerBlockedReason(providerOf(take))
+      const blocked = providerBlockedReason(providerOf(take), take.account)
       if (blocked) return { queued: 0, cost: 0, skipped: [], error: blocked }
       ownedHere.delete(takeId)
       set((s) => ({
@@ -933,6 +1001,7 @@ function resetEngineState() {
   startPausedUntil.clear()
   pollFailures.clear()
   ownedHere.clear()
+  recoverAt.clear()
   fetchFailures.clear()
   fetchRetryAt.clear()
   for (const c of fetchAborts.values()) c.abort()
@@ -948,7 +1017,7 @@ function resetEngineState() {
   if (held && held !== engineLockName(useProject.getState().project.id)) engineLock.release()
 }
 
-const hasWork = (takes: Take[]) => takes.some((t) => t.status === 'queued' || t.status === 'processing')
+const hasWork = (takes: Take[]) => takes.some((t) => (t.status === 'queued' || t.status === 'processing') && !noWorkHere(t))
 
 function setElsewhere(v: boolean) {
   if (useRuns.getState().engineElsewhere !== v) useRuns.setState({ engineElsewhere: v })
@@ -1053,7 +1122,7 @@ function adoptOrphans() {
   const failed: Take[] = []
   const lookUp: string[] = []
   const takes = useRuns.getState().takes.map((t): Take => {
-    if (t.status !== 'processing' || providerPaused(providerOf(t)) || ownedHere.has(t.id) || submitting.has(t.id) || fetching.has(t.id)) return t
+    if (t.status !== 'processing' || ownedHere.has(t.id) || submitting.has(t.id) || fetching.has(t.id) || cannotRunHere(t) || providerPaused(providerOf(t))) return t
     if (providerOf(t) === 'mock') {
       changed = true
       return { ...t, status: 'queued', progress: 0, startedAt: null, remoteId: null }
@@ -1088,6 +1157,14 @@ const stillProcessing = (id: string, gen: number) => gen === generation && findT
 
 function patchTake(id: string, patch: Partial<Take>) {
   useRuns.setState((s) => ({ takes: s.takes.map((t) => (t.id === id ? { ...t, ...patch } : t)) }))
+}
+
+/** An unbound take gets the account its provider's requests go under now (VideoProvider.account, SANO only). */
+function bindAccount(t: Take, provider: VideoProvider): Take {
+  const account = t.account ? null : provider.account?.()
+  if (!account) return t
+  patchTake(t.id, { account })
+  return { ...t, account }
 }
 
 /** Mark a running take failed, refunding demo credits when they were charged. */
@@ -1132,7 +1209,7 @@ function settleNothingSent(id: string, unmark: boolean) {
 function applyLateOutcome(id: string, outcome: LateOutcome) {
   const t = findTake(id)
   if (!cancelledUnsent(t)) return
-  if (outcome.kind === 'job') patchTake(id, { remoteId: outcome.remoteId })
+  if (outcome.kind === 'job') patchTake(id, jobOf(outcome))
   else if (outcome.kind === 'uncertain') {
     if (!t.submitUnknown || t.error !== outcome.error) patchTake(id, { submitUnknown: true, error: outcome.error })
   } else settleNothingSent(id, outcome.unmark)
@@ -1181,8 +1258,9 @@ function tick() {
     return
   }
   parkForeignTakes()
-  // D226: takes of a provider paused here (canvasapp inside SANO) stay exactly as saved — SanoVids itself runs them.
-  const takes = useRuns.getState().takes.filter((t) => !providerPaused(providerOf(t)))
+  // only these keep the engine (and the lock): a tab inside SANO on the same project must get it; a paused provider's
+  // takes (D226: canvasapp inside SANO) stay exactly as saved — SanoVids itself runs them
+  const takes = useRuns.getState().takes.filter((t) => !noWorkHere(t))
   const active = takes.filter((t) => t.status === 'processing')
   const queued = takes.filter((t) => t.status === 'queued').sort((a, b) => a.createdAt - b.createdAt)
   if (!active.length && !queued.length) {
@@ -1206,7 +1284,7 @@ function tick() {
   const started: Take[] = []
   // An app update is about to restart SanoVids (holdNewSubmits): nothing new is sent meanwhile.
   for (const t of submitHold ? [] : queued) {
-    if (!scenes.has(t.sceneId)) continue
+    if (!scenes.has(t.sceneId) || binding.has(t.id)) continue
     const pid = providerOf(t)
     const n = running.get(pid) ?? 0
     if (n >= concurrencyFor(pid)) continue
@@ -1228,8 +1306,9 @@ function tick() {
   for (const t of active) {
     if (remoteIdOf(t) || submitting.has(t.id) || fetching.has(t.id)) continue
     if (providerOf(t) === 'mock') void submitTake(t.id)
-    else if (!ownedHere.has(t.id) && canRecover(providerOf(t))) void recoverTake(t.id)
-    else failTake(t.id, unknownSubmitError(providerOf(t)))
+    else if (!ownedHere.has(t.id) && canRecover(providerOf(t))) {
+      if (now >= (recoverAt.get(t.id) ?? 0)) void recoverTake(t.id)
+    } else failTake(t.id, unknownSubmitError(providerOf(t)))
   }
 
   // Poll each provider that has submitted, unfinished takes.
@@ -1312,6 +1391,7 @@ function buildRequest(t: Take): JobRequest {
     firstFrame: frame(frames.first),
     lastFrame: frame(frames.last),
     startedAt: t.startedAt ?? Date.now(),
+    ...(t.expectSimulated ? { expectSimulated: true } : {}),
   }
 }
 
@@ -1339,23 +1419,27 @@ async function submitTake(id: string) {
   }
   try {
     const provider = (flight.provider = getProvider(pid))
+    // the account (SANO) this request goes under — the provider sends nothing under another: its job is only followed,
+    // or sent again, under it (undone below when nothing was sent)
+    const bound = bindAccount(t, provider)
     // retryOfUnknown: a retried "maybe billed" take (retry() marks it) — the provider never sends it again without proof
-    const { remoteId } = await provider.submit(buildRequest(t), { isCancelled, retryOfUnknown: !!t.submitUnknown })
+    const job = jobOf(await provider.submit(buildRequest(t), { isCancelled, retryOfUnknown: !!t.submitUnknown }))
+    const remoteId = job.remoteId
     // Cancelled / deleted while it was on its way (also when another project was opened since): the provider has the
     // job anyway (canvasapp may have charged the account) — the cancelled take keeps its id so the UI can say so
-    // (lateOutcome), and it is stopped there when possible.
+    // (lateOutcome), and it is stopped there when possible (never under another SANO account than its own: cancel()).
     if (flight.stopped && pid !== 'mock') {
-      lateOutcome(id, flight, { kind: 'job', remoteId })
-      void provider.cancel?.(remoteId)
+      lateOutcome(id, flight, { kind: 'job', ...job })
+      if (!cannotRunHere(bound)) void provider.cancel?.(remoteId)
       return void emitRun('submitted', t)
     }
     // Runs reloaded meanwhile: the new engine adopts the take and asks the provider for this job (recoverTake).
     if (gen !== generation) return void emitRun('submitted', t)
     const cur = findTake(id)
-    if (cur?.status === 'processing') patchTake(id, { remoteId })
+    if (cur?.status === 'processing') patchTake(id, job)
     else {
       // Not running any more otherwise (an old demo take cancelled / removed meanwhile): stop it there when possible.
-      if (cur && pid !== 'mock') patchTake(id, { remoteId })
+      if (cur && pid !== 'mock') patchTake(id, job)
       void provider.cancel?.(remoteId)
     }
     emitRun('submitted', t)
@@ -1384,7 +1468,7 @@ async function submitTake(id: string) {
         // Deferred, or its scene was deleted: back to the queue (it waits there for its turn, or until an Undo brings
         // the scene back).
         ownedHere.delete(id)
-        patchTake(id, { status: 'queued', progress: 0, startedAt: null })
+        patchTake(id, { status: 'queued', progress: 0, startedAt: null, account: t.account })
       }
       return
     }
@@ -1423,23 +1507,36 @@ async function recoverTake(id: string) {
   const unknown = unknownSubmitError(providerOf(t))
   try {
     const provider = (flight.provider = getProvider(providerOf(t)))
+    bindAccount(t, provider) // as in submitTake
     const found = provider.recover ? await provider.recover(buildRequest(t)) : null
     // Cancelled / deleted during the look-up (also once another project is open): a job found stays on the cancelled
     // take; none found = not known to exist, never "not billed" — it stays "maybe billed" (lateOutcome).
-    if (flight.stopped) return void lateOutcome(id, flight, found ? { kind: 'job', remoteId: found.remoteId } : { kind: 'uncertain', error: unknown })
+    if (flight.stopped) return void lateOutcome(id, flight, found ? { kind: 'job', ...jobOf(found) } : { kind: 'uncertain', error: unknown })
     if (gen !== generation) return
     const cur = findTake(id)
     if (!found) return failTake(id, unknown)
-    if (cur && !remoteIdOf(cur)) patchTake(id, { remoteId: found.remoteId })
+    if (cur && !remoteIdOf(cur)) patchTake(id, jobOf(found))
     if (cur?.status === 'processing') emitRun('submitted', t)
-  } catch {
+  } catch (e) {
     if (flight.stopped) lateOutcome(id, flight, { kind: 'uncertain', error: unknown })
-    else if (gen === generation) failTake(id, unknown)
+    // 'deferred': the provider cannot ask from this page now (SANO: outside SANO, no usable token, the account changed,
+    // its server unreachable a moment) — no news, asked again after a poll interval (an account bound just now stays:
+    // never looked up under another)
+    else if ((e as { code?: unknown })?.code === 'deferred') {
+      ownedHere.delete(id)
+      recoverAt.set(id, Date.now() + pollIntervalFor(providerOf(t)))
+    } else if (gen === generation) failTake(id, unknown)
   } finally {
     endFlight(id, flight)
     if (gen === generation) submitting.delete(id)
   }
 }
+
+// The SANO gateway's signal (useProviderLimits): its token became usable or the account changed — parked SANO takes
+// (cannotRunHere) go on by themselves.
+useProviderLimits.subscribe((s, prev) => {
+  if (s.rev['sano-gateway'] !== prev.rev['sano-gateway']) ensureEngine()
+})
 
 /**
  * The provider's session works again (e.g. the user logged in to canvasapp after a 401): poll at the next interval
@@ -1504,6 +1601,8 @@ async function pollProvider(pid: ProviderId, remoteIds: string[], gen: number) {
       case 'completed':
         if (t.progress !== 99) progress.set(t.id, 99)
         if (Date.now() < (fetchRetryAt.get(t.id) ?? 0)) break // last download failed: wait a little
+        // parked since the poll (SANO: another account now): downloaded under its own account later, never under this one
+        if (cannotRunHere(t)) break
         fetching.add(t.id)
         void finishTake(t.id, st.remoteId, gen)
         break
@@ -1577,7 +1676,17 @@ function errorText(e: unknown): string {
 export const takesOf = (sceneId: string) => (s: RunsState) => s.takes.filter((t) => t.sceneId === sceneId)
 export const latestTake = (takes: Take[], sceneId: string) =>
   takes.filter((t) => t.sceneId === sceneId).sort((a, b) => b.number - a.number)[0]
-export const activeCount = (s: RunsState) => s.takes.filter((t) => t.status === 'queued' || t.status === 'processing').length
+/** Queued / running takes, without a paused provider's (D226: canvasapp inside SANO never runs here). */
+export const activeCount = (s: RunsState) => s.takes.filter((t) => (t.status === 'queued' || t.status === 'processing') && !providerPaused(providerOf(t))).length
+/** parkedReason of each queued / running take that waits here, one entry per take (the queue's chip and banner). */
+export const parkedReasons = (takes: readonly Take[]): string[] =>
+  takes.flatMap((t) => {
+    const why = t.status === 'queued' || t.status === 'processing' ? parkedReason(t) : null
+    return why ? [why] : []
+  })
+const WAITS_FOR: Record<string, string> = { [SANO_LOGIN_WAIT]: 'chờ đăng nhập SANO', [SANO_OTHER_ACCOUNT_WAIT]: 'chờ tài khoản SANO khác', [SANO_UNAVAILABLE]: 'chờ mở trong SANO' }
+/** The queue chip / banner count of parkedReasons, with what they wait for ("2 take chờ đăng nhập SANO"). */
+export const parkedCountText = (parked: readonly string[]): string => `${parked.length} take ${WAITS_FOR[parked[0]] ?? 'đang chờ'}`
 
 // ---- React hooks with stable selections (zustand v5 needs useShallow for derived arrays) ----
 import { useShallow } from 'zustand/react/shallow'

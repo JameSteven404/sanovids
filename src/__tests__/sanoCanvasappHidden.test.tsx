@@ -45,7 +45,7 @@ import { capabilitiesFromModels } from '../providers/capabilities'
 import { applyDevAccessState, bareState } from '../providers/devAccess'
 import type { VideoProvider } from '../providers/types'
 import { useProject } from '../store/project'
-import { setEngineHooks, setEngineLockManager, useRuns } from '../store/runs'
+import { activeCount, restartWork, sendingCount, setEngineHooks, setEngineLockManager, useRuns } from '../store/runs'
 import { useUI } from '../store/ui'
 
 const scene: Scene = {
@@ -193,5 +193,32 @@ describe('D226: canvasapp hidden inside SANO', () => {
     await vi.advanceTimersByTimeAsync(2000)
     expect(calls).toEqual([])
     expect(useRuns.getState().takes).toEqual(saved)
+  })
+
+  it('"Chạy lại" of a canvasapp take whose submit is unknown: paused, before any question', () => {
+    const confirm = vi.fn(() => true)
+    vi.stubGlobal('window', { ...sanoWindow, confirm })
+    const unknown = take('u', { status: 'failed', submitUnknown: true })
+    const unverifiable = take('v', { status: 'failed', submitUnknown: true, error: 'Không kiểm tra được lần gửi trước — x' })
+    for (const t of [unknown, unverifiable]) {
+      useRuns.setState({ takes: [t] })
+      rerunTake(t.id)
+      expect(confirm).not.toHaveBeenCalled()
+      expect(useUI.getState().toasts.at(-1)?.text).toBe(SANO_PAUSED_REASON)
+      expect(useRuns.getState().takes).toEqual([t])
+    }
+    expect(useUI.getState().dialog.kind).toBe('none')
+  })
+
+  it('update waits, "busy" and the queue counts leave canvasapp takes out: SanoVids itself runs them', () => {
+    const saved = [take('q', { status: 'queued', startedAt: null }), take('p', { remoteId: 'job_1' }), take('u', {})]
+    useRuns.setState({ takes: saved })
+    expect(restartWork(saved, new Set(['s1']))).toEqual({ queued: 0, processing: 0, sending: 0 })
+    expect(sendingCount()).toBe(0)
+    expect(activeCount(useRuns.getState())).toBe(0)
+    // a development-mode take still counts
+    const dev = take('d', { provider: 'dev', status: 'queued', startedAt: null })
+    expect(restartWork([...saved, dev], new Set(['s1']))).toEqual({ queued: 1, processing: 0, sending: 0 })
+    expect(activeCount({ ...useRuns.getState(), takes: [...saved, dev] })).toBe(1)
   })
 })

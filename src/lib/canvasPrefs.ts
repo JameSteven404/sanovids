@@ -15,7 +15,7 @@
 //   and a trackpad pinch zoom — like Magnific Spaces / ElevenLabs Flows; 'zoom' = the wheel zooms (0.5's behaviour).
 import { useSyncExternalStore } from 'react'
 import { create } from 'zustand'
-import { canvasappHiddenInSano } from '../providers/canvasapp/transport'
+import { canvasappHiddenInSano } from '../providers/sano'
 
 export type MotionLevel = 'full' | 'reduced' | 'off'
 export type NodeEditorMode = 'click' | 'select' | 'off'

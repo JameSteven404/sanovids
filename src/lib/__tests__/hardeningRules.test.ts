@@ -14,6 +14,7 @@ import devAccessSource from '../../../electron/devaccess.cjs?raw'
 import devAccessRulesSource from '../../../electron/devaccess-rules.cjs?raw'
 import pkgRaw from '../../../package.json?raw'
 import sanoBatSource from '../../../sano-desktop.bat?raw'
+import { CANVASAPP_IN_SANO } from '../../providers/sano'
 
 type ProfileSource = 'env' | 'baked' | 'default'
 type SigStatus = 'signed' | 'unsigned' | 'other-signer' | 'tampered' | 'unknown'
@@ -399,7 +400,9 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
   })
 
   it('D226: one constant hides canvasapp in SANO; main tells the page and refuses canvasapp:* there', () => {
-    expect(mainSource).toMatch(/\n\/\/ D226: tạm ẩn canvasapp phía SANO; đặt true khi Minh mở lại\nconst CANVASAPP_IN_SANO = (true|false)\n/)
+    const mainValue = /\n\/\/ D226: tạm ẩn canvasapp phía SANO; đặt true khi Minh mở lại\n\/\/ Bản sao của CANVASAPP_IN_SANO trong src\/providers\/sano\/index\.ts[^\n]*\nconst CANVASAPP_IN_SANO = (true|false)\n/.exec(mainSource)?.[1]
+    // main's copy is the page's one switch (src/providers/sano): flipping only one of them would offer canvasapp main refuses
+    expect(mainValue).toBe(String(CANVASAPP_IN_SANO))
     expect(mainSource).toContain('const SANO_CANVASAPP_OFF = !!SANO && !CANVASAPP_IN_SANO')
     // right after the frame check, before any handler runs (plain SanoVids: SANO is null, nothing changes)
     expect(mainSource).toMatch(/if \(!fromApp\(event\)\) return gatewayError\('not-allowed', [^\n]*\)\n {4}if \(SANO_CANVASAPP_OFF\) return gatewayError\('sano-paused', 'Tạo video trong SANO đang tạm dừng\.'\)\n {4}try \{/)
