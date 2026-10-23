@@ -12,7 +12,8 @@
 //   PROVIDER_LABEL[id]                      'dev' "Phát triển (giả lập)" | 'canvasapp' "canvasapp.io.vn" | 'mock' "Demo cũ"
 //                                          | 'sano-gateway' "SANO".
 //   selectableProviders()                   the Settings choices now: ['dev', 'canvasapp'] open, ['canvasapp'] locked
-//                                          (SELECTABLE_PROVIDERS: the open list, deprecated), + 'sano-gateway' in the SANO build.
+//                                          (SELECTABLE_PROVIDERS: the open list, deprecated), + 'sano-gateway' in the SANO build
+//                                          — there without 'canvasapp' while providers/sano canvasappHidden() (D226).
 //   useProviderPrefs                        { provider, active, setProvider } — `provider` = the saved Settings choice
 //                                          (persisted, never rewritten by locking / unlocking: unlocking again brings it
 //                                          back); `active` = activeProviderId() kept in the store so selectors re-render
@@ -64,7 +65,7 @@ import { browserStorage, createCanvasappProvider, JOBS_KEY, STATE_KEY, type Canv
 import { canvasappBridge, createDesktopTransport, hasCanvasappBridge, WEB_UNAVAILABLE, type CanvasappBridge } from './canvasapp/transport'
 import { DEV_JOB_LIST_CACHE_MS, devBridge, devResult, resetDevServer, withDevWording } from './dev'
 import { devAllowed, useDevAccess, type DevAccessKind } from './devAccess'
-import { createBrowserSanoGateway, SANO_LABEL, sanoBuild, type SanoGatewayProvider } from './sano'
+import { canvasappHidden, createBrowserSanoGateway, SANO_LABEL, sanoBuild, type SanoGatewayProvider } from './sano'
 import { NO_LIMITS, NO_LIMITS_INFO, type LimitsInfo, type ProviderId, type RefreshLimitsOptions, type RefreshLimitsResult, type SettingsLimits, type VideoProvider } from './types'
 
 export type { LimitsInfo, ProviderId, RefreshLimitsOptions, RefreshLimitsResult, SettingsLimits, VideoProvider } from './types'
@@ -82,7 +83,8 @@ const LOCKED_PROVIDERS: readonly SelectableProviderId[] = ['canvasapp']
 /** The Settings choices now: development mode only while it is open (devAllowed()), SANO only in the SANO build. */
 export function selectableProviders(): readonly SelectableProviderId[] {
   const list = devAllowed() ? SELECTABLE_PROVIDERS : LOCKED_PROVIDERS
-  return sanoBuild() ? [...list, 'sano-gateway'] : list
+  if (!sanoBuild()) return list
+  return [...(canvasappHidden() ? list.filter((p) => p !== 'canvasapp') : list), 'sano-gateway']
 }
 
 /**

@@ -42,6 +42,14 @@ export function sanoBuild(): boolean {
   return import.meta.env.VITE_SANO_GATEWAY === '1' && !isElectron()
 }
 
+/** D226: tạm ẩn canvasapp phía SANO; đặt true khi Minh mở lại */
+export const CANVASAPP_IN_SANO = false
+
+/** The SANO build hides canvasapp (D226): not offered, not named. Standalone SanoVids is unaffected. */
+export function canvasappHidden(): boolean {
+  return !CANVASAPP_IN_SANO && sanoBuild()
+}
+
 /** Running inside SANO (see the top of the file). */
 export function sanoGatewayAvailable(): boolean {
   return sanoBuild() && framedBySameOrigin()
