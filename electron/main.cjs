@@ -197,7 +197,14 @@ if (!app.requestSingleInstanceLock()) {
   let seen
   try {
     seen = fs.readFileSync(seenFile, 'utf8')
-  } catch {} // no record yet: a new profile, or one opened only by builds without this check
+  } catch (e) {
+    // ENOENT = no record yet (a new profile, or one opened only by builds without this check). Any other read error
+    // fails closed like the write below: the unread record may say a newer Electron already opened this profile.
+    if (!e || e.code !== 'ENOENT') {
+      dialog.showErrorBox(app.getName(), `Không đọc được ${seenFile} (${e && e.message}). ${app.getName()} không mở, vì có thể dữ liệu đã được một bản SanoVids hoặc Sano Agent mới hơn mở. Hãy cho phép đọc file đó (bỏ chặn, đóng chương trình đang giữ nó) rồi mở lại.`)
+      process.exit(4)
+    }
+  }
   const gate = updaterRules.profileElectronGate(seen, process.versions.electron)
   if (gate === 'refuse') {
     const name = app.getName()
