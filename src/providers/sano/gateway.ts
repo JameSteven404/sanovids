@@ -53,7 +53,7 @@ export const SANO_LOGIN_WAIT = 'Chờ đăng nhập SANO — đăng nhập lại
 export const SANO_UNAVAILABLE = 'Nhà cung cấp SANO chỉ dùng được khi mở SanoVids bên trong app SANO.'
 export const SANO_OTHER_ACCOUNT = 'Take này thuộc tài khoản SANO khác — đăng nhập lại tài khoản đó trong app SANO để SanoVids theo dõi tiếp.'
 /** SANO_OTHER_ACCOUNT for takes that wait in the queue (store/runs parkedReason). */
-export const SANO_OTHER_ACCOUNT_WAIT = 'Chờ tài khoản SANO khác — đăng nhập lại tài khoản đã xếp các take này trong app SANO, take tự chạy tiếp.'
+export const SANO_OTHER_ACCOUNT_WAIT = 'Chờ tài khoản SANO khác — đăng nhập lại trong app SANO bằng tài khoản đã gửi take, take tự chạy tiếp.'
 /** How often the host's token is read besides each request (SANO signs in / switches account without telling). */
 export const TOKEN_RECHECK_MS = 3_000
 /** Cap on a job's reference images, measured on what is sent (the base64 text of every ref). */
