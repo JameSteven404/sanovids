@@ -5,6 +5,7 @@
 
 const { app, BrowserWindow, Menu, dialog, ipcMain, net, protocol, safeStorage, session, shell } = require('electron')
 const crypto = require('node:crypto')
+const http = require('node:http')
 const fs = require('node:fs')
 const path = require('node:path')
 const { Readable } = require('node:stream')
@@ -45,6 +46,7 @@ const MIME = {
 // product name), so projects survive updates and switching between the two builds.
 const updaterRules = require('./updater-rules.cjs')
 const hardening = require('./hardening-rules.cjs')
+const googleSignInRules = require('./google-signin-rules.cjs')
 /**
  * Packaged app? Not app.isPackaged alone: Electron decides that from the exe NAME, so a copy of SanoVids.exe renamed
  * electron.exe would run the real app.asar with every packaged-only protection off. With the OnlyLoadAppFromAsar fuse
@@ -202,8 +204,9 @@ if (!app.requestSingleInstanceLock()) {
     registerCanvasappGateway()
     registerFileBridge()
     registerAppBridge()
-    // A SANO desktop run that quit with the Google sign-in popup open left its Google account cookies (guardGooglePopup);
-    // nothing in the default session needs them, in either mode (same data folder).
+    if (SANO) registerGoogleSignIn()
+    // Google account cookies the in-app sign-in popup of earlier SANO desktop runs left (TH-36 moved sign-in to the
+    // default browser); nothing in the default session needs them, in either mode (same data folder).
     void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies)
     try {
       updater = setupUpdater({ isAppSender: fromApp, getMainWindow: () => mainWindow, profileSource: profile.source, portableFile: portableFile() })
@@ -418,12 +421,9 @@ function createWindow() {
   // External links open in the default browser; the window itself never leaves the app origin (SANO desktop: SANO's).
   const home = SANO ? SANO.url : ORIGIN + '/'
   webContents.setWindowOpenHandler(({ url }) => {
-    // SANO desktop: "Đăng nhập bằng Google" (Google Identity Services) needs its popup as a child window.
-    if (SANO && url.startsWith('https://accounts.google.com/')) return { action: 'allow', overrideBrowserWindowOptions: { parent: win, autoHideMenuBar: true } }
     if (isExternal(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
-  if (SANO) webContents.on('did-create-window', (child) => guardGooglePopup(child))
   webContents.on('will-navigate', (event, url) => {
     if (url.startsWith(home)) return
     event.preventDefault()
@@ -442,29 +442,6 @@ function createWindow() {
 
   void win.loadURL(SANO ? SANO.url : `${ORIGIN}/index.html`)
   return win
-}
-
-/**
- * SANO desktop: the Google sign-in popup stays on Google's sign-in pages; its links and popups open in the default
- * browser. When it closes, the Google account cookies it left in the profile (plaintext, ~2 years) go: SANO has its token.
- */
-function guardGooglePopup(child) {
-  const wc = child.webContents
-  wc.setWindowOpenHandler(({ url }) => {
-    if (isExternal(url)) void shell.openExternal(url)
-    return { action: 'deny' }
-  })
-  const stay = (event, url, open) => {
-    if (hardening.GOOGLE_SIGN_IN.test(url)) return
-    event.preventDefault()
-    if (open && isExternal(url)) void shell.openExternal(url)
-  }
-  wc.on('will-navigate', (event, url) => stay(event, url, true))
-  // A redirect is Google's own hop (e.g. a Workspace account's sign-in provider), not the user's click: never opened.
-  wc.on('will-redirect', (event, url) => {
-    if (event.isMainFrame) stay(event, url, false)
-  })
-  child.once('closed', () => void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies))
 }
 
 /**
@@ -674,6 +651,43 @@ function appPlacement() {
     placementPayload = { kind }
   }
   return placementPayload
+}
+
+/**
+ * SANO desktop "Đăng nhập bằng Google" (TH-36, google-signin-rules.cjs): Google's page opens in the default browser,
+ * never in an app window (Google refuses embedded browsers); the answer comes back on 127.0.0.1 and the tokens stay in
+ * this process's memory. Only SANO's page itself may ask (fromSano). The client id comes from SANO's server.
+ */
+function registerGoogleSignIn() {
+  const google = googleSignInRules.createGoogleSignIn({
+    clientId: sanoDesktopClientId,
+    // only if Google turns out to require it for the desktop client (TH-36 T1); set on the computer running SANO desktop
+    secret: process.env.SANO_GOOGLE_DESKTOP_CLIENT_SECRET,
+    createServer: http.createServer,
+    openExternal: (url) => shell.openExternal(url),
+    fetch: (url, init) => net.fetch(url, init),
+    focus: showMainWindow,
+    now: Date.now,
+  })
+  ipcMain.handle('sano:googleSignIn', (event) => (fromSano(event) ? google.signIn() : gatewayError('not-allowed', 'Nguồn gọi không hợp lệ.')))
+  ipcMain.handle('sano:googleToken', (event) => (fromSano(event) ? google.token() : null))
+  ipcMain.handle('sano:googleSignOut', (event) => (fromSano(event) ? google.signOut() : false))
+}
+
+/** SANO's page itself: the main window's top frame at SANO's origin — never one of its frames, never another window. */
+function fromSano(event) {
+  const win = mainWindow
+  return !!(win && !win.isDestroyed() && event.senderFrame && event.senderFrame === win.webContents.mainFrame && event.senderFrame.origin === SANO.origin)
+}
+
+/** googleDesktopClientId of SANO's /api/assistant/status, or null (not configured, SANO unreachable). */
+async function sanoDesktopClientId() {
+  try {
+    const res = await net.fetch(`${SANO.origin}/api/assistant/status`)
+    return res.ok ? googleSignInRules.desktopClientId(await res.json()) : null
+  } catch {
+    return null
+  }
 }
 
 function registerAppBridge() {
