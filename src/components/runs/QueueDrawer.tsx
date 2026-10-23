@@ -30,7 +30,7 @@ import { useDevAllowed } from '../../providers/devAccess'
 import { providerOf } from '../../providers/types'
 import { useDevServer, type DevSpeed } from '../../providers/dev'
 import { useProject } from '../../store/project'
-import { clearableTakes, isParkedTake, parkedReasons, useRuns } from '../../store/runs'
+import { clearableTakes, isParkedTake, parkedCountText, parkedReasons, useRuns } from '../../store/runs'
 import { transferPercent, useTakeTransfers } from '../../store/takeTransfers'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
@@ -138,7 +138,7 @@ function QueueBar({ open }: { open: boolean }) {
       {parked.length > 0 && (
         <span className="rq-chip warn" title={parked[0]}>
           <TriangleAlert size={12} />
-          <span className="rq-chip-text">{parked.length} take đang chờ</span>
+          <span className="rq-chip-text">{parkedCountText(parked)}</span>
         </span>
       )}
       {elsewhere && (
@@ -313,7 +313,7 @@ function QueuePanel() {
             <TriangleAlert size={15} />
             <div className="rq-banner-text">
               <b>{parked[0]}</b>
-              <small>{parked.length} take đang chờ — giữ nguyên tiến độ, SanoVids không gửi hay tải gì cho tới khi chạy tiếp được.</small>
+              <small>{parkedCountText(parked)} — giữ nguyên tiến độ, SanoVids không gửi hay tải gì cho tới khi chạy tiếp được.</small>
             </div>
           </div>
         )}

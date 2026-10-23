@@ -226,6 +226,8 @@ export interface VideoProvider {
    * it sends or looks up is bound to it (Take.account) and only followed — or sent again — under that account.
    */
   account?(): string | null
+  /** account() from a read started now (SANO: account() may be 3 s old) — what a take queued now is bound to. */
+  freshAccount?(): Promise<string | null>
   /**
    * Synchronous, never a request, never throws: may a request of `key` have reached the provider — the request that
    * creates (bills) its job sent or about to be sent in the same synchronous step, its answer pending or lost, a job

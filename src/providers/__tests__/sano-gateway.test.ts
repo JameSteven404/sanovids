@@ -159,12 +159,14 @@ describe('sano-gateway provider', () => {
     expect(s.calls('POST', '/api/video/jobs')).toHaveLength(0)
   })
 
-  it("the host's token() failing before the POST is not an uncertain submit (nothing sent)", async () => {
+  it("the host's token() failing is a read with no token: the sign-in deferral before the POST (nothing sent), never the host's error", async () => {
     const s = fakeSano()
     let asked = 0
-    const p = make(s, { token: async () => (asked++ ? Promise.reject(new Error('host gone')) : 'tok') }) // /capabilities gets one
+    // the read at creation and /capabilities get one, the POST's read fails
+    const p = make(s, { token: async () => (asked++ > 1 ? Promise.reject(new Error('host gone')) : 'tok') })
     const err = await p.submit(req()).catch((e: unknown) => e)
-    expect(err).toMatchObject({ message: 'host gone' })
+    expect(err).toMatchObject({ code: 'deferred', message: SANO_LOGIN_TEXT })
+    expect(p.blockedReason()).toBe(SANO_LOGIN_TEXT) // takes wait for the sign-in
     expect(isSubmitUncertain(err)).toBe(false)
     expect(p.mayHaveSent('take_1')).toBe(false)
     expect(s.calls('POST', '/api/video/jobs')).toHaveLength(0)

@@ -52,6 +52,8 @@ export const SANO_LOGIN_TEXT = 'Cần đăng nhập SANO — đăng nhập lại
 export const SANO_LOGIN_WAIT = 'Chờ đăng nhập SANO — đăng nhập lại trong app SANO, take tự chạy tiếp.'
 export const SANO_UNAVAILABLE = 'Nhà cung cấp SANO chỉ dùng được khi mở SanoVids bên trong app SANO.'
 export const SANO_OTHER_ACCOUNT = 'Take này thuộc tài khoản SANO khác — đăng nhập lại tài khoản đó trong app SANO để SanoVids theo dõi tiếp.'
+/** SANO_OTHER_ACCOUNT for takes that wait in the queue (store/runs parkedReason). */
+export const SANO_OTHER_ACCOUNT_WAIT = 'Chờ tài khoản SANO khác — đăng nhập lại tài khoản đã xếp các take này trong app SANO, take tự chạy tiếp.'
 /** How often the host's token is read besides each request (SANO signs in / switches account without telling). */
 export const TOKEN_RECHECK_MS = 3_000
 /** Cap on a job's reference images, measured on what is sent (the base64 text of every ref). */
@@ -226,7 +228,12 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
   }
 
   async function readToken(): Promise<string | null> {
-    const token = (await deps.token()) ?? null
+    let token: string | null = null
+    try {
+      token = (await deps.token()) ?? null
+    } catch {
+      // the host failing = an ended read with no token: takes wait for the sign-in, never fail on the host's error
+    }
     read = true
     if (token !== host) {
       host = token
@@ -354,7 +361,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
           posted = true
         }, want)
       } catch (e) {
-        // the host's token() failing before the POST, no usable token / another account, cancelled, 401: nothing created
+        // no usable token (the host's token() failing too) / another account, cancelled, 401: nothing created
         if (!posted || e instanceof ProviderError) throw e
         throw uncertainError((e as Error)?.message || 'mất kết nối')
       }
@@ -398,6 +405,11 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
     tokenState,
 
     account: () => hostAccount ?? null,
+
+    async freshAccount() {
+      const token = deps.available() ? await readToken() : null
+      return token ? (tokenAccount(token) ?? null) : null
+    },
 
     blockedReason(account) {
       if (!deps.available()) return SANO_UNAVAILABLE

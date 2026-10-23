@@ -61,7 +61,7 @@ import { activeProviderId, getProvider, providerBlockedReason, providerLimits, r
 import { decodeRemoteId } from '../providers/canvasapp/mapping'
 import type { SiteJobClaim, SiteTakeDraft } from '../providers/canvasapp/siteJobs'
 import { settingsRunBlock, settingsRunWarning } from '../providers/limits'
-import { SANO_LOGIN_TEXT, SANO_LOGIN_WAIT } from '../providers/sano'
+import { SANO_LOGIN_TEXT, SANO_LOGIN_WAIT, SANO_OTHER_ACCOUNT, SANO_OTHER_ACCOUNT_WAIT, SANO_UNAVAILABLE } from '../providers/sano'
 import { createMockProvider, DEFAULT_MOCK_SETTINGS, parseMockSettings, type MockSettings } from '../providers/mock'
 import { posterFromVideo } from '../providers/poster'
 import {
@@ -226,6 +226,8 @@ let engine: ReturnType<typeof setInterval> | null = null
 const submitting = new Set<string>()
 /** Takes whose result is being downloaded / rendered. */
 const fetching = new Set<string>()
+/** Takes just queued (enqueue) whose account is being read: not started before they are bound to it. */
+const binding = new Set<string>()
 /** Providers with a poll() in flight. */
 const polling = new Set<ProviderId>()
 const lastPoll = new Map<ProviderId, number>()
@@ -524,7 +526,7 @@ export function holdNewSubmits(on: boolean): void {
  */
 export const parkedReason = (t: Pick<Take, 'provider' | 'account'>): string | null => {
   const why = providerOf(t) === 'sano-gateway' ? providerBlockedReason('sano-gateway', t.account) : null
-  return why === SANO_LOGIN_TEXT ? SANO_LOGIN_WAIT : why
+  return why === SANO_LOGIN_TEXT ? SANO_LOGIN_WAIT : why === SANO_OTHER_ACCOUNT ? SANO_OTHER_ACCOUNT_WAIT : why
 }
 
 export const cannotRunHere = (t: Pick<Take, 'provider' | 'account'>): boolean => !!parkedReason(t)
@@ -719,8 +721,6 @@ export const useRuns = create<RunsState>()((set, get) => ({
     }
 
     const now = Date.now()
-    // the account (SANO) its job is for from now on: under another one it waits, never sent (and billed) there
-    const account = getProvider(providerId).account?.()
     const created: Take[] = ok.map((c, i) => {
       const scene = project.scenes.find((s) => s.id === c.sceneId)!
       const compiled = compileScene(project, scene)
@@ -751,11 +751,27 @@ export const useRuns = create<RunsState>()((set, get) => ({
         remoteId: null,
         charged: chargeLocal,
         framesSnapshot: { first: frameSnapshotKey(project.assets, scene.firstFrame), last: frameSnapshotKey(project.assets, scene.lastFrame) },
-        ...(account ? { account } : {}),
       }
     })
     const charge = chargeLocal ? cost : 0
     set((s) => ({ takes: [...s.takes, ...created], credits: s.credits - charge, spent: s.spent + charge }))
+    // The account (SANO) their jobs are for from now on — under another one they wait, never sent (and billed) there —,
+    // read afresh: the last read may predate a switch made just before ▶. They start once it is known.
+    const provider = getProvider(providerId)
+    if (provider.freshAccount) {
+      const ids = new Set(created.map((t) => t.id))
+      for (const id of ids) binding.add(id)
+      void provider
+        .freshAccount()
+        .then((account) => {
+          if (account) set((s) => ({ takes: s.takes.map((t) => (ids.has(t.id) ? { ...t, account } : t)) }))
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          for (const id of ids) binding.delete(id)
+          ensureEngine()
+        })
+    }
     ensureEngine()
     return { queued: created.length, cost, skipped }
   },
@@ -1131,9 +1147,11 @@ function patchTake(id: string, patch: Partial<Take>) {
 }
 
 /** An unbound take gets the account its provider's requests go under now (VideoProvider.account, SANO only). */
-function bindAccount(t: Take, provider: VideoProvider) {
+function bindAccount(t: Take, provider: VideoProvider): Take {
   const account = t.account ? null : provider.account?.()
-  if (account) patchTake(t.id, { account })
+  if (!account) return t
+  patchTake(t.id, { account })
+  return { ...t, account }
 }
 
 /** Mark a running take failed, refunding demo credits when they were charged. */
@@ -1252,7 +1270,7 @@ function tick() {
   const started: Take[] = []
   // An app update is about to restart SanoVids (holdNewSubmits): nothing new is sent meanwhile.
   for (const t of submitHold ? [] : queued) {
-    if (!scenes.has(t.sceneId)) continue
+    if (!scenes.has(t.sceneId) || binding.has(t.id)) continue
     const pid = providerOf(t)
     const n = running.get(pid) ?? 0
     if (n >= concurrencyFor(pid)) continue
@@ -1387,16 +1405,16 @@ async function submitTake(id: string) {
     const provider = (flight.provider = getProvider(pid))
     // the account (SANO) this request goes under — the provider sends nothing under another: its job is only followed,
     // or sent again, under it (undone below when nothing was sent)
-    bindAccount(t, provider)
+    const bound = bindAccount(t, provider)
     // retryOfUnknown: a retried "maybe billed" take (retry() marks it) — the provider never sends it again without proof
     const { remoteId, simulated } = await provider.submit(buildRequest(t), { isCancelled, retryOfUnknown: !!t.submitUnknown })
     const job = simulated ? { remoteId, simulated } : { remoteId }
     // Cancelled / deleted while it was on its way (also when another project was opened since): the provider has the
     // job anyway (canvasapp may have charged the account) — the cancelled take keeps its id so the UI can say so
-    // (lateOutcome), and it is stopped there when possible.
+    // (lateOutcome), and it is stopped there when possible (never under another SANO account than its own: cancel()).
     if (flight.stopped && pid !== 'mock') {
       lateOutcome(id, flight, { kind: 'job', remoteId })
-      void provider.cancel?.(remoteId)
+      if (!cannotRunHere(bound)) void provider.cancel?.(remoteId)
       return void emitRun('submitted', t)
     }
     // Runs reloaded meanwhile: the new engine adopts the take and asks the provider for this job (recoverTake).
@@ -1646,6 +1664,9 @@ export const parkedReasons = (takes: readonly Take[]): string[] =>
     const why = t.status === 'queued' || t.status === 'processing' ? parkedReason(t) : null
     return why ? [why] : []
   })
+const WAITS_FOR: Record<string, string> = { [SANO_LOGIN_WAIT]: 'chờ đăng nhập SANO', [SANO_OTHER_ACCOUNT_WAIT]: 'chờ tài khoản SANO khác', [SANO_UNAVAILABLE]: 'chờ mở trong SANO' }
+/** The queue chip / banner count of parkedReasons, with what they wait for ("2 take chờ đăng nhập SANO"). */
+export const parkedCountText = (parked: readonly string[]): string => `${parked.length} take ${WAITS_FOR[parked[0]] ?? 'đang chờ'}`
 
 // ---- React hooks with stable selections (zustand v5 needs useShallow for derived arrays) ----
 import { useShallow } from 'zustand/react/shallow'

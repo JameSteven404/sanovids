@@ -13,7 +13,7 @@ vi.mock('../../../lib/imageStore', () => ({
 
 import type { Take } from '../../../core/types'
 import { getProvider } from '../../../providers'
-import { SANO_LOGIN_WAIT, SANO_OTHER_ACCOUNT, SANO_UNAVAILABLE } from '../../../providers/sano/gateway'
+import { SANO_LOGIN_WAIT, SANO_OTHER_ACCOUNT_WAIT, SANO_UNAVAILABLE } from '../../../providers/sano/gateway'
 import { jwt, stubInsideSano } from '../../../providers/__tests__/insideSano'
 import { UNKNOWN_SUBMIT_ERROR } from '../../../store/runs'
 import { cancelQuestion, cancelToastText, runCostPreview, takeCostLabel, takeCostLine, takeCreditKind, type CancelFacts } from '../creditText'
@@ -56,7 +56,7 @@ describe('takeCostLine / takeCostLabel — a take sent through the SANO gateway'
     stubInsideSano({ __SANO_GATEWAY__: { token: () => jwt({ sub: 'A' }) } })
     getProvider('sano-gateway').reset?.() // forgets the unsigned look (its next look reads the token)
     // once the token was read (its account known): another SANO account's take waits, an own one goes
-    await vi.waitFor(() => expect(takeCostLine({ ...queued, account: 'another' }).note).toBe(SANO_OTHER_ACCOUNT))
+    await vi.waitFor(() => expect(takeCostLine({ ...queued, account: 'another' }).note).toBe(SANO_OTHER_ACCOUNT_WAIT))
     expect(takeCostLine(queued).note).toBe('credit SANO · trừ trên máy chủ SANO khi job được nhận')
     getProvider('sano-gateway').reset?.()
     vi.unstubAllEnvs()

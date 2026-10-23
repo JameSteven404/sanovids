@@ -18,7 +18,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import type { Scene, Take } from '../../../core/types'
 import { activeProviderId, sanoGatewayProvider } from '../../../providers'
 import { applyDevAccessState, bareState } from '../../../providers/devAccess'
-import { stubInsideSano } from '../../../providers/__tests__/insideSano'
+import { jwt, stubInsideSano } from '../../../providers/__tests__/insideSano'
+import { accountKey } from '../../../providers/canvasapp/adapter'
 import { LAYOUT, useProject } from '../../../store/project'
 import { runNow } from '../../../actions'
 import {
@@ -26,6 +27,7 @@ import {
   hasUncertainSubmitText,
   maybeBilledRunWarning,
   paidCancelledRunWarning,
+  parkedCountText,
   parkedReasons,
   SANO_UNKNOWN_SUBMIT_ERROR,
   UNKNOWN_SUBMIT_ERROR,
@@ -33,7 +35,7 @@ import {
   useRuns,
 } from '../../../store/runs'
 import { useUI } from '../../../store/ui'
-import { SANO_LOGIN_TEXT, SANO_LOGIN_WAIT, SANO_UNAVAILABLE } from '../../../providers/sano/gateway'
+import { SANO_LOGIN_TEXT, SANO_LOGIN_WAIT, SANO_OTHER_ACCOUNT_WAIT, SANO_UNAVAILABLE } from '../../../providers/sano/gateway'
 import { GatewaySection } from '../../dialogs/GatewaySection'
 import { Inspector } from '../../inspector/Inspector'
 import { costTitle } from '../../sidebar/shared'
@@ -159,12 +161,23 @@ describe('SANO wording', () => {
     expect(renderToStaticMarkup(createElement(GatewaySection))).toContain(SANO_LOGIN_TEXT)
   })
 
-  it("queue: what the bar's chip and the list's banner say of SANO takes that wait for a sign-in (a wait that ends by itself)", async () => {
+  it("queue: what the bar's chip and the list's banner say of SANO takes that wait — for a sign-in, another account, SANO itself (a wait that ends by itself)", async () => {
     stubInsideSano() // inside SANO, signed out (SANO's 1 h token was not renewed)
     expect(await sanoGatewayProvider().refreshLimits({ force: true })).toBe('login')
     const t = (status: Take['status'], provider: Take['provider'] = 'sano-gateway') => ({ id: status, status, provider, remoteId: null }) as Take
     const takes = [t('processing'), t('queued'), t('completed'), t('failed'), t('cancelled'), t('processing', 'dev')]
     expect(parkedReasons(takes)).toEqual([SANO_LOGIN_WAIT, SANO_LOGIN_WAIT])
+    expect(parkedCountText(parkedReasons(takes))).toBe('2 take chờ đăng nhập SANO') // the chip names the cause
     expect(SANO_LOGIN_WAIT).not.toBe(SANO_LOGIN_TEXT) // the Run refusal keeps its own words
+
+    stubInsideSano({ __SANO_GATEWAY__: { token: () => jwt({ sub: 'B' }) } }) // signed in as B: A's take waits
+    await sanoAnswers({ models: [] })
+    const mixed = [{ ...t('queued'), account: accountKey('A') }, t('queued')]
+    expect(parkedReasons(mixed)).toEqual([SANO_OTHER_ACCOUNT_WAIT])
+    expect(parkedCountText(parkedReasons(mixed))).toBe('1 take chờ tài khoản SANO khác')
+
+    vi.stubGlobal('window', { location: { origin: 'https://sano.example' } }) // SANO's /sanovids/ in a plain tab
+    expect(parkedReasons(takes)).toEqual([SANO_UNAVAILABLE, SANO_UNAVAILABLE])
+    expect(parkedCountText(parkedReasons(takes))).toBe('2 take chờ mở trong SANO')
   })
 })
