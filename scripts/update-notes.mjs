@@ -1,32 +1,36 @@
-// Writes build/release-notes.md from the CHANGELOG.md section of the package.json version.
+// Writes build/release-notes.md from the CHANGELOG.md section of the package.json version (`--sano-agent`: from
+// sano-agent/CHANGELOG.md, for the version of sano-agent/electron-builder.cjs: npm run dist:sano-agent).
 // electron-builder picks that file up from buildResources (build/) and copies it into latest.yml `releaseNotes`, which
 // is what the app shows under "Có gì mới" in the update dialog. Run by `npm run dist:win` before the build.
 // Never fails the build: a missing section gives a one-line note ("SanoVids <v>") and a warning. The file is
 // gitignored and never copied into release/.
 import fs from 'node:fs'
 import path from 'node:path'
+import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-import { updateNotesText } from './releaseLib.mjs'
+import { effectivePackage, productFromArgv, updateNotesText } from './releaseLib.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const out = path.join(root, 'build', 'release-notes.md')
+const product = productFromArgv(process.argv)
 
 try {
-  const { version } = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+  const cfg = product.config ? createRequire(import.meta.url)(path.join(root, product.config)) : null
+  const { version } = effectivePackage(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')), cfg)
   let changelog = ''
   try {
-    changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8')
+    changelog = fs.readFileSync(path.join(root, product.changelog), 'utf8')
   } catch {
     // handled below as a missing section
   }
-  const { found, text } = updateNotesText(changelog, version)
+  const { found, text } = updateNotesText(changelog, version, product)
   fs.mkdirSync(path.dirname(out), { recursive: true })
   fs.writeFileSync(out, text, 'utf8')
-  if (found) console.log(`update-notes: build/release-notes.md ← CHANGELOG.md [${version}] (${text.length} chars)`)
+  if (found) console.log(`update-notes: build/release-notes.md ← ${product.changelog} [${version}] (${text.length} chars)`)
   else {
     console.warn(
-      `update-notes: WARNING — CHANGELOG.md has no "## [${version}] — yyyy-mm-dd" section; ` +
-        `the update notes will only say "SanoVids ${version}". Add the section and build again.`,
+      `update-notes: WARNING — ${product.changelog} has no "## [${version}] — yyyy-mm-dd" section; ` +
+        `the update notes will only say "${product.productName} ${version}". Add the section and build again.`,
     )
   }
 } catch (e) {

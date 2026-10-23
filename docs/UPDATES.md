@@ -142,6 +142,15 @@ renderer: lib/updates.ts ⇄ src/updateActions.ts ⇄ UpdatePill · UpdateDialog
 
 Ghi chú GitHub được lưu ở `release/_build/publish/notes-private.md` và `notes-public.md` (bản xem trước ghi vào thư mục tạm). Bản công khai không có liên kết nào vào repo riêng.
 
+### Sano Agent
+
+`npm run dist:sano-agent` → `npm run release:check:sano-agent` → `npm run release:publish:sano-agent`
+([SANO-DESKTOP.md](SANO-DESKTOP.md) mục 6). Nguồn cập nhật là repo công khai riêng `JameSteven404/sano-agent-releases`
+(tag `vX.Y.Z` ở đó; repo nguồn chỉ có tag `sano-agent-vX.Y.Z`, không có release riêng tư, không có bản Mac), cache
+`%LOCALAPPDATA%\sano-agent-updater`. Sano Agent dùng chung thư mục dữ liệu với SanoVids nhưng file riêng:
+`updater-sano-agent.json`, `logs\updater-sano-agent.log`. Hai app phải cùng Electron (cổng kiểm tra báo ✗ khi khác): đổi
+Electron hoặc định dạng dữ liệu thì phát hành cả hai.
+
 ### Quy tắc an toàn (đừng phá)
 - **Không bao giờ build bản phát hành thiếu `build.publish`** (hoặc trỏ nơi khác): người cài bản đó sẽ không bao giờ nhận bản sau. `tidy-release` cảnh báo, `release:check` chặn.
 - **Không xoá bản phát hành công khai cũ hay file `.blockmap` cũ**: máy đang ở bản cũ cần blockmap của bản cũ để chỉ tải phần thay đổi; ai đó có thể đang tải. Không đổi repo công khai thành riêng tư (mọi app sẽ báo "Chưa tìm thấy bản cập nhật nào").

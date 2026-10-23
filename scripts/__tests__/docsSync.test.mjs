@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest'
 const require = createRequire(import.meta.url)
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const read = (rel) => fs.readFileSync(path.join(root, ...rel.split('/')), 'utf8')
-const USER_DOCS = ['README.md', 'CHANGELOG.md', 'docs/SIGNING.md', 'docs/UPDATES.md', 'scripts/releases-repo/README.md']
+const USER_DOCS = ['README.md', 'CHANGELOG.md', 'docs/SIGNING.md', 'docs/UPDATES.md', 'scripts/releases-repo/README.md', 'sano-agent/releases-repo/README.md', 'sano-agent/CHANGELOG.md']
 
 describe('docs/UPDATES.md error table', () => {
   it('quotes every update error text of the app verbatim (update the table when a text changes)', () => {
@@ -51,7 +51,7 @@ describe('no overstated or stale claims', () => {
   })
 
   it('the thumbprint is checked against a source other than the download page', () => {
-    for (const rel of ['README.md', 'docs/SIGNING.md', 'scripts/releases-repo/README.md']) expect(read(rel), rel).toMatch(/nguồn khác trang/)
+    for (const rel of ['README.md', 'docs/SIGNING.md', 'scripts/releases-repo/README.md', 'sano-agent/releases-repo/README.md']) expect(read(rel), rel).toMatch(/nguồn khác trang/)
   })
 
   it('the licence files that ship are the ones the docs name', () => {

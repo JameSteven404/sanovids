@@ -8,6 +8,7 @@
 //   PUBLIC_REPO   JameSteven404/sanovids-releases  installers + latest.yml + blockmap + the public signing certificate:
 //                                                  the auto-update feed the app reads anonymously
 //                                                  (package.json build.publish → app-update.yml)
+// Sano Agent (SANO_AGENT below) has one more: JameSteven404/sano-agent-releases, its own public feed.
 // The Mac build (Apple Silicon, ad hoc, experimental) joins the same releases: .dmg (+ the .zip, its blockmap and
 // latest-mac.yml in the public feed), checked by the "macOS build" helpers below (scripts/mac-inspect.mjs on the Mac,
 // scripts/fetch-mac-build.mjs and publish-release group (k) on Windows).
@@ -27,6 +28,52 @@ export const PUBLIC_RELEASES_URL = `https://github.com/${PUBLIC_REPO}/releases/l
 export const PUBLISH_ENTRY = Object.freeze({ provider: 'github', owner: OWNER, repo: PUBLIC_REPO_NAME, releaseType: 'release' })
 /** The app keeps at most 8000 chars of notes (updateTypes UPDATE_NOTES_MAX); stay a little under it. */
 export const NOTES_CAP = 7900
+
+/**
+ * The two products built from this repo. Every helper below that names files, repos or the product takes one (default
+ * SanoVids, so SanoVids' own scripts and pins are unchanged). SANO_AGENT is pinned on its own and checked against
+ * sano-agent/electron-builder.cjs by scripts/__tests__/releaseLib.test.mjs. Sano Agent (D220/D223): the SANO desktop
+ * app, signed like SanoVids, public feed only (no private release, no Mac build), source tags sano-agent-vX.Y.Z.
+ */
+export const SANOVIDS = Object.freeze({
+  productName: 'SanoVids',
+  fileStem: 'SanoVids',
+  publicRepoName: PUBLIC_REPO_NAME,
+  sourceTagPrefix: 'v',
+  changelog: 'CHANGELOG.md',
+  releasesRepoDir: 'scripts/releases-repo',
+  releaseDir: 'release',
+  config: null,
+  privateRelease: true,
+  mac: true,
+})
+export const SANO_AGENT = Object.freeze({
+  productName: 'Sano Agent',
+  fileStem: 'SanoAgent',
+  publicRepoName: 'sano-agent-releases',
+  sourceTagPrefix: 'sano-agent-v',
+  changelog: 'sano-agent/CHANGELOG.md',
+  releasesRepoDir: 'sano-agent/releases-repo',
+  releaseDir: 'release/sano-agent',
+  config: 'sano-agent/electron-builder.cjs',
+  /** electron-updater's cache folder (%LOCALAPPDATA%\<name>-updater): never SanoVids' own. */
+  cacheDir: 'sano-agent-updater',
+  /** The SANO address baked into the app (package.json sanoAgent.url, electron/hardening-rules sanoShell). */
+  url: 'http://127.0.0.1:8080/',
+  privateRelease: false,
+  mac: false,
+})
+/** `--sano-agent` on the command line of update-notes / tidy-release / publish-release picks Sano Agent. */
+export function productFromArgv(argv) {
+  return Array.isArray(argv) && argv.includes('--sano-agent') ? SANO_AGENT : SANOVIDS
+}
+/**
+ * The package.json a product's build packs (and its release is checked against): SanoVids' own, or for a product
+ * with its own electron-builder config `cfg`, that config's extraMetadata over it and `build` = the config.
+ */
+export function effectivePackage(pkg, cfg) {
+  return cfg ? { ...pkg, ...cfg.extraMetadata, build: cfg } : pkg
+}
 
 // ───────────────────────────── author / signing ─────────────────────────────
 // Byte-identical (NFC) to package.json author.name, build.extraMetadata.author.name, build.copyright and
@@ -147,17 +194,17 @@ export function boldTitlesToHeadings(text) {
  * → { found, text } — LF line endings, ends with one newline. Missing section → "SanoVids <v>". Section titles become
  * headings (boldTitlesToHeadings).
  */
-export function updateNotesText(changelogText, version) {
+export function updateNotesText(changelogText, version, product = SANOVIDS) {
   const section = extractChangelogSection(changelogText, version)
   const body = section ? stripLinkRefs(section.body).trim() : ''
-  if (!body) return { found: false, text: `SanoVids ${version}\n` }
+  if (!body) return { found: false, text: `${product.productName} ${version}\n` }
   return { found: true, text: `${capText(boldTitlesToHeadings(body), NOTES_CAP)}\n` }
 }
 
 /** GitHub release title. */
-export function releaseTitle(version, subtitle) {
+export function releaseTitle(version, subtitle, product = SANOVIDS) {
   const sub = typeof subtitle === 'string' ? subtitle.trim() : ''
-  return sub ? `SanoVids ${version} — ${sub}` : `SanoVids ${version}`
+  return sub ? `${product.productName} ${version} — ${sub}` : `${product.productName} ${version}`
 }
 
 /**
@@ -165,12 +212,12 @@ export function releaseTitle(version, subtitle) {
  * build's fixed companions (release/mac/): latest-mac.yml (the Mac feed), mac-check.json (scripts/mac-inspect.mjs on
  * the Mac) and mac-fetch.json (scripts/fetch-mac-build.mjs on Windows).
  */
-export function releaseFiles(version) {
-  const setup = `SanoVids-Setup-${version}.exe`
-  const mac = `SanoVids-Mac-${version}-arm64`
+export function releaseFiles(version, product = SANOVIDS) {
+  const setup = `${product.fileStem}-Setup-${version}.exe`
+  const mac = `${product.fileStem}-Mac-${version}-arm64`
   return {
     setup,
-    portable: `SanoVids-Portable-${version}.exe`,
+    portable: `${product.fileStem}-Portable-${version}.exe`,
     blockmap: `${setup}.blockmap`,
     latestYml: 'latest.yml',
     macDmg: `${mac}.dmg`,
@@ -187,8 +234,8 @@ export function releaseFiles(version) {
  * the Setup blockmap (the feed). With `mac`: private + the .dmg and mac-check.json; public + the .dmg, the .zip, its
  * blockmap and latest-mac.yml (never the .dmg blockmap).
  */
-export function assetsFor(audience, version, { mac = false } = {}) {
-  const f = releaseFiles(version)
+export function assetsFor(audience, version, { mac = false, product = SANOVIDS } = {}) {
+  const f = releaseFiles(version, product)
   if (audience === 'private') return [f.setup, f.portable, ...(mac ? [f.macDmg, f.macCheck] : []), SIGNING_CERT_FILE]
   if (audience === 'public') return [f.setup, f.blockmap, f.latestYml, f.portable, ...(mac ? [f.macDmg, f.macZip, f.macZipBlockmap, f.macYml] : []), SIGNING_CERT_FILE]
   throw new Error(`assetsFor: unknown audience "${audience}"`)
@@ -237,9 +284,9 @@ const NOTES_FOOTER_MAC = {
  * installers (+ the Mac .dmg with `mac`), then a footer. `sha256` = { [fileName]: hex }. Throws when a checksum is
  * missing. Without `mac` the notes never mention a Mac build.
  */
-export function buildReleaseNotes({ version, body, sha256, audience, mac = false }) {
+export function buildReleaseNotes({ version, body, sha256, audience, mac = false, product = SANOVIDS }) {
   if (!(audience in NOTES_FOOTER)) throw new Error(`buildReleaseNotes: unknown audience "${audience}"`)
-  const f = releaseFiles(version)
+  const f = releaseFiles(version, product)
   const row = (name, use) => {
     const sum = sha256?.[name]
     if (typeof sum !== 'string' || !SHA256_HEX.test(sum)) throw new Error(`buildReleaseNotes: no SHA-256 for ${name}`)
@@ -298,12 +345,14 @@ export const PUBLISHER_NAME_MISSING =
  * platform 'mac': the same feed rules without publisherName (electron-builder writes it for Windows only, and the Mac
  * build never downloads an update anyway).
  */
-export function checkAppUpdateYml(obj, { publisherName, platform = 'win' } = {}) {
+export function checkAppUpdateYml(obj, { publisherName, platform = 'win', repo = PUBLIC_REPO_NAME, cacheDir } = {}) {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return ['app-update.yml không đọc được.']
   const p = []
   if (obj.provider !== 'github') p.push(`provider là "${obj.provider}", cần "github".`)
   if (obj.owner !== OWNER) p.push(`owner là "${obj.owner}", cần "${OWNER}".`)
-  if (obj.repo !== PUBLIC_REPO_NAME) p.push(`repo là "${obj.repo}", cần "${PUBLIC_REPO_NAME}" (repo công khai chứa bản cập nhật).`)
+  if (obj.repo !== repo) p.push(`repo là "${obj.repo}", cần "${repo}" (repo công khai chứa bản cập nhật).`)
+  // Sano Agent: its own electron-updater cache, so neither app deletes the other's pending installer.
+  if (cacheDir !== undefined && obj.updaterCacheDirName !== cacheDir) p.push(`updaterCacheDirName là "${obj.updaterCacheDirName}", cần "${cacheDir}".`)
   if ('token' in obj) p.push('app-update.yml có token — không bao giờ được đưa token vào app.')
   if ('private' in obj) p.push('app-update.yml có "private" — app phải đọc repo công khai, không cần đăng nhập.')
   if ('channel' in obj) p.push('app-update.yml có channel — app sẽ tìm sai file cập nhật.')
@@ -1009,6 +1058,10 @@ export function checkPackagedIdentity(inner, repoPkg) {
   const gotService = inner.sanovids && typeof inner.sanovids === 'object' ? inner.sanovids.devUnlockService : undefined
   if (gotService !== wantService) bad.push(`sanovids.devUnlockService ${JSON.stringify(gotService ?? null)} (cần ${JSON.stringify(wantService ?? null)})`)
   if ('sanovidsTestDevLock' in inner) bad.push('có sanovidsTestDevLock (bản build thử nghiệm!)')
+  // SANO desktop: only Sano Agent bakes a SANO address (effectivePackage), exactly its own; SanoVids never one.
+  if (JSON.stringify(inner.sanoAgent ?? null) !== JSON.stringify(repo.sanoAgent ?? null)) {
+    bad.push(`sanoAgent ${JSON.stringify(inner.sanoAgent ?? null)} (cần ${JSON.stringify(repo.sanoAgent ?? null)})`)
+  }
   return bad
 }
 
@@ -1059,6 +1112,35 @@ export function checkInstallerIdentity(label, info, { productName, version, size
     p.push(`${label}: chỉ ${typeof size === 'number' && size >= 0 ? size : '?'} byte, nhỏ hơn ${minBytes} byte của một bộ cài (${refused}).`)
   }
   return p
+}
+
+/** Electron's version in a package-lock.json text (lockfile v2/v3), or null. */
+export function lockElectronVersion(text) {
+  try {
+    const v = JSON.parse(String(text)).packages?.['node_modules/electron']?.version
+    return typeof v === 'string' ? v : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Sano Agent opens SanoVids' data folder (D223): it ships the Electron of the newest public SanoVids, or one app's
+ * Chromium would open a profile the other one has already migrated. ours / theirs = lockElectronVersion of this
+ * checkout / of `git show v<sanovidsVersion>:package-lock.json`. → { level: 'ok' | 'fail', text }.
+ */
+export function checkSameElectron({ ours, theirs, sanovidsVersion }) {
+  if (!sanovidsVersion) return { level: 'fail', text: 'Không biết bản SanoVids công khai mới nhất: không so được Electron (hai app dùng chung thư mục dữ liệu).' }
+  if (!ours || !theirs) {
+    return { level: 'fail', text: `Không đọc được Electron trong package-lock.json (của bản này hoặc của tag v${sanovidsVersion}; chạy git fetch origin --tags).` }
+  }
+  if (ours !== theirs) {
+    return {
+      level: 'fail',
+      text: `Electron ${ours} khác Electron ${theirs} của SanoVids ${sanovidsVersion} (bản công khai mới nhất): hai app dùng chung thư mục dữ liệu, phát hành cả hai trên cùng một Electron.`,
+    }
+  }
+  return { level: 'ok', text: `Cùng Electron ${ours} với SanoVids ${sanovidsVersion} (bản công khai mới nhất)` }
 }
 
 /** SHA-1 thumbprint (40 hex, upper case) of a certificate (DER or PEM), or null. */
