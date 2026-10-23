@@ -75,6 +75,10 @@ const MAX_CONCURRENCY = 10
 const POLL_MS = 15_000
 /** Videos downloaded at once (canvasapp's download lane is 2 too); the others are deferred, asked again later. */
 const MAX_DOWNLOADS = 2
+/** A SANO request not done after this long (its answer's body included) is cut; long enough for 20 MB of refs. */
+export const REQUEST_MS = 5 * 60_000
+/** Same for a video download (canvasapp's main cuts one at 60 min too). */
+const DOWNLOAD_MS = 60 * 60_000
 
 export type SanoMode = 'simulator' | 'live'
 export type SanoTokenState = 'none' | 'refused' | 'ok'
@@ -272,14 +276,20 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
    * One request with the host's token, none (deferred) without a usable one. `want` (job requests): the account the
    * engine chose its take for — the token now names another one → deferred, nothing sent (404 or a second job there).
    */
-  async function call(path: string, init: RequestInit = {}, beforeSend?: () => void, want?: string | null): Promise<Response> {
+  async function call(path: string, init: RequestInit = {}, beforeSend?: () => void, want?: string | null, ms = REQUEST_MS): Promise<Response> {
     const token = await readToken()
     if (tokenState() !== 'ok' || !token) throw loginDeferred()
     if (want !== undefined && (hostAccount ?? null) !== want) throw new ProviderError('deferred', SANO_OTHER_ACCOUNT)
     const headers: Record<string, string> = { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` }
+    // a half-open connection never answers: cut, so one stalled job never holds the poll of every SANO job (or a
+    // download slot) for good; a plain Error = a lost connection (no news / an uncertain submit / a retried download)
+    const timeout = new AbortController()
+    const timer = setTimeout(() => timeout.abort(new Error(`Máy chủ SANO không trả lời sau ${ms / 60_000} phút`)), ms)
+    ;(timer as { unref?: () => void }).unref?.()
+    const signal = init.signal ? AbortSignal.any([init.signal, timeout.signal]) : timeout.signal
     beforeSend?.() // same synchronous step as the request itself (mayHaveSent)
     // no cookies: the token alone says whose job it is (an ambient SANO session of another account never rides along)
-    const res = await deps.fetch(SANO_API + path, { ...init, headers, credentials: 'omit' })
+    const res = await deps.fetch(SANO_API + path, { ...init, headers, credentials: 'omit', signal })
     if (res.status === 401) {
       refusedToken = token
       tell()
@@ -499,7 +509,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
       if (downloading >= MAX_DOWNLOADS) throw new ProviderError('deferred', 'Đang tải video khác từ máy chủ SANO — SanoVids tải video này sau.')
       downloading++
       try {
-        const res = await call(`${jobPath(remoteId)}/result`, opts.signal ? { signal: opts.signal } : {}, undefined, wanted())
+        const res = await call(`${jobPath(remoteId)}/result`, opts.signal ? { signal: opts.signal } : {}, undefined, wanted(), DOWNLOAD_MS)
         if (!res.ok) throw new ProviderError('download', `Không tải được video từ máy chủ SANO (${await serverText(res)}).`)
         const tooLarge = () => new ProviderError('too-large', 'Video lớn hơn 1 GB — SanoVids không tải được, lấy trực tiếp trong app SANO.')
         const total = Number(res.headers.get('Content-Length')) || null

@@ -25,7 +25,7 @@ import { sceneCode } from '../../core/compile'
 import { MODELS } from '../../core/models'
 import type { Scene, Take } from '../../core/types'
 import { CREDIT_MARK, formatCredits } from '../../lib/credits'
-import { PROVIDER_LABEL, useProviderLimits } from '../../providers'
+import { PROVIDER_LABEL, sanoGatewayProvider, useProviderLimits } from '../../providers'
 import { useDevAllowed } from '../../providers/devAccess'
 import { providerOf } from '../../providers/types'
 import { useDevServer, type DevSpeed } from '../../providers/dev'
@@ -37,7 +37,7 @@ import { MediaImg } from '../common/Media'
 import { sceneMapOf } from '../canvas/canvasModel'
 import { activeFaultCount } from '../dev/devModel'
 import { CreditPill } from '../topbar/CreditPill'
-import { takeCostLine } from './creditText'
+import { sanoModeNote, takeCostLine } from './creditText'
 import { importedChipTitle, takeCostKnown, takeSettingsText } from './importedTake'
 import { openImportJobs } from '../../siteJobActions'
 import { formatClock, formatDuration, isActive, ProviderBadge, StatusBadge, takeElapsed, useActiveProvider, useNow } from './shared'
@@ -250,7 +250,8 @@ function QueuePanel() {
           </span>
         ) : provider === 'sano-gateway' ? (
           <span className="rq-demo-note real">
-            <Cloud size={12} /> Take mới gửi qua máy chủ SANO — video thật, chi phí do SANO quản lý
+            {/* re-rendered on SANO's revision (useParked) */}
+            <Cloud size={12} /> Take mới gửi qua máy chủ SANO — {sanoModeNote(sanoGatewayProvider().mode())}
           </span>
         ) : (
           <span className="rq-demo-note real">

@@ -87,6 +87,13 @@ describe('takeCostLine / takeCostLabel — a take sent through the SANO gateway'
       note: 'Nhà cung cấp SANO chỉ dùng được khi mở SanoVids bên trong app SANO · giả lập — clip mẫu, không phát sinh phí',
       struck: true,
     })
+    // its answer lost, or cancelled on the way: SANO made a sample clip at most (expectMode), never a billed job
+    for (const status of ['failed', 'cancelled'] as const) {
+      expect(takeCostLine({ ...take({ provider: 'sano-gateway', status }), expectSimulated: true, submitUnknown: true, startedAt: 1 })).toMatchObject({
+        note: 'giả lập — clip mẫu, không phát sinh phí',
+        struck: true,
+      })
+    }
   })
 })
 

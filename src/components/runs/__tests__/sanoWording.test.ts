@@ -112,9 +112,14 @@ describe('SANO wording', () => {
     expect(over).toMatchObject({ ok: false, reason: 'Seedance 2.5 trên SANO nhận tối đa 1 ảnh tham chiếu (đang có 2)' })
   })
 
-  it('empty inspector footer', () => {
+  it.each([
+    ['live', 'video thật, chi phí do SANO quản lý'],
+    ['simulator', 'giả lập — clip mẫu, không phát sinh phí'],
+    [undefined, 'SANO chưa báo chạy thật hay giả lập'],
+  ] as const)('empty inspector footer, SANO mode %s: says what SANO runs, as the Run dialog does', async (mode, said) => {
+    await sanoAnswers({ ...(mode ? { mode } : {}), models: [model(4)] })
     const html = renderToStaticMarkup(createElement(Inspector))
-    expect(html).toContain('Tạo video qua máy chủ SANO: video thật, chi phí do SANO quản lý.')
+    expect(html).toContain(`Tạo video qua máy chủ SANO: ${said}.`)
     expect(html).not.toMatch(/canvasapp/i)
   })
 

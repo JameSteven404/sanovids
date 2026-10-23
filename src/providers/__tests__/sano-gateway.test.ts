@@ -7,7 +7,7 @@ import { applyDevAccessState, bareState } from '../devAccess'
 import { sanoGatewayAvailable } from '../sano'
 import { stubInsideSano } from './insideSano'
 import { accountKey } from '../canvasapp/adapter'
-import { createSanoGatewayProvider, SANO_LOGIN_TEXT, SANO_NOW_LIVE, SANO_OTHER_ACCOUNT, SANO_UNAVAILABLE, TOKEN_RECHECK_MS, tokenAccount, type SanoGatewayDeps } from '../sano/gateway'
+import { createSanoGatewayProvider, REQUEST_MS, SANO_LOGIN_TEXT, SANO_NOW_LIVE, SANO_OTHER_ACCOUNT, SANO_UNAVAILABLE, TOKEN_RECHECK_MS, tokenAccount, type SanoGatewayDeps } from '../sano/gateway'
 import { jwt } from './insideSano'
 import { isResultTooLarge, isSubmitUncertain, ProviderError, type JobRequest } from '../types'
 
@@ -131,7 +131,28 @@ describe('sano-gateway provider', () => {
     expect(new Uint8Array(await result.video!.arrayBuffer())).toEqual(s.video)
     expect(result.video!.type).toBe('video/mp4')
     expect(seen.at(-1)).toEqual({ received: s.video.length, total: s.video.length })
-    expect(s.calls('GET', '/api/video/jobs/job_1/result')[0][1].signal).toBe(ctrl.signal)
+    const sent = s.calls('GET', '/api/video/jobs/job_1/result')[0][1].signal!
+    ctrl.abort()
+    expect(sent.aborted).toBe(true) // the engine's cancel still stops the download
+  })
+
+  it('poll: a status request that never answers (half-open connection) is cut — no news for that job, the others come', async () => {
+    vi.useFakeTimers()
+    try {
+      const s = fakeSano()
+      const p = make(s)
+      await p.submit(req())
+      const inner = s.fetch.getMockImplementation()!
+      s.fetch.mockImplementation((url, init) =>
+        url.endsWith('/jobs/job_stall') ? new Promise((_, reject) => init.signal?.addEventListener('abort', () => reject(init.signal!.reason))) : inner(url, init),
+      )
+      const polled = p.poll(['job_1', 'job_stall'])
+      await vi.advanceTimersByTimeAsync(REQUEST_MS)
+      expect(await polled).toEqual([{ remoteId: 'job_1', state: 'queued' }])
+      p.reset()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('poll: one job answering 500 does not hide the others; all failing still throws', async () => {

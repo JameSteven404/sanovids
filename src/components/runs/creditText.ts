@@ -6,6 +6,7 @@
 import type { Take } from '../../core/types'
 import { chargedDemo, creditKindOf, formatCredits, type CreditKind } from '../../lib/credits'
 import { PROVIDER_LABEL } from '../../providers'
+import type { SanoMode } from '../../providers/sano/gateway'
 import { providerOf, type ProviderId } from '../../providers/types'
 import { isUncertainSubmit, parkedReason } from '../../store/runs'
 import { takeCostInferred, takeCostKnown } from './importedTake'
@@ -63,6 +64,10 @@ export const SANO_WORDS: GatewayWords = {
   siteName: 'SANO',
 }
 
+/** What SANO said it runs (sanoGatewayProvider().mode()), in the notes on new SANO takes: real costs only when 'live'. */
+export const sanoModeNote = (mode: SanoMode | null): string =>
+  mode === 'live' ? 'video thật, chi phí do SANO quản lý' : mode === 'simulator' ? 'giả lập — clip mẫu, không phát sinh phí' : 'SANO chưa báo chạy thật hay giả lập'
+
 export interface TakeCostLine {
   kind: CreditKind
   /** "20 credit demo" | "20 credit dev" | "≈ 20 credit" (canvasapp: SanoVids' estimate of what canvasapp bills). */
@@ -110,8 +115,9 @@ export function takeCostLine(t: CostTake): TakeCostLine {
   // a SANO take that waits here (outside SANO, signed out, another SANO account's): say why, before what is (maybe) billed
   const waits = t.status === 'queued' || t.status === 'processing' ? parkedReason(t) : null
   const why = (note: string) => (waits ? `${waits.replace(/\.$/, '')} · ${note}` : note)
-  // queued under SANO's simulator (no fee promised): SANO refuses it unless it still runs the simulator (expectMode)
-  if (t.expectSimulated && !t.remoteId && (t.status === 'queued' || t.status === 'processing')) {
+  // queued under SANO's simulator (no fee promised): SANO refuses it unless it still runs the simulator (expectMode), so
+  // whatever became of it (an answer lost, a cancel on the way) SANO made a sample clip at most, never a billed job
+  if (t.expectSimulated && !t.remoteId) {
     return { kind, amount, note: why('giả lập — clip mẫu, không phát sinh phí'), struck: true }
   }
   if (t.remoteId) {

@@ -22,6 +22,7 @@ import {
   activeProviderId,
   PROVIDER_LABEL,
   providerBlockedReason,
+  sanoGatewayProvider,
   selectableProviders,
   useDevAllowed,
   useProviderLimits,
@@ -43,6 +44,7 @@ import {
   CANVASAPP_SWITCH_HINT_ON,
   CANVASAPP_SWITCH_LABEL,
 } from '../dev/devUnlockModel'
+import { sanoModeNote } from '../runs/creditText'
 import { clockText } from '../topbar/creditPillModel'
 import { loginToCanvasapp } from '../topbar/CreditPill'
 import './dialogs.css'
@@ -268,7 +270,7 @@ export function GatewaySection() {
       p === 'canvasapp'
         ? 'Take mới sẽ được tạo trên canvasapp.io.vn — trừ credit canvasapp (tiền thật).'
         : p === 'sano-gateway'
-          ? 'Take mới sẽ gửi qua máy chủ SANO — video thật, chi phí do SANO quản lý.'
+          ? `Take mới sẽ gửi qua máy chủ SANO — ${sanoModeNote(sanoGatewayProvider().mode())}.`
           : 'Take mới dùng chế độ Phát triển — canvasapp giả lập trong máy, trả bằng credit dev (không phải tiền thật).',
       { tone: p === 'dev' ? 'success' : 'warning' },
     )
