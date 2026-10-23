@@ -213,6 +213,8 @@ export interface Take {
    * retries and cancel until a job id is stored; such a take is only re-sent as itself (same key), never as a new take.
    */
   submitUnknown?: boolean
+  /** Its job came back with SANO's mode 'simulator': a sample clip, nothing billed (providers/sano). */
+  simulated?: boolean
   /** Cost was taken from the local (demo) credit counter → refunded on failure/cancel. Missing = true. */
   charged?: boolean
   /**

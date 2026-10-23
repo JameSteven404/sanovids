@@ -157,6 +157,9 @@ describe('migrateTake provider fields', () => {
     const unknown = migrateTake({ id: 't', provider: 'sano-gateway', status: 'failed', remoteId: null, submitUnknown: true, error: 'x' })
     expect(unknown.provider).toBe('sano-gateway')
     expect(isUncertainSubmit(unknown)).toBe(true)
+    // SANO's simulator mark: only a real `true` is kept
+    expect(migrateTake({ id: 't', provider: 'sano-gateway', simulated: true }).simulated).toBe(true)
+    expect(migrateTake({ id: 't', provider: 'sano-gateway', simulated: 'yes' }).simulated).toBeUndefined()
   })
 })
 

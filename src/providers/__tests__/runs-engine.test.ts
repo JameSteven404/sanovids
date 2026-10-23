@@ -16,7 +16,8 @@ vi.mock('../../lib/imageStore', () => {
 
 import type { Project, Scene, Take } from '../../core/types'
 import { getProvider, registerProvider, useProviderPrefs } from '../index'
-import type { FetchResultOptions, JobRequest, RemoteStatus, RunTake, SettingsLimits, VideoProvider } from '../types'
+import { ProviderError, type FetchResultOptions, type JobRequest, type RemoteStatus, type RunTake, type SettingsLimits, type VideoProvider } from '../types'
+import { migrateTake } from '../../core/migrate'
 import { transferLabel, useTakeTransfers } from '../../store/takeTransfers'
 import type { VideoSettings } from '../../core/types'
 import { useProject } from '../../store/project'
@@ -1111,6 +1112,39 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
       expect(isUncertainSubmit(take('t1'))).toBe(true)
     }
     expect(f.submitted).toHaveLength(0)
+  })
+
+  it('a look-up the provider cannot make from this page (deferred: SANO outside SANO) leaves the take as it is', async () => {
+    ;(globalThis as { window?: unknown }).window = { bdpDesktop: { canvasapp: { request: async () => ({}) } } }
+    const f = fakeProvider('canvasapp', 20_000)
+    let reachable = false
+    f.p.recover = async () => {
+      if (!reachable) throw new ProviderError('deferred', 'not here')
+      return { remoteId: 'r_found', simulated: true }
+    }
+    registerProvider(f.p)
+    useProviderPrefs.setState({ provider: 'canvasapp' })
+    const left: Take = { ...legacyTake('t1', 's2'), provider: 'canvasapp', charged: false, status: 'processing', startedAt: 5, remoteId: null }
+    useRuns.getState().loadRuns({ takes: [left], credits: 100, spent: 0 })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(take('t1')).toMatchObject({ status: 'processing', remoteId: null, error: null })
+    expect(take('t1').submitUnknown).toBeUndefined()
+    reachable = true // opened where it can ask: found, with what the job said
+    await vi.advanceTimersByTimeAsync(250)
+    expect(take('t1')).toMatchObject({ status: 'processing', remoteId: 'r_found', simulated: true })
+    expect(f.submitted).toHaveLength(0)
+  })
+
+  it("a job made in SANO's simulator keeps that mark on its take, through save and migrate", async () => {
+    const f = fakeProvider('dev')
+    const submit = f.p.submit
+    f.p.submit = async (req, opts) => ({ ...(await submit(req, opts)), simulated: true })
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s2'])
+    const id = useRuns.getState().takes[0].id
+    await vi.advanceTimersByTimeAsync(250)
+    expect(take(id)).toMatchObject({ remoteId: 'r_' + id, simulated: true })
+    expect(migrateTake(JSON.parse(JSON.stringify(take(id)))).simulated).toBe(true)
   })
 
   /** What persist wrote for the open project (a JSON copy). */

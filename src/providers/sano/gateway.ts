@@ -1,19 +1,21 @@
 // Provider 'sano-gateway' (D216 TH-15): the SanoVids web build running inside the SANO app (served by SANO under
 // /sanovids/) sends its jobs to the SANO server instead of canvasapp. The SANO server owns the real video providers,
 // the login and the costs; this file is only its client. Contract (same origin as the page, base /api/video):
-//   GET  /capabilities                    → { models: [{ id, label, ratios, resolutions, durations, maxRefs }] }
+//   GET  /capabilities                    → { mode?, models: [{ id, label, ratios, resolutions, durations, maxRefs }] }
 //   POST /jobs { idempotencyKey, model, prompt, settings: { ratio, resolution, duration }, refs: [{ name, mime, data }] }
 //                                         → 202 { id, status }; the same idempotencyKey again → 200, the same job
 //   GET  /jobs?idempotencyKey=<k>         → { id, status } | 404 (recover after a crash / reload)
 //   GET  /jobs/<id>                       → { id, status: queued|running|done|failed|unknown, progress?, error? }
 //   GET  /jobs/<id>/result                → the MP4
 //   POST /jobs/<id>/cancel                → { id, status } (only while queued)
+// `mode` ('simulator' | 'live', on /capabilities and on every job): what SANO runs. Missing (no backend) = unknown,
+// never taken as 'live'; a job answered 'simulator' marks its take `simulated` (a sample clip, nothing billed).
 // Auth: the SANO session cookie (credentials 'include') and, when the host page gives one, `Authorization: Bearer`.
 // 401 → SANO_LOGIN_TEXT (code 'login-required'), never retried here.
 // The idempotency key is the take id: sending a take again (lost answer, "Chạy lại") never creates — or pays for — a
 // second job, so an uncertain submit is simply sent again with the same key (no ledger like canvasapp's).
 // `model` is SanoVids' ModelId ('seedance_2_5', 'minimax_h3'): SANO's /capabilities must list models under those ids.
-// The contract has no mode field: frames go as refs named first_frame / last_frame, pictures as image_<N> (@image_N).
+// No video-mode field (t2v / i2v…): frames go as refs named first_frame / last_frame, pictures as image_<N> (@image_N).
 // Pure: fetch, the host's token and the media store are injected (tests use a fake server, no DOM here).
 import { MODELS } from '../../core/models'
 import type { ModelId, VideoSettings } from '../../core/types'
@@ -48,6 +50,8 @@ const MAX_CONCURRENCY = 10
 /** The engine floor for remote providers (store/runs MIN_REMOTE_POLL_MS). */
 const POLL_MS = 15_000
 
+export type SanoMode = 'simulator' | 'live'
+
 export interface SanoModel {
   id: string
   label: string
@@ -71,9 +75,15 @@ export interface SanoGatewayDeps {
   now?: () => number
 }
 
-export type SanoGatewayProvider = VideoProvider & Required<Pick<VideoProvider, 'recover' | 'mayHaveSent' | 'cancel' | 'reset' | 'settingsLimits' | 'limitsInfo' | 'refreshLimits'>>
+export type SanoGatewayProvider = VideoProvider &
+  Required<Pick<VideoProvider, 'recover' | 'mayHaveSent' | 'cancel' | 'reset' | 'settingsLimits' | 'limitsInfo' | 'refreshLimits'>> & {
+    /** What SANO last said it runs (/capabilities or a job answer); null = it has not said. */
+    mode(): SanoMode | null
+  }
 
 const STATES: Record<string, RemoteState> = { queued: 'queued', running: 'processing', done: 'completed', failed: 'failed' }
+
+const modeOf = (b: Record<string, unknown> | null): SanoMode | null => (b?.mode === 'simulator' || b?.mode === 'live' ? b.mode : null)
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
 
@@ -95,14 +105,15 @@ export function parseCapabilities(body: unknown): Map<string, SanoModel> {
   return models
 }
 
-/** What SANO refuses in `s`, in the submit's order (model, duration, resolution, ratio). */
-export function sanoIssues(models: Map<string, SanoModel>, s: Pick<VideoSettings, 'model' | 'duration' | 'resolution' | 'ratio'>): SettingsIssue[] {
+/** What SANO refuses in `s` (and in `refs`, the pictures the job sends, when known), in the submit's order. */
+export function sanoIssues(models: Map<string, SanoModel>, s: Pick<VideoSettings, 'model' | 'duration' | 'resolution' | 'ratio'>, refs?: number): SettingsIssue[] {
   const m = models.get(s.model)
   if (!m) return [{ field: 'model', reason: `Máy chủ SANO chưa mở model ${MODELS[s.model as ModelId]?.name ?? s.model}.` }]
   const out: SettingsIssue[] = []
   if (!m.durations.includes(s.duration)) out.push({ field: 'duration', reason: `${m.label} trên SANO không chạy ${s.duration} giây (có: ${m.durations.join(', ')}).` })
   if (!m.resolutions.includes(s.resolution)) out.push({ field: 'resolution', reason: `${m.label} trên SANO không chạy ${s.resolution} (có: ${m.resolutions.join(', ')}).` })
   if (!m.ratios.includes(s.ratio)) out.push({ field: 'ratio', reason: `${m.label} trên SANO không chạy tỉ lệ ${s.ratio} (có: ${m.ratios.join(', ')}).` })
+  if (refs !== undefined && refs > m.maxRefs) out.push({ field: 'model', reason: `${m.label} trên SANO nhận tối đa ${m.maxRefs} ảnh tham chiếu (đang có ${refs}).` })
   return out
 }
 
@@ -145,6 +156,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
   let caps: { models: Map<string, SanoModel>; at: number; firm: SettingsLimits; stale: SettingsLimits } | null = null
   let reading: Promise<Map<string, SanoModel>> | null = null
   let lastAttempt: LimitsInfo['lastAttempt'] = null
+  let mode: SanoMode | null = null
   /** Keys whose POST /jobs was started here (mayHaveSent). Kept by reset(): such a POST may still be answered. */
   const sent = new Set<string>()
   /** Last known state of each job (cancel only asks while it is queued). */
@@ -167,9 +179,11 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
       try {
         const res = await call('/capabilities')
         if (!res.ok) throw new ProviderError('server', `Không đọc được danh sách model của máy chủ SANO (${await serverText(res)}).`)
-        const models = parseCapabilities(await bodyOf(res))
+        const body = await bodyOf(res)
+        const models = parseCapabilities(body)
+        mode = modeOf(body)
         const at = now()
-        const issues = (s: VideoSettings) => sanoIssues(models, s)
+        const issues = (s: VideoSettings, refs?: number) => sanoIssues(models, s, refs)
         caps = { models, at, firm: { source: 'server', firm: true, issues }, stale: { source: 'server', firm: false, issues } }
         lastAttempt = { at, result: 'read' }
         return models
@@ -184,6 +198,17 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
     deps.onLimitsChange?.()
     return reading
   }
+
+  /** A job answer's mode, also kept as what SANO runs now (the Run dialog says it). */
+  function jobMode(b: Record<string, unknown> | null): SanoMode | null {
+    const m = modeOf(b)
+    if (m && m !== mode) {
+      mode = m
+      deps.onLimitsChange?.()
+    }
+    return m
+  }
+  const job = (id: string, b: Record<string, unknown> | null) => (jobMode(b) === 'simulator' ? { remoteId: id, simulated: true } : { remoteId: id })
 
   const freshCaps = () => (caps && now() - caps.at < CAPS_TTL_MS ? caps.models : null)
 
@@ -229,10 +254,8 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
       stopIfCancelled()
       const refs = await refsOf(req)
       const models = freshCaps() ?? (await readCaps())
-      const refused = sanoIssues(models, req)[0]
+      const refused = sanoIssues(models, req, refs.length)[0]
       if (refused) throw new ProviderError('refused', refused.reason)
-      const max = models.get(req.model)!.maxRefs
-      if (refs.length > max) throw new ProviderError('refused', `${models.get(req.model)!.label} trên SANO nhận tối đa ${max} ảnh tham chiếu (take này có ${refs.length}).`)
       // opts.retryOfUnknown needs nothing more: the same idempotency key never makes a second job.
       const body = JSON.stringify({
         idempotencyKey: req.key,
@@ -242,13 +265,16 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
         refs,
       })
       let res: Response
+      let posted = false
       try {
         res = await call('/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }, () => {
           stopIfCancelled()
           sent.add(req.key)
+          posted = true
         })
       } catch (e) {
-        if (e instanceof ProviderError) throw e // cancelled / 401: nothing was created
+        // the host's token() failing before the POST, cancelled, 401: nothing was created
+        if (!posted || e instanceof ProviderError) throw e
         throw uncertainError((e as Error)?.message || 'mất kết nối')
       }
       if (res.status === 200 || res.status === 202) {
@@ -256,7 +282,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
         if (typeof b?.id !== 'string' || !b.id) throw uncertainError('câu trả lời không có mã job')
         const state = STATES[String(b.status)]
         if (state) states.set(b.id, state)
-        return { remoteId: b.id }
+        return job(b.id, b)
       }
       if (res.status === 413) throw new ProviderError('too-large', 'Máy chủ SANO từ chối vì yêu cầu quá lớn — dùng ảnh nhỏ hơn hoặc bớt ảnh.')
       // 5xx: the server may have created the job before failing
@@ -265,6 +291,8 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
     },
 
     async recover(req) {
+      // outside SANO a 404 of this origin is no answer: no news, the take waits to be opened inside SANO
+      if (!deps.available()) throw new ProviderError('deferred', SANO_UNAVAILABLE)
       const res = await call(`/jobs?idempotencyKey=${encodeURIComponent(req.key)}`)
       if (res.status === 404) return null
       if (!res.ok) throw new ProviderError('server', `Không hỏi được máy chủ SANO về take này (${await serverText(res)}).`)
@@ -273,12 +301,15 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
       sent.add(req.key)
       const state = STATES[String(b.status)]
       if (state) states.set(b.id, state)
-      return { remoteId: b.id }
+      return job(b.id, b)
     },
 
     mayHaveSent: (key) => sent.has(key),
 
+    mode: () => mode,
+
     async poll(remoteIds) {
+      if (!deps.available()) return [] // outside SANO: no news (see recover)
       // One broken job (5xx / network) is no news for that job only: the others' statuses still reach the engine.
       let failure: unknown = null
       let failed = 0
@@ -290,6 +321,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
             if (!res.ok) throw new ProviderError('server', `Máy chủ SANO trả lỗi khi hỏi trạng thái job (${await serverText(res)}).`)
             const b = await bodyOf(res)
             const state = STATES[String(b?.status)]
+            jobMode(b)
             if (!state) return null // 'unknown' (or a status this build does not know): no news, asked again next time
             states.set(id, state)
             const progress = typeof b?.progress === 'number' ? { progress: b.progress } : {}
@@ -309,6 +341,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
 
     // shortcut: a cut download starts again from 0 on the engine's next try; resume with Range when videos get big.
     async fetchResult(remoteId, opts = {}) {
+      if (!deps.available()) throw new ProviderError('deferred', SANO_UNAVAILABLE) // not a failed download (see recover)
       const res = await call(`${jobPath(remoteId)}/result`, opts.signal ? { signal: opts.signal } : {})
       if (!res.ok) throw new ProviderError('download', `Không tải được video từ máy chủ SANO (${await serverText(res)}).`)
       const tooLarge = () => new ProviderError('too-large', 'Video lớn hơn 1 GB — SanoVids không tải được, lấy trực tiếp trong app SANO.')
@@ -339,11 +372,13 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
     },
 
     async cancel(remoteId) {
-      const known = states.get(remoteId)
-      if (known && known !== 'queued') return // SANO stops a job only while it is queued
+      // SANO stops a job only while it is queued; not known (a reload, reset()) = not asked
+      if (states.get(remoteId) !== 'queued') return
       try {
         const res = await call(`${jobPath(remoteId)}/cancel`, { method: 'POST' })
-        const state = res.ok ? STATES[String((await bodyOf(res))?.status)] : undefined
+        const b = res.ok ? await bodyOf(res) : null
+        jobMode(b)
+        const state = STATES[String(b?.status)]
         if (state) states.set(remoteId, state)
       } catch {
         // never thrown at the engine (it does not await it): the job runs on and polling says how it ends
@@ -352,6 +387,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
 
     reset() {
       caps = null
+      mode = null
       states.clear()
       deps.onLimitsChange?.()
     },

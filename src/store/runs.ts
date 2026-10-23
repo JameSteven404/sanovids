@@ -657,7 +657,10 @@ export const useRuns = create<RunsState>()((set, get) => ({
         const compiled = compileScene(project, scene)
         // The one rule list (core/runRules) shared with every Run button (retired @video text blocks the scene); the
         // gateway's sure refusal of the settings comes last.
-        const settingsBlock = settingsRunBlock(limits, scene.settings)
+        // the pictures the job sends (images + frames), for a gateway that caps them (SANO's maxRefs)
+        // shortcut: only this check (Run dialog, enqueue) counts them; pass them to the one-scene ▶ too if it must grey out.
+        const refs = compiled.images.length + (scene.settings.mode === 'transform' ? Number(!!scene.firstFrame) + Number(!!scene.lastFrame) : 0)
+        const settingsBlock = settingsRunBlock(limits, scene.settings, refs)
         const reason = runBlockReason({ scene, assets: project.assets, compiled, settingsBlock, spec: MODELS[scene.settings.model] })
         const warning = reason ? null : settingsRunWarning(limits, scene.settings, providerId)
         const before = reason ? undefined : newest.get(scene.id)
@@ -1353,7 +1356,8 @@ async function submitTake(id: string) {
   try {
     const provider = (flight.provider = getProvider(pid))
     // retryOfUnknown: a retried "maybe billed" take (retry() marks it) — the provider never sends it again without proof
-    const { remoteId } = await provider.submit(buildRequest(t), { isCancelled, retryOfUnknown: !!t.submitUnknown })
+    const { remoteId, simulated } = await provider.submit(buildRequest(t), { isCancelled, retryOfUnknown: !!t.submitUnknown })
+    const job = simulated ? { remoteId, simulated } : { remoteId }
     // Cancelled / deleted while it was on its way (also when another project was opened since): the provider has the
     // job anyway (canvasapp may have charged the account) — the cancelled take keeps its id so the UI can say so
     // (lateOutcome), and it is stopped there when possible.
@@ -1365,10 +1369,10 @@ async function submitTake(id: string) {
     // Runs reloaded meanwhile: the new engine adopts the take and asks the provider for this job (recoverTake).
     if (gen !== generation) return void emitRun('submitted', t)
     const cur = findTake(id)
-    if (cur?.status === 'processing') patchTake(id, { remoteId })
+    if (cur?.status === 'processing') patchTake(id, job)
     else {
       // Not running any more otherwise (an old demo take cancelled / removed meanwhile): stop it there when possible.
-      if (cur && pid !== 'mock') patchTake(id, { remoteId })
+      if (cur && pid !== 'mock') patchTake(id, job)
       void provider.cancel?.(remoteId)
     }
     emitRun('submitted', t)
@@ -1443,10 +1447,12 @@ async function recoverTake(id: string) {
     if (gen !== generation) return
     const cur = findTake(id)
     if (!found) return failTake(id, unknown)
-    if (cur && !remoteIdOf(cur)) patchTake(id, { remoteId: found.remoteId })
+    if (cur && !remoteIdOf(cur)) patchTake(id, found.simulated ? { remoteId: found.remoteId, simulated: true } : { remoteId: found.remoteId })
     if (cur?.status === 'processing') emitRun('submitted', t)
-  } catch {
+  } catch (e) {
     if (flight.stopped) lateOutcome(id, flight, { kind: 'uncertain', error: unknown })
+    // 'deferred': the provider cannot ask from this page (SANO outside the SANO app) — no news, asked again later
+    else if ((e as { code?: unknown })?.code === 'deferred') ownedHere.delete(id)
     else if (gen === generation) failTake(id, unknown)
   } finally {
     endFlight(id, flight)

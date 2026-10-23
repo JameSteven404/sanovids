@@ -10,10 +10,13 @@ import type { ProviderId, SettingsLimits } from './types'
 /** A refusal text as a short reason (the run gate's reasons carry no final period). */
 const bare = (text: string) => text.replace(/\.\s*$/, '')
 
-/** The gateway's sure refusal of `s` (the first reason of a firm 'server' read, without its final '.'), else null. */
-export function settingsRunBlock(limits: SettingsLimits, s: VideoSettings): string | null {
+/**
+ * The gateway's sure refusal of `s` (the first reason of a firm 'server' read, without its final '.'), else null.
+ * `refs`: the pictures the job sends, when the caller knows them (SettingsLimits.issues).
+ */
+export function settingsRunBlock(limits: SettingsLimits, s: VideoSettings, refs?: number): string | null {
   if (limits.source !== 'server' || !limits.firm) return null
-  const issue = limits.issues(s)[0]
+  const issue = limits.issues(s, refs)[0]
   return issue ? bare(issue.reason) : null
 }
 

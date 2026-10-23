@@ -44,13 +44,13 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 function fakeSano() {
   const jobs = new Map<string, Job>()
   const video = new Uint8Array(300_000).map((_, i) => i % 251)
-  const opts = { refuse401: (_path: string, _method: string) => false, dropNextAnswer: false }
+  const opts = { refuse401: (_path: string, _method: string) => false, dropNextAnswer: false, mode: undefined as string | undefined }
   const fetch = vi.fn(async (url: string, init: RequestInit): Promise<Response> => {
     const u = new URL(url, 'https://sano.test')
     const method = init.method ?? 'GET'
     if (opts.refuse401(u.pathname, method)) return json(401, { error: 'unauthenticated' })
     if (u.pathname === '/api/video/capabilities') {
-      return json(200, { models: [{ id: 'seedance_2_5', label: 'Seedance 2.5', ratios: ['16:9', '9:16'], resolutions: ['720p'], durations: [5, 10], maxRefs: 4 }, { bad: true }] })
+      return json(200, { ...(opts.mode ? { mode: opts.mode } : {}), models: [{ id: 'seedance_2_5', label: 'Seedance 2.5', ratios: ['16:9', '9:16'], resolutions: ['720p'], durations: [5, 10], maxRefs: 4 }, { bad: true }] })
     }
     if (u.pathname === '/api/video/jobs' && method === 'POST') {
       const body = JSON.parse(String(init.body))
@@ -62,7 +62,7 @@ function fakeSano() {
         opts.dropNextAnswer = false
         throw new TypeError('Failed to fetch') // created, but the answer never came back
       }
-      return json(202, { id: job.id, status: job.status })
+      return json(202, { id: job.id, status: job.status, ...(opts.mode ? { mode: opts.mode } : {}) })
     }
     if (u.pathname === '/api/video/jobs') {
       const had = [...jobs.values()].find((j) => j.key === u.searchParams.get('idempotencyKey'))
@@ -146,7 +146,41 @@ describe('sano-gateway provider', () => {
     await expect(p.submit(req({ resolution: '1080p' }))).rejects.toMatchObject({ code: 'refused' })
     await expect(p.submit(req({ model: 'minimax_h3' }))).rejects.toMatchObject({ code: 'refused' })
     expect(p.settingsLimits().issues({ model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '720p', ratio: '1:1' }).map((i) => i.field)).toEqual(['duration', 'ratio'])
+    // the advertised maxRefs (4) is a refusal the run check sees too, not only the submit
+    const ok = { model: 'seedance_2_5', mode: 't2v', duration: 5, resolution: '720p', ratio: '16:9' } as const
+    expect(p.settingsLimits().issues(ok, 4)).toEqual([])
+    expect(p.settingsLimits().issues(ok, 5).map((i) => i.reason)).toEqual(['Seedance 2.5 trên SANO nhận tối đa 4 ảnh tham chiếu (đang có 5).'])
+    const five = [1, 2, 3, 4, 5].map((n) => ({ n, assetId: 'a', imageId: `img_${n}`, blob: png([n]) }))
+    await expect(p.submit(req({ images: five }))).rejects.toMatchObject({ code: 'refused' })
     expect(s.calls('POST', '/api/video/jobs')).toHaveLength(0)
+  })
+
+  it("the host's token() failing before the POST is not an uncertain submit (nothing sent)", async () => {
+    const s = fakeSano()
+    let asked = 0
+    const p = make(s, { token: async () => (asked++ ? Promise.reject(new Error('host gone')) : 'tok') }) // /capabilities gets one
+    const err = await p.submit(req()).catch((e: unknown) => e)
+    expect(err).toMatchObject({ message: 'host gone' })
+    expect(isSubmitUncertain(err)).toBe(false)
+    expect(p.mayHaveSent('take_1')).toBe(false)
+    expect(s.calls('POST', '/api/video/jobs')).toHaveLength(0)
+  })
+
+  it("mode: what /capabilities and the jobs say, missing is never 'live'; a simulator job is marked simulated", async () => {
+    const s = fakeSano()
+    const p = make(s)
+    await p.refreshLimits({ force: true })
+    expect(p.mode()).toBeNull()
+    s.opts.mode = 'simulator'
+    expect(await p.submit(req())).toEqual({ remoteId: 'job_1', simulated: true })
+    expect(p.mode()).toBe('simulator')
+    s.opts.mode = 'live'
+    await p.refreshLimits({ force: true })
+    expect(p.mode()).toBe('live')
+    expect(await p.submit(req({ key: 'take_2', takeId: 'take_2' }))).toEqual({ remoteId: 'job_2' })
+    s.opts.mode = 'bogus'
+    await p.refreshLimits({ force: true })
+    expect(p.mode()).toBeNull()
   })
 
   it('the same idempotency key after a crash recovers the existing job instead of submitting again', async () => {
@@ -219,16 +253,24 @@ describe('sano-gateway provider', () => {
     await p.poll([running.remoteId])
     await p.cancel(running.remoteId)
     expect(s.calls('POST', /\/cancel$/)).toHaveLength(1)
+    // state not known (reset / a reload before the first poll): not asked either
+    const later = await p.submit(req({ key: 'take_3', takeId: 'take_3' }))
+    p.reset()
+    await p.cancel(later.remoteId)
+    expect(s.calls('POST', /\/cancel$/)).toHaveLength(1)
     const broken = make({ ...s, fetch: vi.fn(async () => Promise.reject(new TypeError('offline'))) })
     await expect(broken.cancel('job_x')).resolves.toBeUndefined()
   })
 
-  it('unavailable outside SANO: refuses, sends nothing', async () => {
+  it("unavailable outside SANO: refuses, sends nothing; reads are no news (another origin's 404 never fails a take)", async () => {
     const s = fakeSano()
     const p = make(s, { available: () => false })
     expect(await p.available()).toEqual({ ok: false, reason: SANO_UNAVAILABLE })
     await expect(p.submit(req())).rejects.toMatchObject({ code: 'unavailable' })
     expect(await p.refreshLimits()).toBe('unavailable')
+    expect(await p.poll(['job_1'])).toEqual([])
+    await expect(p.recover(req())).rejects.toMatchObject({ code: 'deferred' })
+    await expect(p.fetchResult('job_1')).rejects.toMatchObject({ code: 'deferred' })
     expect(s.fetch).not.toHaveBeenCalled()
   })
 })

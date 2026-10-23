@@ -419,6 +419,8 @@ export function migrateTake(raw: unknown): Take {
   }
   if (t.submitUnknown === true) out.submitUnknown = true
   else delete out.submitUnknown
+  if (t.simulated === true) out.simulated = true
+  else delete out.simulated
   // Custom file name: sanitized again (a file from elsewhere may hold separators, "..", reserved names…).
   const fileName = cleanTakeFileName(t.fileName)
   if (fileName) out.fileName = fileName

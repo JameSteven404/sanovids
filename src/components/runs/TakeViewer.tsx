@@ -797,7 +797,10 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
         <dt>Tạo bằng</dt>
         <dd className="rq-info-provider">
           <ProviderBadge take={take} />
-          <span className="faint">{take.foreignProvider ? NEWER_BUILD_TITLE : PROVIDER_LABEL[provider]}</span>
+          <span className="faint">
+            {take.foreignProvider ? NEWER_BUILD_TITLE : PROVIDER_LABEL[provider]}
+            {take.simulated && ' · Giả lập — clip mẫu'}
+          </span>
         </dd>
         <dt>Chi phí</dt>
         <dd className={`rq-info-cost ${cost.foreign ? '' : cost.kind}`}>
