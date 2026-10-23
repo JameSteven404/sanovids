@@ -122,16 +122,28 @@ function createGoogleSignIn(fx) {
     const body = new URLSearchParams(fx.secret ? { ...form, client_secret: fx.secret } : form).toString()
     // a stalled request would hold every SANO request waiting on token(); the timeout counts as no answer
     const res = await fx.fetch(TOKEN_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body, signal: AbortSignal.timeout(15_000) })
-    return { ok: res.ok, status: res.status, json: await res.json().catch(() => ({})) }
+    // a 200 body that fails to arrive (cut, the timeout) rejects: no answer, not an empty one that would sign out
+    return { ok: res.ok, status: res.status, json: res.ok ? await res.json() : null }
   }
 
   async function signIn() {
+    // registered before the first await: a sign-out or a newer sign-in during the setup ends this one, not the reverse
+    let early = null
+    const pending = (result) => {
+      early = result
+      if (current === pending) current = null
+    }
+    if (current) current(fail('superseded'))
+    current = pending
     const clientId = await fx.clientId()
-    if (!clientId) return fail('not-configured')
     const verifier = randomString()
     const state = randomString()
     const challenge = await codeChallenge(verifier)
-    if (current) current(fail('superseded'))
+    if (early) return early
+    if (!clientId) {
+      current = null
+      return fail('not-configured')
+    }
     return new Promise((resolve) => {
       let settled = false
       let consumed = false
@@ -181,7 +193,10 @@ function createGoogleSignIn(fx) {
           }
         }
         res.writeHead(200, PAGE_HEADERS)
-        res.end(result.ok ? PAGE_OK : PAGE_FAILED, () => server.close())
+        // closed here, not when the page is sent: a tab closed meanwhile never finishes it. Before end(): close() spares
+        // only unfinished responses, so this page still goes out
+        server.close()
+        res.end(result.ok ? PAGE_OK : PAGE_FAILED)
         if (settled) return
         end(result, false)
         fx.focus()

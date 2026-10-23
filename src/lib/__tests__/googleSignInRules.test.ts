@@ -41,17 +41,17 @@ const idToken = (expMs: number, sub = 'u1') => jwt({ sub, email: 'a@sanogroup.tv
 /** A fake token endpoint: answers queued per call (a function gets the form), records every form it got. */
 function tokenEndpoint() {
   const forms: Record<string, string>[] = []
-  const answers: (((form: Record<string, string>, signal?: AbortSignal) => unknown) | { status?: number; body?: unknown; throws?: boolean })[] = []
+  const answers: (((form: Record<string, string>, signal?: AbortSignal) => unknown) | { status?: number; body?: unknown; throws?: boolean; bodyFails?: boolean })[] = []
   const fetch: Fx['fetch'] = async (url, init) => {
     expect(url).toBe(R.TOKEN_ENDPOINT)
     expect(init.method).toBe('POST')
     const form = Object.fromEntries(new URLSearchParams(init.body))
     forms.push(form)
     const next = answers.shift()
-    const a = (typeof next === 'function' ? await next(form, init.signal) : next) as { status?: number; body?: unknown; throws?: boolean } | undefined
+    const a = (typeof next === 'function' ? await next(form, init.signal) : next) as { status?: number; body?: unknown; throws?: boolean; bodyFails?: boolean } | undefined
     if (!a || a.throws) throw new Error('offline')
     const status = a.status ?? 200
-    return { ok: status >= 200 && status < 300, status, json: async () => a.body }
+    return { ok: status >= 200 && status < 300, status, json: async () => (a.bodyFails ? Promise.reject(new Error('body cut')) : a.body) }
   }
   return { forms, answers, fetch }
 }
@@ -81,7 +81,7 @@ function setup(over: Partial<Fx> = {}) {
 }
 
 /** The browser following Google's redirect to the loopback port. */
-const visit = (auth: URL, query: string) => fetch(`${auth.searchParams.get('redirect_uri')}${query}`)
+const visit = (auth: URL, query: string, init?: RequestInit) => fetch(`${auth.searchParams.get('redirect_uri')}${query}`, init)
 
 describe('google-signin-rules: pure rules', () => {
   it('PKCE S256: the RFC 7636 appendix B vector', async () => {
@@ -275,6 +275,44 @@ describe('google-signin-rules: sign-in through the loopback port', () => {
     expect(s.t.forms).toHaveLength(0)
   })
 
+  it('signOut or a newer sign-in while the client id is still being fetched ends that sign-in before the browser opens', async () => {
+    const ids: ((id: string) => void)[] = []
+    const s = setup({ clientId: () => new Promise((r) => ids.push(r)) })
+    const signedOut = s.g.signIn()
+    expect(s.g.signOut()).toBe(true)
+    ids[0](CLIENT)
+    expect(await signedOut).toMatchObject({ ok: false, code: 'cancelled' })
+    const older = s.g.signIn()
+    const newer = s.g.signIn()
+    const auth = s.nextOpen()
+    ids[2](CLIENT)
+    await auth
+    ids[1](CLIENT) // the older one's client id arrives last: it does not take over
+    expect(await older).toMatchObject({ ok: false, code: 'superseded' })
+    expect(s.opened).toHaveLength(1)
+    s.g.signOut()
+    expect(await newer).toMatchObject({ ok: false, code: 'cancelled' })
+  })
+
+  it('the browser tab closed during the code exchange: the port still closes', async () => {
+    let gone = 0
+    const s = setup({ createServer: ((h: Parameters<typeof createServer>[0]) => createServer(h).on('connection', (c) => c.on('close', () => gone++))) as typeof createServer })
+    let release: () => void = () => undefined
+    s.t.answers.push(() => new Promise((r) => (release = () => r({ body: { id_token: idToken(NOW + 3600_000) } }))))
+    const auth = s.nextOpen()
+    const signIn = s.g.signIn()
+    const u = await auth
+    const tab = new AbortController()
+    const closedTab = visit(u, `?code=c&state=${u.searchParams.get('state')}`, { signal: tab.signal }).catch(() => undefined)
+    await expect.poll(() => s.t.forms.length).toBe(1)
+    tab.abort()
+    await closedTab
+    await expect.poll(() => gone).toBeGreaterThan(0)
+    release()
+    expect(await signIn).toMatchObject({ ok: true })
+    await expect(visit(u, '')).rejects.toThrow() // port closed
+  })
+
   it('client secret (only when set: T1) goes with the code exchange and the refresh', async () => {
     const s = setup({ secret: 'shh' })
     s.t.answers.push({ body: { id_token: idToken(NOW + 60_000), refresh_token: 'r1' } }, { body: { id_token: idToken(NOW + 3600_000) } })
@@ -343,8 +381,8 @@ describe('google-signin-rules: token() renews in memory', () => {
     }
   })
 
-  it('no answer (offline), a server error, 408 or 429 → kept: the still-valid token, the next call tries again; expired → rejects, still signed in', async () => {
-    for (const a of [{ throws: true }, { status: 503, body: { error: 'temporarily_unavailable' } }, { status: 408, body: {} }, { status: 429, body: { error: 'rate_limit_exceeded' } }]) {
+  it('no answer (offline, a 200 body cut off), a server error, 408 or 429 → kept: the still-valid token, the next call tries again; expired → rejects, still signed in', async () => {
+    for (const a of [{ throws: true }, { bodyFails: true }, { status: 503, body: { error: 'temporarily_unavailable' } }, { status: 408, body: {} }, { status: 429, body: { error: 'rate_limit_exceeded' } }]) {
       const s = await signedIn(NOW + 60_000)
       s.t.answers.push(a, { body: { id_token: idToken(NOW + 3600_000) } })
       const old = await s.g.token()
