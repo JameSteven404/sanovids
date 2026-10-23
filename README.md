@@ -197,6 +197,7 @@ Chi tiết cho người phát triển (cách ký, sao lưu khoá, đổi chứng
 ### Cách nhanh nhất (Windows)
 - **`start.bat`**: build (nếu chưa có) rồi mở bản chạy thật tại http://localhost:5180. Sau khi sửa code, xoá thư mục `dist/` hoặc chạy `npm run build` để cập nhật.
 - **`dev.bat`**: bản phát triển, tự tải lại khi sửa code.
+- **`sano-desktop.bat`**: mở app SANO trong cửa sổ desktop, khu “Dựng phim” là SanoVids với cổng canvasapp ([docs/SANO-DESKTOP.md](docs/SANO-DESKTOP.md)).
 
 ### Dòng lệnh
 ```bash

@@ -86,6 +86,17 @@ const DEVTOOLS = hardening.allowDevTools({ isPackaged: PACKAGED, profileSource: 
  * (electron/devaccess.cjs). Computed after DEVTOOLS and never feeds back into it: unlocking changes no protection.
  */
 const DEV_OPEN_BUILD = require('./devaccess-rules.cjs').devOpenBuild({ devToolsAllowed: DEVTOOLS, testDevLock: readTestDevLock() })
+/**
+ * SANO desktop (docs/SANO-DESKTOP.md): from source, SANO_URL makes the window open SANO's web app, with SanoVids
+ * (app://bdp/) as its Dựng phim frame: same profile, canvasapp gateway and checks (fromApp) as SanoVids. Packaged: ignored.
+ * shortcut: main → page pushes (devAccess:state, updates:state) reach the main frame only, so SanoVids inside SANO gets
+ * none; harmless from source (development mode open, no updater) — send them to the app://bdp frame before a packaged SANO build.
+ */
+const SANO = hardening.sanoShell({ isPackaged: PACKAGED, value: process.env.SANO_URL })
+if (SANO === false) {
+  console.error('[SanoVids] SANO_URL must be https://… or http://localhost:<port>/')
+  process.exit(2)
+}
 if (profile.source !== 'default') fs.mkdirSync(profile.dir, { recursive: true })
 app.setPath('userData', profile.dir)
 // The taskbar / notification identity exists on Windows only (app.setAppUserModelId is not defined on macOS: calling it
@@ -272,10 +283,10 @@ let htmlCspPromise = null
 function htmlCsp() {
   if (!htmlCspPromise) {
     htmlCspPromise = fs.promises.readFile(path.join(DIST, 'index.html')).then(
-      (bytes) => hardening.contentSecurityPolicy(bytes),
+      (bytes) => hardening.contentSecurityPolicy(bytes, SANO ? SANO.origin : undefined),
       () => {
         htmlCspPromise = null
-        return hardening.contentSecurityPolicy('')
+        return hardening.contentSecurityPolicy('', SANO ? SANO.origin : undefined)
       },
     )
   }
@@ -301,7 +312,7 @@ function createWindow() {
     minWidth: 1100,
     minHeight: 700,
     show: false,
-    title: TITLE,
+    title: SANO ? 'SANO' : TITLE,
     backgroundColor: '#0f1012',
     autoHideMenuBar: true,
     // Windows: the multi-size .ico (sharp taskbar / Alt+Tab icon at every scale); elsewhere the 512 px PNG.
@@ -311,11 +322,13 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // SANO desktop: the preload also runs in SANO's frames and gives the bridge only to app://bdp (preload.cjs).
+      nodeIntegrationInSubFrames: !!SANO,
       devTools: DEVTOOLS,
       spellcheck: false,
       // Hover previews / the take viewer may start with sound before any click (the speaker switch decides).
       autoplayPolicy: 'no-user-gesture-required',
-      additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`],
+      additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : [])],
     },
   })
 
@@ -396,18 +409,21 @@ function createWindow() {
     })
   }
 
-  // External links open in the default browser; the window itself never leaves the app origin.
+  // External links open in the default browser; the window itself never leaves the app origin (SANO desktop: SANO's).
+  const home = SANO ? SANO.url : ORIGIN + '/'
   webContents.setWindowOpenHandler(({ url }) => {
+    // SANO desktop: "Đăng nhập bằng Google" (Google Identity Services) needs its popup as a child window.
+    if (SANO && url.startsWith('https://accounts.google.com/')) return { action: 'allow', overrideBrowserWindowOptions: { parent: win, autoHideMenuBar: true } }
     if (isExternal(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
   webContents.on('will-navigate', (event, url) => {
-    if (url.startsWith(ORIGIN + '/')) return
+    if (url.startsWith(home)) return
     event.preventDefault()
     if (isExternal(url)) void shell.openExternal(url)
   })
 
-  void win.loadURL(`${ORIGIN}/index.html`)
+  void win.loadURL(SANO ? SANO.url : `${ORIGIN}/index.html`)
   return win
 }
 
