@@ -2,15 +2,6 @@
 
 > **Trạng thái:** chạy từ mã nguồn (quyết định D218 của SANO: canvasapp.io.vn là nhà cung cấp video chính, Minh chọn
 > làm bản desktop SANO). Chưa có bản cài riêng cho SANO.
->
-> **D226 (2026-10-23): tạm ẩn canvasapp phía SANO.** Một hằng `CANVASAPP_IN_SANO = false` trong
-> `src/providers/sano/index.ts` (đặt `true` khi Minh mở lại) cho cả bản web SANO lẫn khung desktop SANO; `electron/main.cjs`
-> giữ bản sao cùng tên (test `hardeningRules` bắt hai giá trị bằng nhau). Ở chế độ SANO, main báo trang `app://bdp` qua
-> `--bdp-sano-canvasapp` → `window.bdpDesktop.sano`, trang không có cầu `canvasapp`, main từ chối mọi `canvasapp:*`
-> (`sano-paused`). Trong SANO không còn lựa chọn, đăng nhập, credit hay chữ nào nhắc canvasapp; chế độ Phát triển (chạy
-> từ mã nguồn) vẫn là giả lập, còn khi chế độ Phát triển khoá (bản cài) trang nói “Tạo video trong SANO đang tạm dừng”.
-> Take canvasapp đã có giữ nguyên dữ liệu: hàng đợi trong SANO không gửi, theo dõi hay đánh lỗi chúng — SanoVids chạy
-> riêng vẫn chạy tiếp như cũ. SanoVids chạy riêng (không `SANO_URL`) không đổi gì.
 
 ## 1. Mục đích
 
@@ -23,8 +14,8 @@ Máy chủ SANO không giữ phiên hay cookie canvasapp nào.
 1. Chạy SANO trước (repo SANO-AGENT: `npm run dev`, mặc định `http://127.0.0.1:5173`; hoặc docker compose ở `http://localhost:8080`).
 2. Đóng SanoVids nếu đang mở: hai chế độ dùng chung thư mục dữ liệu, chỉ mở được một cửa sổ.
 3. Chạy `sano-desktop.bat` (địa chỉ khác: `sano-desktop.bat https://sano.example.vn`). File bat dựng lại SanoVids rồi mở SANO.
-4. Trong SANO: **SẢN XUẤT → Dựng phim**. Take mới chạy ở *chế độ Phát triển* (giả lập, không tốn credit); tạo video
-   thật trong SANO đang tạm dừng (D226).
+4. Trong SANO: **SẢN XUẤT → Dựng phim**. Take mới vẫn chạy ở *chế độ Phát triển* (giả lập, không tốn credit). Muốn tạo
+   video thật: Cài đặt của SanoVids → cổng canvasapp → bật, rồi **Đăng nhập** trên trang thật canvasapp.io.vn.
 
 ## 3. Cách hoạt động
 

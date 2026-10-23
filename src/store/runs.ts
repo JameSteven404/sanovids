@@ -57,7 +57,7 @@ import type { Asset, ModelId, Scene, Size, Take, XY } from '../core/types'
 import { chargedDemo, DEMO_CREDITS_DEFAULT, formatCreditNumber } from '../lib/credits'
 import { useDownloadPrefs } from '../lib/downloads'
 import { putBlob } from '../lib/imageStore'
-import { activeProviderId, getProvider, providerBlockedReason, providerLimits, providerPaused, registerProvider, sanoGatewayProvider, useProviderLimits } from '../providers'
+import { activeProviderId, getProvider, providerBlockedReason, providerLimits, registerProvider, sanoGatewayProvider, useProviderLimits } from '../providers'
 import { decodeRemoteId } from '../providers/canvasapp/mapping'
 import type { SiteJobClaim, SiteTakeDraft } from '../providers/canvasapp/siteJobs'
 import { jobRefCount, settingsRunBlock, settingsRunWarning } from '../providers/limits'
@@ -537,11 +537,8 @@ export const parkedReason = (t: Pick<Take, 'provider' | 'account'>): string | nu
 
 export const cannotRunHere = (t: Pick<Take, 'provider' | 'account'>): boolean => !!parkedReason(t)
 
-/**
- * Parked (or of a provider paused here, D226: canvasapp inside SANO) with no request of its own on its way: one whose
- * POST / download is still out keeps the engine (and the lock).
- */
-const noWorkHere = (t: Take): boolean => (cannotRunHere(t) || providerPaused(providerOf(t))) && !submitting.has(t.id) && !fetching.has(t.id)
+/** Parked with no request of its own on its way: one whose POST / download is still out keeps the engine (and the lock). */
+const noWorkHere = (t: Take): boolean => cannotRunHere(t) && !submitting.has(t.id) && !fetching.has(t.id)
 
 /** A running remote take whose submit has no remote id yet: it is being sent right now. */
 export const isSendingTake = (t: Take): boolean => t.status === 'processing' && providerOf(t) !== 'mock' && !remoteIdOf(t) && !noWorkHere(t)
@@ -588,8 +585,8 @@ export const UNKNOWN_MODEL_ERROR = 'Model của video này không có trong bả
 /**
  * What an app restart would interrupt (updateActions "Cập nhật khi xong", UpdateDialog, the update pill). A queued take
  * whose scene was deleted is left out: the queue never starts it (it waits for an Undo of the delete) and it is kept
- * across a restart, so waiting for it would wait forever. A newer build's take (isForeignTake), a parked SANO take
- * (cannotRunHere) and a paused provider's take (providerPaused) with no request of its own on its way never count.
+ * across a restart, so waiting for it would wait forever. A newer build's take (isForeignTake) and a parked SANO take
+ * (cannotRunHere) with no request of its own on its way never count.
  */
 export function restartWork(takes: readonly Take[], sceneIds: ReadonlySet<string>): RestartWork {
   let queued = 0
@@ -1122,7 +1119,7 @@ function adoptOrphans() {
   const failed: Take[] = []
   const lookUp: string[] = []
   const takes = useRuns.getState().takes.map((t): Take => {
-    if (t.status !== 'processing' || ownedHere.has(t.id) || submitting.has(t.id) || fetching.has(t.id) || cannotRunHere(t) || providerPaused(providerOf(t))) return t
+    if (t.status !== 'processing' || ownedHere.has(t.id) || submitting.has(t.id) || fetching.has(t.id) || cannotRunHere(t)) return t
     if (providerOf(t) === 'mock') {
       changed = true
       return { ...t, status: 'queued', progress: 0, startedAt: null, remoteId: null }
@@ -1258,8 +1255,7 @@ function tick() {
     return
   }
   parkForeignTakes()
-  // only these keep the engine (and the lock): a tab inside SANO on the same project must get it; a paused provider's
-  // takes (D226: canvasapp inside SANO) stay exactly as saved — SanoVids itself runs them
+  // only these keep the engine (and the lock): a tab inside SANO on the same project must get it
   const takes = useRuns.getState().takes.filter((t) => !noWorkHere(t))
   const active = takes.filter((t) => t.status === 'processing')
   const queued = takes.filter((t) => t.status === 'queued').sort((a, b) => a.createdAt - b.createdAt)
@@ -1676,8 +1672,7 @@ function errorText(e: unknown): string {
 export const takesOf = (sceneId: string) => (s: RunsState) => s.takes.filter((t) => t.sceneId === sceneId)
 export const latestTake = (takes: Take[], sceneId: string) =>
   takes.filter((t) => t.sceneId === sceneId).sort((a, b) => b.number - a.number)[0]
-/** Queued / running takes, without a paused provider's (D226: canvasapp inside SANO never runs here). */
-export const activeCount = (s: RunsState) => s.takes.filter((t) => (t.status === 'queued' || t.status === 'processing') && !providerPaused(providerOf(t))).length
+export const activeCount = (s: RunsState) => s.takes.filter((t) => t.status === 'queued' || t.status === 'processing').length
 /** parkedReason of each queued / running take that waits here, one entry per take (the queue's chip and banner). */
 export const parkedReasons = (takes: readonly Take[]): string[] =>
   takes.flatMap((t) => {

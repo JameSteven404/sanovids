@@ -14,7 +14,6 @@ import devAccessSource from '../../../electron/devaccess.cjs?raw'
 import devAccessRulesSource from '../../../electron/devaccess-rules.cjs?raw'
 import pkgRaw from '../../../package.json?raw'
 import sanoBatSource from '../../../sano-desktop.bat?raw'
-import { CANVASAPP_IN_SANO } from '../../providers/sano'
 
 type ProfileSource = 'env' | 'baked' | 'default'
 type SigStatus = 'signed' | 'unsigned' | 'other-signer' | 'tampered' | 'unknown'
@@ -397,44 +396,6 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     const direct = [...preloadSource.matchAll(/contextBridge\.exposeInMainWorld\('(\w+)'/g)].map((m) => m[1])
     expect(direct).toEqual(['sanoDesktop'])
     expect(preloadSource).toContain("if (sanoArg && location.origin === sanoArg.slice('--bdp-sano-origin='.length)) contextBridge.exposeInMainWorld('sanoDesktop', { sanovidsUrl: 'app://bdp/' })")
-  })
-
-  it('D226: one constant hides canvasapp in SANO; main tells the page and refuses canvasapp:* there', () => {
-    const mainValue = /\n\/\/ D226: tạm ẩn canvasapp phía SANO; đặt true khi Minh mở lại\n\/\/ Bản sao của CANVASAPP_IN_SANO trong src\/providers\/sano\/index\.ts[^\n]*\nconst CANVASAPP_IN_SANO = (true|false)\n/.exec(mainSource)?.[1]
-    // main's copy is the page's one switch (src/providers/sano): flipping only one of them would offer canvasapp main refuses
-    expect(mainValue).toBe(String(CANVASAPP_IN_SANO))
-    expect(mainSource).toContain('const SANO_CANVASAPP_OFF = !!SANO && !CANVASAPP_IN_SANO')
-    // right after the frame check, before any handler runs (plain SanoVids: SANO is null, nothing changes)
-    expect(mainSource).toMatch(/if \(!fromApp\(event\)\) return gatewayError\('not-allowed', [^\n]*\)\n {4}if \(SANO_CANVASAPP_OFF\) return gatewayError\('sano-paused', 'Tạo video trong SANO đang tạm dừng\.'\)\n {4}try \{/)
-  })
-
-  it('D226 preload: only SanoVids inside SANO gets bdpDesktop.sano; with canvasapp hidden it gets no canvasapp bridge', () => {
-    const run = (argv: string[]) => {
-      const exposed: Record<string, { sano?: unknown; canvasapp?: { request?: unknown } }> = {}
-      const listeners: string[] = []
-      const electron = {
-        contextBridge: { exposeInMainWorld: (key: string, api: never) => void (exposed[key] = api) },
-        ipcRenderer: { invoke: () => Promise.resolve(), on: () => undefined, removeListener: () => undefined },
-      }
-      const env = { argv, versions: { electron: '0' }, platform: 'win32' }
-      new Function('require', 'process', 'location', 'window', preloadSource)(() => electron, env, { origin: 'app://bdp' }, { addEventListener: (type: string) => listeners.push(type) })
-      return { desktop: exposed.bdpDesktop, listeners }
-    }
-    const plain = run([])
-    expect(plain.desktop.sano).toBeUndefined()
-    expect(typeof plain.desktop.canvasapp?.request).toBe('function')
-    expect(plain.listeners).toEqual(['pagehide'])
-    const sano = '--bdp-sano-origin=http://127.0.0.1:5173'
-    const on = run([sano, '--bdp-sano-canvasapp=on'])
-    expect(on.desktop.sano).toEqual({ canvasapp: true })
-    expect(typeof on.desktop.canvasapp?.request).toBe('function')
-    expect(on.listeners).toEqual(['pagehide'])
-    for (const argv of [[sano, '--bdp-sano-canvasapp=off'], [sano]]) {
-      const off = run(argv)
-      expect(off.desktop.sano).toEqual({ canvasapp: false })
-      expect(off.desktop.canvasapp).toBeUndefined()
-      expect(off.listeners).toEqual([])
-    }
   })
 
   it('sano-desktop.bat: SANO_URL expands inside quotes only (cmd runs & | > of a query string as operators)', () => {
@@ -944,7 +905,7 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(watch).not.toContain('did-start-navigation')
     // SANO desktop: SANO removing SanoVids' frame (or sending it elsewhere) has no WebContents event: its pagehide ends them
     expect(mainSource).toContain("ipcMain.handle('canvasapp:downloadCloseAll', guard((event) => (canvasappDownloads.closeAll(event.sender.id), { ok: true })))")
-    expect(preloadSource).toContain("if (location.origin === 'app://bdp' && !canvasappOff) window.addEventListener('pagehide', () => void ipcRenderer.invoke('canvasapp:downloadCloseAll').catch(() => undefined))")
+    expect(preloadSource).toContain("if (location.origin === 'app://bdp') window.addEventListener('pagehide', () => void ipcRenderer.invoke('canvasapp:downloadCloseAll').catch(() => undefined))")
     // logout: no download may start from its first line (before anything awaits) until it is done; every download is
     // ended before the session is wiped and again after (properties, not line positions: the keep-login branch rewrites
     // this function)
@@ -1263,7 +1224,7 @@ describe('development-mode lock wiring (main.cjs / preload.cjs / devaccess*.cjs 
     const setup = idx(mainSource, "devAccess = setupDevAccess({ userDataDir: app.getPath('userData'), buildOpen: DEV_OPEN_BUILD, isAppSender: fromApp, getMainWindow: () => mainWindow })")
     expect(setup).toBeGreaterThan(ready)
     expect(setup).toBeLessThan(mainSource.indexOf('createWindow()', ready))
-    expect(mainSource).toContain("additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`, `--bdp-sano-canvasapp=${SANO_CANVASAPP_OFF ? 'off' : 'on'}`] : [])]")
+    expect(mainSource).toContain("additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : [])]")
     expect(mainSource).toContain('if (devAccess) devAccess.attachWindow(win)')
     // only one place builds the unlock module, and nothing else in main touches its channels
     expect(mainSource.split('setupDevAccess(').length - 1).toBe(1)

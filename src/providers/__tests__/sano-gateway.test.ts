@@ -2,9 +2,9 @@
 // idempotency key surviving a crash / a lost answer, 401 → the SANO sign-in error, the 20 MB refs cap before any
 // request, cancel only while queued, and the provider off (and never chosen) outside SANO.
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { activeGateway, activeProviderId, effectiveProvider, getProvider, normalizeProviderChoice, providerBlockedReason, SANO_PAUSED_REASON, selectableProviders } from '..'
+import { activeGateway, activeProviderId, effectiveProvider, getProvider, normalizeProviderChoice, providerBlockedReason, selectableProviders } from '..'
 import { applyDevAccessState, bareState } from '../devAccess'
-import { canvasappHiddenInSano, sanoBuild, sanoGatewayAvailable } from '../sano'
+import { sanoGatewayAvailable } from '../sano'
 import { stubInsideSano } from './insideSano'
 import { accountKey } from '../canvasapp/adapter'
 import { createSanoGatewayProvider, DOWNLOAD_MS, REQUEST_MS, SANO_LOGIN_TEXT, SANO_NOW_LIVE, SANO_OTHER_ACCOUNT, SANO_UNAVAILABLE, TOKEN_RECHECK_MS, tokenAccount, type SanoGatewayDeps } from '../sano/gateway'
@@ -537,22 +537,6 @@ describe('sano-gateway in the registry', () => {
     expect(activeProviderId()).toBe('sano-gateway')
     expect(providerBlockedReason(activeProviderId())).toBe(SANO_UNAVAILABLE)
     expect(selectableProviders()).toEqual(['canvasapp', 'sano-gateway'])
-  })
-
-  it('D226 follows the build flag: the SANO build opened in Electron hides canvasapp too (no SANO there, nothing else left)', () => {
-    vi.stubEnv('VITE_SANO_GATEWAY', '1')
-    vi.stubGlobal('window', { location: { origin: 'app://bdp' }, bdpDesktop: {} })
-    applyDevAccessState(bareState('build'))
-    expect(sanoBuild()).toBe(false)
-    expect(canvasappHiddenInSano()).toBe(true)
-    expect(selectableProviders()).toEqual(['dev'])
-    applyDevAccessState(bareState('locked'))
-    expect(selectableProviders()).toEqual([])
-    expect(providerBlockedReason(activeProviderId())).toBe(SANO_PAUSED_REASON)
-    // the public web build in Electron: unchanged
-    vi.stubEnv('VITE_SANO_GATEWAY', '')
-    expect(canvasappHiddenInSano()).toBe(false)
-    expect(selectableProviders()).toEqual(['canvasapp'])
   })
 
   it('outside SANO: never offered, never chosen, refused', () => {

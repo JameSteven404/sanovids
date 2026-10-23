@@ -20,16 +20,13 @@ import { openImportJobs } from '../../siteJobActions'
 import {
   activeGateway,
   activeProviderId,
-  canvasappHiddenInSano,
   PROVIDER_LABEL,
   providerBlockedReason,
-  SANO_PAUSED_REASON,
   sanoGatewayProvider,
   selectableProviders,
   useDevAllowed,
   useProviderLimits,
   useProviderPrefs,
-  useVideoPausedInSano,
   type ProviderId,
 } from '../../providers'
 import { canvasappBridge, WEB_UNAVAILABLE, type CanvasappBridge } from '../../providers/canvasapp/transport'
@@ -65,9 +62,6 @@ import {
 import { Segmented } from './Segmented'
 import { Toggle } from './settingsUi'
 import { gatewayLoginFromCredits, type GatewayCreditsView } from './shared'
-
-/** D226: development mode open inside SANO — the only provider left there. */
-const SANO_DEV_ONLY = 'Trong SANO, tạo video thật đang tạm dừng — chỉ có chế độ Phát triển (giả lập, không tốn tiền) để thử.'
 
 /** logout() of a bridge; a rejected IPC call becomes an ok:false answer (shown, never "Đã đăng xuất"). */
 function bridgeLogout(bridge: CanvasappBridge): Promise<unknown> {
@@ -205,15 +199,11 @@ export function GatewaySection() {
   const setProvider = useProviderPrefs((s) => s.setProvider)
   // Re-renders when the development-mode lock flips (the gateway below follows it).
   useProviderPrefs((s) => s.active)
-  const paused = useVideoPausedInSano()
   const sano = activeProviderId() === 'sano-gateway'
   // why SANO cannot take new takes here (outside SANO, signed out…), re-read when its token state changes
   useProviderLimits((s) => s.rev['sano-gateway'])
   const sanoBlocked = sano ? providerBlockedReason('sano-gateway') : null
   const inSano = sanoGatewayAvailable()
-  const choices = selectableProviders() as readonly ProviderId[]
-  // D226: SANO's desktop frame with development mode open — the simulator is the only provider left there
-  const devOnly = devOpen && canvasappHiddenInSano() && !choices.includes('sano-gateway')
   /** Locked and the canvasapp gateway not turned on: nothing here may talk to canvasapp. */
   const off = !devOpen && provider !== 'canvasapp'
   // The gateway new takes use (re-read on every render: it follows the Settings choice above).
@@ -290,18 +280,6 @@ export function GatewaySection() {
   const checking = login.state === 'checking' || real.refreshing
   const site = dev ? 'canvasapp giả lập' : 'canvasapp.io.vn'
 
-  // D226: inside SANO nothing here names canvasapp; with development mode locked no provider is left.
-  if (paused) {
-    return (
-      <section className="dg-section dg-gateway">
-        <header>
-          <h3>Nhà cung cấp video</h3>
-          <p>{SANO_PAUSED_REASON}</p>
-        </header>
-      </section>
-    )
-  }
-
   return (
     <section className="dg-section dg-gateway">
       <header>
@@ -319,18 +297,11 @@ export function GatewaySection() {
           <p>
             Take mới gửi qua <b>máy chủ SANO</b> bằng tài khoản SANO đang đăng nhập trong app SANO — đăng nhập, model được mở và chi phí do SANO quản lý.
           </p>
-        ) : devOnly ? (
-          <p>{SANO_DEV_ONLY}</p>
         ) : devOpen ? (
           <p>
             <b>Phát triển (giả lập)</b> chạy đúng mã của cổng canvasapp thật (đăng nhập, tải ảnh, canvas, tạo job, theo dõi, tải video, nạp credit) nhưng tới một canvasapp giả
-            lập ngay trong SanoVids — không gọi mạng, không tốn tiền — để tìm và sửa lỗi.
-            {choices.includes('canvasapp') && (
-              <>
-                {' '}
-                <b>canvasapp.io.vn</b> tạo video thật bằng tài khoản canvasapp của chính bạn (bản desktop).
-              </>
-            )}
+            lập ngay trong SanoVids — không gọi mạng, không tốn tiền — để tìm và sửa lỗi. <b>canvasapp.io.vn</b> tạo video thật bằng tài khoản canvasapp của chính bạn (bản
+            desktop).
           </p>
         ) : (
           <p>{CANVASAPP_LOCKED_INTRO}</p>
@@ -338,7 +309,7 @@ export function GatewaySection() {
       </header>
 
       {!devOpen && !sano && <CanvasappSwitch desktop={desktop} />}
-      {devOpen && !devOnly && (
+      {devOpen && (
         <div className="dg-field">
           <span className="label">Nhà cung cấp video cho take mới</span>
           <Segmented
@@ -346,7 +317,7 @@ export function GatewaySection() {
             size="lg"
             value={provider}
             onChange={choose}
-            options={choices.map((p) => ({
+            options={(selectableProviders() as readonly ProviderId[]).map((p) => ({
               id: p,
               label: PROVIDER_LABEL[p],
               icon: p === 'dev' ? <Bug size={13} /> : <Cloud size={13} />,
@@ -364,7 +335,7 @@ export function GatewaySection() {
               title: p === 'canvasapp' && !desktop ? WEB_UNAVAILABLE : p === 'sano-gateway' && !inSano ? SANO_UNAVAILABLE : undefined,
             }))}
           />
-          {!desktop && choices.includes('canvasapp') && <div className="dg-field-hint">{WEB_UNAVAILABLE}</div>}
+          {!desktop && <div className="dg-field-hint">{WEB_UNAVAILABLE}</div>}
           {running > 0 && <div className="dg-field-hint">Đổi nhà cung cấp chỉ áp dụng cho take mới; {running} take đang chạy giữ nguyên nơi đã gửi.</div>}
         </div>
       )}

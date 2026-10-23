@@ -10,7 +10,7 @@ import { linkToastWithFill } from './placeholderActions'
 import { isModelId, MODELS, normalizeSettings } from './core/models'
 import { nameDate, nameTime, renderNameTemplate, type NameValues } from './core/nameTemplate'
 import { chargedDemo, creditKindOf, formatCredits } from './lib/credits'
-import { activeProviderId, canvasappHiddenInSano, devAllowed, providerBlockedReason, providerOf, providerPaused, SANO_PAUSED_REASON, sanoGatewayProvider } from './providers'
+import { activeProviderId, devAllowed, providerBlockedReason, providerOf, sanoGatewayProvider } from './providers'
 import { cancelQuestion, cancelToastText, type CancelFacts } from './components/runs/creditText'
 import { restoredFromTake } from './components/runs/restore'
 import { restoreBlock, restoreNotes, restorePlan } from './components/runs/importedTake'
@@ -680,8 +680,7 @@ export function requestRun(sceneIds: string[] = selectedSceneIds(), opts: { foll
   // build…): say why, with the way to Cài đặt, instead of a cost dialog that could only fail.
   const blocked = providerBlockedReason(activeProviderId())
   if (blocked) {
-    // D226: paused in SANO — nothing in Cài đặt changes that.
-    toast(blocked, { tone: 'warning', action: blocked === SANO_PAUSED_REASON ? undefined : { label: 'Mở Cài đặt', run: () => openSettings('gateway') } })
+    toast(blocked, { tone: 'warning', action: { label: 'Mở Cài đặt', run: () => openSettings('gateway') } })
     return
   }
   // The cost dialog checks and sends the prompt in the store: commit the text being typed first.
@@ -721,12 +720,9 @@ export function rerunTake(takeId: string, opts: { follow?: boolean } = {}) {
     requestRun([take.sceneId], opts)
     return
   }
-  // D226: a paused provider's take (canvasapp inside SANO) is neither sent again nor made anew here: no question about it
-  if (providerPaused(providerOf(take))) return void toast(SANO_PAUSED_REASON, { tone: 'warning' })
   const dev = providerOf(take) === 'dev'
   // A DEV take can only go back to the simulated server while development mode is open: never ask about it then.
   if (dev && !devAllowed()) {
-    if (canvasappHiddenInSano()) return void toast(SANO_PAUSED_REASON, { tone: 'warning' })
     toast(DEV_LOCKED_RETRY, { tone: 'warning', ms: 9000, action: { label: 'Chạy lại', run: () => requestRun([take.sceneId], opts) } })
     return
   }
