@@ -7,7 +7,7 @@ import { applyDevAccessState, bareState } from '../devAccess'
 import { sanoGatewayAvailable } from '../sano'
 import { stubInsideSano } from './insideSano'
 import { accountKey } from '../canvasapp/adapter'
-import { createSanoGatewayProvider, SANO_LOGIN_TEXT, SANO_OTHER_ACCOUNT, SANO_UNAVAILABLE, type SanoGatewayDeps } from '../sano/gateway'
+import { createSanoGatewayProvider, SANO_LOGIN_TEXT, SANO_OTHER_ACCOUNT, SANO_UNAVAILABLE, tokenAccount, type SanoGatewayDeps } from '../sano/gateway'
 import { jwt } from './insideSano'
 import { isResultTooLarge, isSubmitUncertain, ProviderError, type JobRequest } from '../types'
 
@@ -227,9 +227,15 @@ describe('sano-gateway provider', () => {
   it('401 (a token SANO refuses): deferred with the sign-in text (nothing made, never "maybe billed"), that token is never sent again, a new one is', async () => {
     const s = fakeSano()
     let token = 'tok'
-    const p = make(s, { token: async () => token })
-    s.opts.refuse401 = (path, _m, auth) => auth === 'Bearer tok' && path.startsWith('/api/video/jobs')
+    const told = vi.fn()
+    const p = make(s, { token: async () => token, onLimitsChange: told })
+    s.opts.refuse401 = (path, _m, auth) => {
+      const refuse = auth === 'Bearer tok' && path.startsWith('/api/video/jobs')
+      if (refuse) told.mockClear()
+      return refuse
+    }
     const err = await p.submit(req()).catch((e: unknown) => e)
+    expect(told).toHaveBeenCalledTimes(1) // the app hears of the 401 at once (the queue's wait banner), not 3 s later
     expect(err).toBeInstanceOf(ProviderError)
     expect(err).toMatchObject({ code: 'deferred', message: SANO_LOGIN_TEXT })
     expect(isSubmitUncertain(err)).toBe(false)
@@ -247,17 +253,40 @@ describe('sano-gateway provider', () => {
     expect(p.blockedReason()).toBeNull()
   })
 
-  it('an expired token (its JWT exp, read unverified) is never sent: the sign-in text until a fresh one', async () => {
+  it("a JWT whose exp is past by this PC's clock (running ahead) is still sent: only SANO's 401 says a token is dead", async () => {
     const s = fakeSano()
-    let token = jwt({ sub: 'A', exp: 1_000 })
-    const p = make(s, { token: async () => token, now: () => 2_000_000 })
-    await expect(p.submit(req())).rejects.toMatchObject({ code: 'deferred', message: SANO_LOGIN_TEXT })
-    expect(p.tokenState()).toBe('expired')
-    expect(p.blockedReason()).toBe(SANO_LOGIN_TEXT)
-    expect(s.fetch).not.toHaveBeenCalled()
-    token = jwt({ sub: 'A', exp: 3_000 })
+    const p = make(s, { token: async () => jwt({ sub: 'A', exp: 1_000 }), now: () => 2_000_000 })
+    expect(await p.refreshLimits({ force: true })).toBe('read')
     expect((await p.submit(req())).remoteId).toBe('job_1')
     expect(p.tokenState()).toBe('ok')
+    expect(p.blockedReason()).toBeNull()
+  })
+
+  it('reads the token from its creation inside SANO: before that first read ends nothing says "sign in" (the first ▶ after load goes); its end is told', async () => {
+    const s = fakeSano()
+    const token = vi.fn(async (): Promise<string | null> => jwt({ sub: 'A' }))
+    const p = make(s, { token })
+    expect(token).toHaveBeenCalledTimes(1) // started with the gateway, before any look
+    expect(p.blockedReason()).toBeNull() // a ▶ right now is not refused: its request waits for the token
+    const told = vi.fn()
+    const out = make(s, { token: async () => null, onLimitsChange: told })
+    expect(out.blockedReason()).toBeNull()
+    await vi.waitFor(() => expect(out.blockedReason()).toBe(SANO_LOGIN_TEXT)) // read: not signed in
+    expect(told).toHaveBeenCalledTimes(1) // the run gates / Settings / the queue re-read it
+    expect(p.account()).toBe(accountKey('A'))
+    // outside SANO the host's token is never read (no recheck either)
+    const outside = vi.fn(async () => 'tok')
+    expect(make(s, { token: outside, available: () => false }).tokenState()).toBe('none')
+    expect(outside).not.toHaveBeenCalled()
+    p.reset()
+    out.reset()
+  })
+
+  it("a token's account comes from its base64url payload (Google's: '-' / '_', a Vietnamese name in UTF-8)", () => {
+    const token = jwt({ sub: '1091', name: 'Trần Thị Bích Ngọc' })
+    expect(token).toMatch(/-|_/) // what the decoding must map back
+    expect(tokenAccount(token)).toBe(accountKey('1091'))
+    expect(tokenAccount('not-a-jwt')).toBeUndefined()
   })
 
   it("jobs are per SANO account: another account's take is blocked, and a job request whose token turned out to be another account's is never sent", async () => {
@@ -279,6 +308,9 @@ describe('sano-gateway provider', () => {
     await expect(p.recover(req())).rejects.toMatchObject({ code: 'deferred', message: SANO_OTHER_ACCOUNT })
     expect(s.calls('GET', /idempotencyKey/)).toHaveLength(0)
     expect(p.blockedReason(a)).toBeNull() // A again: its take goes on
+    token = tokB // switched again, not read yet: a cancel of A's queued job is never sent under B
+    await p.cancel(remoteId)
+    expect(s.calls('POST', /\/cancel$/)).toHaveLength(0)
     p.reset() // forgets the token too
     expect(p.tokenState()).toBe('none')
   })
@@ -353,9 +385,9 @@ describe('sano-gateway in the registry', () => {
     applyDevAccessState(bareState('build'))
   })
 
-  it('on only for the flagged build in an iframe of a same-origin page, whatever sets __SANO_GATEWAY__', () => {
+  it('on only for the flagged build in an iframe of a same-origin page, whatever sets __SANO_GATEWAY__', async () => {
     stubInsideSano()
-    expect(providerBlockedReason('sano-gateway')).toBe(SANO_LOGIN_TEXT) // inside SANO: only the sign-in is missing
+    await vi.waitFor(() => expect(providerBlockedReason('sano-gateway')).toBe(SANO_LOGIN_TEXT)) // inside SANO: only the sign-in is missing
     vi.stubEnv('VITE_SANO_GATEWAY', '') // the public web build, even framed
     expect(sanoGatewayAvailable()).toBe(false)
     stubInsideSano({ bdpDesktop: {} }) // Electron
@@ -392,7 +424,7 @@ describe('sano-gateway in the registry', () => {
     expect(normalizeProviderChoice('sano-gateway')).toBe('sano-gateway')
   })
 
-  it('inside SANO: chosen while locked on the web or when picked; Electron keeps canvasapp', () => {
+  it('inside SANO: chosen while locked on the web or when picked; Electron keeps canvasapp', async () => {
     expect(effectiveProvider({ access: 'locked', saved: 'dev', bridge: false, sano: true })).toBe('sano-gateway')
     expect(effectiveProvider({ access: 'locked', saved: 'canvasapp', bridge: true, sano: true })).toBe('canvasapp')
     expect(effectiveProvider({ access: 'build', saved: 'dev', bridge: false, sano: true })).toBe('dev')
@@ -403,7 +435,7 @@ describe('sano-gateway in the registry', () => {
     expect(sanoGatewayAvailable()).toBe(true)
     expect(activeProviderId()).toBe('sano-gateway')
     expect(selectableProviders()).toEqual(['canvasapp', 'sano-gateway'])
-    expect(providerBlockedReason('sano-gateway')).toBe(SANO_LOGIN_TEXT) // not signed in to SANO yet
+    await vi.waitFor(() => expect(providerBlockedReason('sano-gateway')).toBe(SANO_LOGIN_TEXT)) // not signed in to SANO yet
     expect(getProvider('sano-gateway').id).toBe('sano-gateway')
     // no canvasapp account in SANO: the canvasapp gateway stands in (no bridge on the web)
     expect(activeGateway().id).toBe('canvasapp')

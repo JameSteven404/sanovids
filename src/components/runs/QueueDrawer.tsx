@@ -25,12 +25,12 @@ import { sceneCode } from '../../core/compile'
 import { MODELS } from '../../core/models'
 import type { Scene, Take } from '../../core/types'
 import { CREDIT_MARK, formatCredits } from '../../lib/credits'
-import { PROVIDER_LABEL } from '../../providers'
+import { PROVIDER_LABEL, useProviderLimits } from '../../providers'
 import { useDevAllowed } from '../../providers/devAccess'
 import { providerOf } from '../../providers/types'
 import { useDevServer, type DevSpeed } from '../../providers/dev'
 import { useProject } from '../../store/project'
-import { clearableTakes, isParkedTake, useRuns } from '../../store/runs'
+import { clearableTakes, isParkedTake, parkedReasons, useRuns } from '../../store/runs'
 import { transferPercent, useTakeTransfers } from '../../store/takeTransfers'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
@@ -47,6 +47,16 @@ const DEV_SPEED_SHORT: Record<DevSpeed, string> = { fast: 'nhanh', realistic: 't
 const DONE_PAGE = 40
 
 const openSettings = () => useUI.getState().openDialog({ kind: 'settings' })
+
+/**
+ * Why queued / running takes wait here (store/runs parkedReasons: SANO signed out, another SANO account, outside SANO),
+ * re-read when SANO's token state changes (not in the runs store). One reason at a time: the gateway's state decides it
+ * (only another account's takes differ from the rest, and they all say the same).
+ */
+function useParked(): string[] {
+  useProviderLimits((s) => s.rev['sano-gateway'])
+  return useRuns(useShallow((s) => parkedReasons(s.takes)))
+}
 
 /** Queue docked at the bottom of the center area: a 36px material bar that expands into the job list. */
 export function QueueDrawer() {
@@ -84,6 +94,7 @@ function QueueBar({ open }: { open: boolean }) {
   )
   const issue = useRuns((s) => s.providerIssue)
   const elsewhere = useRuns((s) => s.engineElsewhere)
+  const parked = useParked()
   const toggle = () => useUI.getState().setQueueOpen(!open)
 
   return (
@@ -122,6 +133,12 @@ function QueueBar({ open }: { open: boolean }) {
         <span className="rq-chip warn" title={`${PROVIDER_LABEL[issue.provider]}: ${issue.message}`}>
           <TriangleAlert size={12} />
           <span className="rq-chip-text">{PROVIDER_LABEL[issue.provider]} đang gặp sự cố</span>
+        </span>
+      )}
+      {parked.length > 0 && (
+        <span className="rq-chip warn" title={parked[0]}>
+          <TriangleAlert size={12} />
+          <span className="rq-chip-text">{parked.length} take đang chờ</span>
         </span>
       )}
       {elsewhere && (
@@ -188,6 +205,7 @@ function QueuePanel() {
   const takes = useRuns((s) => s.takes)
   const issue = useRuns((s) => s.providerIssue)
   const elsewhere = useRuns((s) => s.engineElsewhere)
+  const parked = useParked()
   const provider = useActiveProvider()
   const runKey = useShortcutLabel('scene.run')
   // 'Bảng phát triển' only while development mode is open (a DEV take may still finish while it is locked)
@@ -288,6 +306,15 @@ function QueuePanel() {
                 Mở Cài đặt
               </button>
             )}
+          </div>
+        )}
+        {parked.length > 0 && (
+          <div className="rq-banner warn" role="status">
+            <TriangleAlert size={15} />
+            <div className="rq-banner-text">
+              <b>{parked[0]}</b>
+              <small>{parked.length} take đang chờ — giữ nguyên tiến độ, SanoVids không gửi hay tải gì cho tới khi chạy tiếp được.</small>
+            </div>
           </div>
         )}
         {elsewhere && (

@@ -24,6 +24,7 @@ import { useProject } from '../../store/project'
 import {
   clearableTakes,
   checkTakesKey,
+  currentRestartWork,
   isParkedTake,
   isUncertainSubmit,
   isUnverifiableSubmit,
@@ -33,8 +34,10 @@ import {
   remoteVideoReady,
   requestInFlight,
   requestInFlightText,
+  sendingCount,
   setEngineHooks,
   setEngineLockManager,
+  stopEngine,
   UNKNOWN_SUBMIT_ERROR,
   unknownSubmitError,
   unverifiableSubmitError,
@@ -45,7 +48,7 @@ import { capabilitiesFromModels } from '../capabilities'
 import { retiredVideoReason } from '../../core/runRules'
 import type { SiteJobClaim, SiteTakeDraft } from '../canvasapp/siteJobs'
 import { accountKey } from '../canvasapp/adapter'
-import { SANO_LOGIN_TEXT, SANO_OTHER_ACCOUNT } from '../sano/gateway'
+import { SANO_LOGIN_TEXT, SANO_LOGIN_WAIT, SANO_OTHER_ACCOUNT } from '../sano/gateway'
 import { getBlob } from '../../lib/imageStore'
 import { jwt, stubInsideSano } from './insideSano'
 
@@ -1200,7 +1203,12 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
       const owner = String(JSON.parse(atob(token.split('.')[1])).sub)
       const u = new URL(String(url), 'https://sano.example')
       if (u.pathname.endsWith('/capabilities')) return json(200, { models: [{ id: 'seedance_2_5', label: 'Seedance 2.5', ratios: ['16:9'], resolutions: ['480p'], durations: [5], maxRefs: 4 }] })
-      if (init?.method === 'POST') {
+      const result = u.pathname.match(/\/jobs\/([^/]+)\/result$/)
+      if (result) {
+        const job = jobs.get(decodeURIComponent(result[1]))
+        return job?.owner === owner && job.status === 'done' ? new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'video/mp4' } }) : json(404, { error: 'not found' })
+      }
+      if (init?.method === 'POST' && u.pathname.endsWith('/jobs')) {
         const key = String(JSON.parse(String(init.body)).idempotencyKey)
         const id = `${owner}_${key}`
         if (jobs.has(id)) return json(200, { id, status: jobs.get(id)!.status })
@@ -1218,22 +1226,21 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
 
   const sanoTake = (id: string, sceneId: string, over: Partial<Take> = {}) => legacyTake(id, sceneId, { provider: 'sano-gateway', charged: false, ...over })
 
-  it.each(['none', 'expired', 'refused'] as const)(
+  it.each(['none', 'refused'] as const)(
     'inside SANO without a usable token (%s): SANO takes wait with the sign-in text — no request, no lock, no refs read — and go on by themselves once SANO gives a new one',
     async (state) => {
       const server = sanoServer()
       const locks = fakeLocks()
       const request = vi.spyOn(locks, 'request')
       setEngineLockManager(locks)
-      let token: string | null = state === 'none' ? null : state === 'expired' ? jwt({ sub: 'A', exp: 1 }) : jwt({ sub: 'A' })
+      let token: string | null = state === 'none' ? null : jwt({ sub: 'A' })
       stubInsideSano({ __SANO_GATEWAY__: { token: () => token } })
       vi.mocked(getBlob).mockImplementation(async () => new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' }))
       const sano = getProvider('sano-gateway')
       try {
-        if (state === 'refused') {
-          server.refused.add(token!)
-          expect(await sano.refreshLimits?.({ force: true })).toBe('login') // the one request that learns it: 401
-        }
+        if (state === 'refused') server.refused.add(token!)
+        // the look that learns it (for a refused token, the one request: its 401)
+        expect(await sano.refreshLimits?.({ force: true })).toBe('login')
         server.fetch.mockClear()
         vi.mocked(getBlob).mockClear()
         server.jobs.set('A_r', { owner: 'A', key: 'r', status: 'running', progress: 30 })
@@ -1253,7 +1260,7 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
           ['r', 'processing', 'A_r', null],
           ['x', 'processing', null, null],
         ])
-        expect(parkedReason(take('q'))).toBe(SANO_LOGIN_TEXT) // what the queue row says
+        expect(parkedReason(take('q'))).toBe(SANO_LOGIN_WAIT) // what the queue says: it goes on by itself
         useProviderPrefs.setState({ provider: 'sano-gateway' })
         expect(useRuns.getState().enqueue(['s2']).error).toBe(SANO_LOGIN_TEXT) // a new run is refused, saying why
 
@@ -1350,6 +1357,112 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
       sano.reset?.()
       vi.unstubAllGlobals()
       vi.unstubAllEnvs()
+    }
+  })
+
+  /** SANO with two accounts' tokens; `host.token` is what the host page gives now. */
+  function twoAccounts() {
+    const server = sanoServer()
+    const tok = { A: jwt({ sub: 'A' }), B: jwt({ sub: 'B' }) }
+    const host = { token: tok.A }
+    stubInsideSano({ __SANO_GATEWAY__: { token: () => host.token } })
+    const done = () => {
+      server.fetch.mockRestore()
+      vi.unstubAllGlobals()
+      vi.unstubAllEnvs()
+      // outside SANO now: its signal (an engine look) does not start a recheck on this test's fake clock
+      getProvider('sano-gateway').reset?.()
+    }
+    return { server, tok, host, sano: getProvider('sano-gateway'), done }
+  }
+
+  it('a take queued under A waits when B signs in before it is sent — nothing posted (billed) under B — and goes under A once A is back', async () => {
+    const { server, tok, host, sano, done } = twoAccounts()
+    try {
+      expect(await sano.refreshLimits?.({ force: true })).toBe('read') // signed in as A
+      useProviderPrefs.setState({ provider: 'sano-gateway' })
+      expect(useRuns.getState().enqueue(['s2']).queued).toBe(1)
+      const id = useRuns.getState().takes[0].id
+      expect(take(id).account).toBe(accountKey('A'))
+      host.token = tok.B // B signs in in SANO before the queue sent it
+      await sano.refreshLimits?.({ force: true })
+      await vi.advanceTimersByTimeAsync(20_000)
+      expect(server.sent('/jobs')).toBe(0)
+      expect(take(id)).toMatchObject({ status: 'queued', remoteId: null })
+      expect(parkedReason(take(id))).toBe(SANO_OTHER_ACCOUNT)
+      host.token = tok.A
+      await vi.advanceTimersByTimeAsync(16_000)
+      expect(take(id)).toMatchObject({ status: 'processing', remoteId: `A_${id}` })
+      expect(server.sent('/jobs')).toBe(1)
+    } finally {
+      done()
+    }
+  })
+
+  it("the account switches while a take's POST is on its way: the engine keeps the lock until it answers (no second tab recovers it meanwhile)", async () => {
+    const { server, tok, host, sano, done } = twoAccounts()
+    const locks = fakeLocks()
+    setEngineLockManager(locks)
+    let answer = () => {}
+    const inner = server.fetch.getMockImplementation()!
+    server.fetch.mockImplementation(async (url, init) => {
+      if (init?.method === 'POST') await new Promise<void>((r) => (answer = r))
+      return inner(url, init)
+    })
+    try {
+      await sano.refreshLimits?.({ force: true })
+      useRuns.getState().loadRuns({ takes: [sanoTake('q', 's2', { account: accountKey('A') })], credits: 100, spent: 0 })
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(server.sent('/jobs')).toBe(1) // on its way
+      host.token = tok.B
+      await vi.advanceTimersByTimeAsync(4_000) // B seen: the take is A's (parked), but its POST is still out
+      expect(parkedReason(take('q'))).toBe(SANO_OTHER_ACCOUNT)
+      expect(locks.held.size).toBe(1)
+      expect(sendingCount()).toBe(1) // an update restart still waits for it
+      expect(currentRestartWork()).toEqual({ queued: 0, processing: 1, sending: 1 })
+      stopEngine() // given back meanwhile (persist: a stale copy), then looked at again on SANO's signal: taken again
+      await sano.refreshLimits?.({ force: true })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(locks.held.size).toBe(1)
+      answer()
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(take('q')).toMatchObject({ status: 'processing', remoteId: 'A_q' })
+      expect(locks.held.size).toBe(0) // now it only waits for A
+    } finally {
+      done()
+    }
+  })
+
+  it('a take whose account was switched away after its poll went out is never downloaded — nor cancelled — under the other account (no failed try); back under A it finishes', async () => {
+    const { server, tok, host, done } = twoAccounts()
+    const a = { account: accountKey('A') }
+    server.jobs.set('A_r', { owner: 'A', key: 'r', status: 'done' })
+    server.jobs.set('A_c', { owner: 'A', key: 'c', status: 'queued' })
+    let switched = false
+    const inner = server.fetch.getMockImplementation()!
+    server.fetch.mockImplementation(async (url, init) => {
+      if (String(url) === '/api/video/jobs/A_r' && !switched) {
+        switched = true
+        host.token = tok.B // B signs in in SANO while A's poll is out: seen (3 s) before its answer
+        await new Promise((r) => setTimeout(r, 3_500))
+      }
+      return inner(url, init)
+    })
+    try {
+      const running = (id: string) => sanoTake(id, 's2', { ...a, status: 'processing', startedAt: 5, remoteId: `A_${id}` })
+      useRuns.getState().loadRuns({ takes: [running('r'), running('c')], credits: 100, spent: 0 })
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(server.sent('/jobs/A_r/result')).toBe(0)
+      expect(take('r')).toMatchObject({ status: 'processing', error: null })
+      useRuns.getState().cancel('c') // A's job, still queued there: its cancel is not sent under B
+      await vi.advanceTimersByTimeAsync(10)
+      expect(server.sent('/jobs/A_c/cancel')).toBe(0)
+      host.token = tok.A
+      await vi.advanceTimersByTimeAsync(20_000)
+      expect(take('r').status).toBe('completed')
+      expect(server.sent('/jobs/A_r/result')).toBe(1)
+    } finally {
+      done()
     }
   })
 

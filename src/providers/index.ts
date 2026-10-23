@@ -447,3 +447,7 @@ export async function refreshProviderLimits(id: ProviderId, opts: RefreshLimitsO
     return 'failed'
   }
 }
+
+// The SANO build makes its gateway at load: inside SANO it starts reading SANO's token then, so the first ▶ and the
+// queue already know whether the user is signed in.
+if (sanoBuild()) getProvider('sano-gateway')

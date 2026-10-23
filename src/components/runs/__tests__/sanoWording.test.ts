@@ -15,7 +15,7 @@ vi.mock('../../../lib/imageStore', () => ({
 
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import type { Scene } from '../../../core/types'
+import type { Scene, Take } from '../../../core/types'
 import { activeProviderId, sanoGatewayProvider } from '../../../providers'
 import { applyDevAccessState, bareState } from '../../../providers/devAccess'
 import { stubInsideSano } from '../../../providers/__tests__/insideSano'
@@ -26,13 +26,14 @@ import {
   hasUncertainSubmitText,
   maybeBilledRunWarning,
   paidCancelledRunWarning,
+  parkedReasons,
   SANO_UNKNOWN_SUBMIT_ERROR,
   UNKNOWN_SUBMIT_ERROR,
   unknownSubmitError,
   useRuns,
 } from '../../../store/runs'
 import { useUI } from '../../../store/ui'
-import { SANO_LOGIN_TEXT, SANO_UNAVAILABLE } from '../../../providers/sano/gateway'
+import { SANO_LOGIN_TEXT, SANO_LOGIN_WAIT, SANO_UNAVAILABLE } from '../../../providers/sano/gateway'
 import { GatewaySection } from '../../dialogs/GatewaySection'
 import { Inspector } from '../../inspector/Inspector'
 import { costTitle } from '../../sidebar/shared'
@@ -142,7 +143,7 @@ describe('SANO wording', () => {
     }
   })
 
-  it('Settings says why SANO cannot take new takes: a plain tab of the SANO build (its choice off), signed out inside SANO', () => {
+  it('Settings says why SANO cannot take new takes: a plain tab of the SANO build (its choice off), signed out inside SANO', async () => {
     vi.stubGlobal('window', { location: { origin: 'https://sano.example' } }) // SANO's /sanovids/ in a plain tab
     const seg = /<button[^>]*data-seg="sano-gateway"[^>]*>/
     for (const access of ['locked', 'build'] as const) {
@@ -152,8 +153,18 @@ describe('SANO wording', () => {
       // development mode open: SANO is listed, but disabled here (like canvasapp outside the desktop app)
       if (access === 'build') expect(html.match(seg)?.[0]).toMatch(/disabled=""/)
     }
-    stubInsideSano() // inside SANO, before sign-in
+    stubInsideSano() // inside SANO, not signed in
     applyDevAccessState(bareState('locked'))
+    expect(await sanoGatewayProvider().refreshLimits({ force: true })).toBe('login') // the token read
     expect(renderToStaticMarkup(createElement(GatewaySection))).toContain(SANO_LOGIN_TEXT)
+  })
+
+  it("queue: what the bar's chip and the list's banner say of SANO takes that wait for a sign-in (a wait that ends by itself)", async () => {
+    stubInsideSano() // inside SANO, signed out (SANO's 1 h token was not renewed)
+    expect(await sanoGatewayProvider().refreshLimits({ force: true })).toBe('login')
+    const t = (status: Take['status'], provider: Take['provider'] = 'sano-gateway') => ({ id: status, status, provider, remoteId: null }) as Take
+    const takes = [t('processing'), t('queued'), t('completed'), t('failed'), t('cancelled'), t('processing', 'dev')]
+    expect(parkedReasons(takes)).toEqual([SANO_LOGIN_WAIT, SANO_LOGIN_WAIT])
+    expect(SANO_LOGIN_WAIT).not.toBe(SANO_LOGIN_TEXT) // the Run refusal keeps its own words
   })
 })

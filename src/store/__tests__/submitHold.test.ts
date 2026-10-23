@@ -195,8 +195,8 @@ describe('restartWork', () => {
     useRuns.setState({ takes })
     expect(restartWork(takes, new Set(['s1']))).toEqual({ queued: 0, processing: 0, sending: 0 })
     expect(sendingCount()).toBe(0) // "Cập nhật ngay" never waits 15 s for it
-    stubInsideSano() // not signed in to SANO yet: nothing runs either
-    expect(restartWork(takes, new Set(['s1']))).toEqual({ queued: 0, processing: 0, sending: 0 })
+    stubInsideSano() // not signed in to SANO (once the token was read): nothing runs either
+    await vi.waitFor(() => expect(restartWork(takes, new Set(['s1']))).toEqual({ queued: 0, processing: 0, sending: 0 }))
     stubInsideSano({ __SANO_GATEWAY__: { token: () => 'tok' } }) // signed in: the queue sends, polls and looks them up
     getProvider('sano-gateway').reset?.() // forgets the unsigned look (its next look reads the token)
     await vi.waitFor(() => expect(restartWork(takes, new Set(['s1']))).toEqual({ queued: 1, processing: 2, sending: 1 }))

@@ -61,6 +61,7 @@ import { activeProviderId, getProvider, providerBlockedReason, providerLimits, r
 import { decodeRemoteId } from '../providers/canvasapp/mapping'
 import type { SiteJobClaim, SiteTakeDraft } from '../providers/canvasapp/siteJobs'
 import { settingsRunBlock, settingsRunWarning } from '../providers/limits'
+import { SANO_LOGIN_TEXT, SANO_LOGIN_WAIT } from '../providers/sano'
 import { createMockProvider, DEFAULT_MOCK_SETTINGS, parseMockSettings, type MockSettings } from '../providers/mock'
 import { posterFromVideo } from '../providers/poster'
 import {
@@ -516,17 +517,23 @@ export function holdNewSubmits(on: boolean): void {
 
 /**
  * Why a SANO take waits here, or null: outside the SANO app (Electron, the public web build, SANO's /sanovids/ in a
- * plain tab), no usable SANO token (not signed in, expired, refused), or its job is another SANO account's (Take.account).
- * Such a take is no work here (engine, lock, restart, update): never sent, polled, looked up or failed — it keeps its
- * state and goes on by itself once it can (the engine wakes on the gateway's signal: useProviderLimits.subscribe below).
+ * plain tab), no usable SANO token (not signed in, refused), or its job is another SANO account's (Take.account).
+ * Such a take is no work here (engine, lock, restart, update): never sent, polled, downloaded, looked up or failed — it
+ * keeps its state and goes on by itself once it can (the engine wakes on the gateway's signal: useProviderLimits.subscribe
+ * below). In the words of a take that waits (the queue's banner), not of the Run refusal.
  */
-export const parkedReason = (t: Pick<Take, 'provider' | 'account'>): string | null =>
-  providerOf(t) === 'sano-gateway' ? providerBlockedReason('sano-gateway', t.account) : null
+export const parkedReason = (t: Pick<Take, 'provider' | 'account'>): string | null => {
+  const why = providerOf(t) === 'sano-gateway' ? providerBlockedReason('sano-gateway', t.account) : null
+  return why === SANO_LOGIN_TEXT ? SANO_LOGIN_WAIT : why
+}
 
 export const cannotRunHere = (t: Pick<Take, 'provider' | 'account'>): boolean => !!parkedReason(t)
 
+/** Parked with no request of its own on its way: one whose POST / download is still out keeps the engine (and the lock). */
+const noWorkHere = (t: Take): boolean => cannotRunHere(t) && !submitting.has(t.id) && !fetching.has(t.id)
+
 /** A running remote take whose submit has no remote id yet: it is being sent right now. */
-export const isSendingTake = (t: Take): boolean => t.status === 'processing' && providerOf(t) !== 'mock' && !remoteIdOf(t) && !cannotRunHere(t)
+export const isSendingTake = (t: Take): boolean => t.status === 'processing' && providerOf(t) !== 'mock' && !remoteIdOf(t) && !noWorkHere(t)
 
 /** Takes being sent to their provider right now (see isSendingTake). */
 export function sendingCount(): number {
@@ -570,15 +577,15 @@ export const UNKNOWN_MODEL_ERROR = 'Model của video này không có trong bả
 /**
  * What an app restart would interrupt (updateActions "Cập nhật khi xong", UpdateDialog, the update pill). A queued take
  * whose scene was deleted is left out: the queue never starts it (it waits for an Undo of the delete) and it is kept
- * across a restart, so waiting for it would wait forever. A newer build's take (isForeignTake) and a SANO take outside
- * the SANO app (cannotRunHere) never count.
+ * across a restart, so waiting for it would wait forever. A newer build's take (isForeignTake) and a parked SANO take
+ * (cannotRunHere) with no request of its own on its way never count.
  */
 export function restartWork(takes: readonly Take[], sceneIds: ReadonlySet<string>): RestartWork {
   let queued = 0
   let processing = 0
   let sending = 0
   for (const t of takes) {
-    if (isForeignTake(t) || cannotRunHere(t)) continue
+    if (isForeignTake(t) || noWorkHere(t)) continue
     if (t.status === 'queued') {
       if (sceneIds.has(t.sceneId)) queued++
     } else if (t.status === 'processing') {
@@ -712,6 +719,8 @@ export const useRuns = create<RunsState>()((set, get) => ({
     }
 
     const now = Date.now()
+    // the account (SANO) its job is for from now on: under another one it waits, never sent (and billed) there
+    const account = getProvider(providerId).account?.()
     const created: Take[] = ok.map((c, i) => {
       const scene = project.scenes.find((s) => s.id === c.sceneId)!
       const compiled = compileScene(project, scene)
@@ -742,6 +751,7 @@ export const useRuns = create<RunsState>()((set, get) => ({
         remoteId: null,
         charged: chargeLocal,
         framesSnapshot: { first: frameSnapshotKey(project.assets, scene.firstFrame), last: frameSnapshotKey(project.assets, scene.lastFrame) },
+        ...(account ? { account } : {}),
       }
     })
     const charge = chargeLocal ? cost : 0
@@ -757,7 +767,8 @@ export const useRuns = create<RunsState>()((set, get) => ({
     fetchFailures.delete(takeId)
     fetchRetryAt.delete(takeId)
     const remoteId = remoteIdOf(take)
-    if (remoteId) {
+    // a parked take's job is another SANO account's (or cannot be reached from here): never asked under this one
+    if (remoteId && !cannotRunHere(take)) {
       try {
         void getProvider(providerOf(take)).cancel?.(remoteId)
       } catch {
@@ -977,7 +988,7 @@ function resetEngineState() {
   if (held && held !== engineLockName(useProject.getState().project.id)) engineLock.release()
 }
 
-const hasWork = (takes: Take[]) => takes.some((t) => (t.status === 'queued' || t.status === 'processing') && !cannotRunHere(t))
+const hasWork = (takes: Take[]) => takes.some((t) => (t.status === 'queued' || t.status === 'processing') && !noWorkHere(t))
 
 function setElsewhere(v: boolean) {
   if (useRuns.getState().engineElsewhere !== v) useRuns.setState({ engineElsewhere: v })
@@ -1217,7 +1228,7 @@ function tick() {
   }
   parkForeignTakes()
   // only these keep the engine (and the lock): a tab inside SANO on the same project must get it
-  const takes = useRuns.getState().takes.filter((t) => !cannotRunHere(t))
+  const takes = useRuns.getState().takes.filter((t) => !noWorkHere(t))
   const active = takes.filter((t) => t.status === 'processing')
   const queued = takes.filter((t) => t.status === 'queued').sort((a, b) => a.createdAt - b.createdAt)
   if (!active.length && !queued.length) {
@@ -1553,6 +1564,8 @@ async function pollProvider(pid: ProviderId, remoteIds: string[], gen: number) {
       case 'completed':
         if (t.progress !== 99) progress.set(t.id, 99)
         if (Date.now() < (fetchRetryAt.get(t.id) ?? 0)) break // last download failed: wait a little
+        // parked since the poll (SANO: another account now): downloaded under its own account later, never under this one
+        if (cannotRunHere(t)) break
         fetching.add(t.id)
         void finishTake(t.id, st.remoteId, gen)
         break
@@ -1627,6 +1640,12 @@ export const takesOf = (sceneId: string) => (s: RunsState) => s.takes.filter((t)
 export const latestTake = (takes: Take[], sceneId: string) =>
   takes.filter((t) => t.sceneId === sceneId).sort((a, b) => b.number - a.number)[0]
 export const activeCount = (s: RunsState) => s.takes.filter((t) => t.status === 'queued' || t.status === 'processing').length
+/** parkedReason of each queued / running take that waits here, one entry per take (the queue's chip and banner). */
+export const parkedReasons = (takes: readonly Take[]): string[] =>
+  takes.flatMap((t) => {
+    const why = t.status === 'queued' || t.status === 'processing' ? parkedReason(t) : null
+    return why ? [why] : []
+  })
 
 // ---- React hooks with stable selections (zustand v5 needs useShallow for derived arrays) ----
 import { useShallow } from 'zustand/react/shallow'

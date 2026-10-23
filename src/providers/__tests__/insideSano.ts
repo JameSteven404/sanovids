@@ -8,5 +8,6 @@ export function stubInsideSano(win: object = {}): void {
   vi.stubGlobal('window', { location, ...win, parent: { location } })
 }
 
-/** A JWT as SANO's host gives it (SanoVids only reads its payload, unverified). */
-export const jwt = (payload: object): string => `h.${btoa(JSON.stringify(payload)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')}.s`
+/** A JWT as SANO's host gives it: its payload UTF-8 JSON in base64url (SanoVids only reads it, unverified). */
+export const jwt = (payload: object): string =>
+  `h.${btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(payload)))).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')}.s`

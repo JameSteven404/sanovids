@@ -7,7 +7,7 @@
 import { getBlob } from '../../lib/imageStore'
 import { createSanoGatewayProvider, type SanoGatewayProvider } from './gateway'
 
-export { SANO_LABEL, SANO_LOGIN_TEXT, SANO_UNAVAILABLE, type SanoGatewayProvider } from './gateway'
+export { SANO_LABEL, SANO_LOGIN_TEXT, SANO_LOGIN_WAIT, SANO_UNAVAILABLE, type SanoGatewayProvider } from './gateway'
 
 /** The host's object: on this page, else on the same-origin parent page (SANO showing SanoVids in an iframe). */
 function hostGateway(): Window['__SANO_GATEWAY__'] {
