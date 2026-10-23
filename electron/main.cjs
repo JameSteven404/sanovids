@@ -192,6 +192,26 @@ protocol.registerSchemesAsPrivileged([
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
+  // D223: before Chromium opens the profile it shares with SanoVids / Sano Agent (updaterRules.profileElectronGate).
+  const seenFile = path.join(profile.dir, 'electron-version')
+  let seen
+  try {
+    seen = fs.readFileSync(seenFile, 'utf8')
+  } catch {} // no record yet: a new profile, or one opened only by builds without this check
+  const gate = updaterRules.profileElectronGate(seen, process.versions.electron)
+  if (gate === 'refuse') {
+    const name = app.getName()
+    dialog.showErrorBox(name, `Dữ liệu ở ${profile.dir} đã được mở bằng một bản SanoVids hoặc Sano Agent mới hơn (Electron ${seen.trim()}). Bản ${name} này (Electron ${process.versions.electron}) cũ hơn nên không mở, để không làm hỏng dự án. Hãy cài bản ${name} mới nhất: ${updaterRules.releasesUrl(name)}`)
+    process.exit(4)
+  }
+  if (gate === 'write') {
+    try {
+      fs.mkdirSync(profile.dir, { recursive: true })
+      fs.writeFileSync(seenFile, process.versions.electron)
+    } catch (e) {
+      console.error(`[SanoVids] could not record the profile's Electron version: ${e && e.message}`)
+    }
+  }
   // A second launch brings THE SanoVids window forward (never a canvasapp login / checkout window).
   app.on('second-instance', () => showMainWindow())
   // Every web page SanoVids ever creates (main window, canvasapp login and its popups, checkout): no <webview>, and
@@ -467,7 +487,11 @@ function createWindow() {
     firstShow()
     void dialog
       .showMessageBox(win, { type: 'error', title: 'Sano Agent', message, detail, buttons: ['Thử lại', 'Thoát'], defaultId: 0, cancelId: 1, noLink: true })
-      .then(({ response }) => (response === 0 ? void win.loadURL(SANO.url) : app.quit()))
+      .then(({ response }) => {
+        if (response !== 0) return app.quit()
+        sanoOpened = false // a retry is a new first load: a redirect of it is explained too, whatever loaded before
+        void win.loadURL(SANO.url)
+      })
   }
   // SANO desktop: SANO's page comes from a server now, and a server redirect must not take the window elsewhere either.
   // A redirect is the server's, not the user's click: never opened in the browser. Refused on the very first load, the

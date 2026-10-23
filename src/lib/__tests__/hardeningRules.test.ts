@@ -409,7 +409,8 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(mainSource).toContain("win.once('ready-to-show', firstShow)")
     expect(mainSource).toMatch(/if \(SANO\) webContents\.on\('did-navigate', \(_event, url\) => \{\s+if \(url\.startsWith\(home\)\) sanoOpened = true/)
     expect(failed).toContain("title: 'Sano Agent', message, detail, buttons: ['Thử lại', 'Thoát']")
-    expect(failed).toContain('(response === 0 ? void win.loadURL(SANO.url) : app.quit())')
+    // Thử lại after SANO had loaded once: the retry's own redirect is explained again (sanoOpened reset first)
+    expect(failed).toMatch(/if \(response !== 0\) return app\.quit\(\)\s+sanoOpened = false[^\n]*\n\s+void win\.loadURL\(SANO\.url\)/)
     expect(failed).not.toContain('app.exit')
     // the page learns which app it is (download page label), from main only
     expect(preloadSource).toContain("product: productArg ? productArg.slice('--bdp-product='.length) : '',")

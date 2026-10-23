@@ -15,6 +15,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type Componen
 import { CLICK_TO_CUT_TRASH_NOTE, FOLDER_UNLINK_TRASH_ROW } from '../../core/folderTrash'
 import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE, PLACEMENT_KEYWORDS } from '../../lib/aboutModel'
 import { BIG_PROJECT_ROW, NODE_EDITOR_ROW, WHEEL_ROW } from '../../lib/canvasPrefs'
+import { PRODUCT_NAME } from '../../lib/updateTypes'
 import { useDevAllowed } from '../../providers'
 import { oneOf, parsePref, useUI } from '../../store/ui'
 import { Modal } from '../common/Modal'
@@ -156,11 +157,11 @@ const GROUPS: Group[] = [
       {
         id: 'updateAutoDownload',
         label: 'Tự động tải bản cập nhật',
-        hint: 'Bản mới được tải ngầm khi có mạng và tự cài khi bạn tắt SanoVids. Tắt: chỉ báo có bản mới, bạn bấm để tải.',
+        hint: `Bản mới được tải ngầm khi có mạng và tự cài khi bạn tắt ${PRODUCT_NAME}. Tắt: chỉ báo có bản mới, bạn bấm để tải.`,
         keywords: 'tự động tải update download nền ngầm',
         C: UpdateAutoDownloadSetting,
       },
-      { id: 'updateCheck', label: 'Kiểm tra cập nhật', hint: 'SanoVids tự kiểm tra khi mở và 4 giờ một lần.', keywords: 'check kiểm tra ngay', C: UpdateCheckSetting },
+      { id: 'updateCheck', label: 'Kiểm tra cập nhật', hint: `${PRODUCT_NAME} tự kiểm tra khi mở và 4 giờ một lần.`, keywords: 'check kiểm tra ngay', C: UpdateCheckSetting },
     ],
   },
   {

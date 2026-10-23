@@ -96,9 +96,9 @@ export const UPDATE_ERROR_TEXT: Record<UpdateErrorCode, string> = {
   checksum: 'File cập nhật tải về bị lỗi (sai mã kiểm tra) nên đã bị bỏ.',
   // Never "download it from the release page": that page may be the very place that served the refused file.
   signature:
-    'Bản cập nhật này không mang chữ ký số đúng của tác giả hoặc không đúng phiên bản được báo (có thể là file giả mạo) nên SanoVids đã xoá nó, không cài gì. Đừng tự tải bản này về cài. Chỉ cài bộ cài có dấu vân tay chứng chỉ trùng với Cài đặt → Giới thiệu, hoặc hỏi tác giả.',
+    'Bản cập nhật này không mang chữ ký số đúng của tác giả hoặc không đúng phiên bản được báo (có thể là file giả mạo) nên đã bị xoá, không cài gì. Đừng tự tải bản này về cài. Chỉ cài bộ cài có dấu vân tay chứng chỉ trùng với Cài đặt → Giới thiệu, hoặc hỏi tác giả.',
   'signature-unverified':
-    'Chưa kiểm tra được chữ ký số của bản cập nhật (máy đang chặn việc kiểm tra hoặc kiểm tra quá lâu) nên SanoVids chưa cài bản này. Bấm “Thử lại” để kiểm tra lại.',
+    'Chưa kiểm tra được chữ ký số của bản cập nhật (máy đang chặn việc kiểm tra hoặc kiểm tra quá lâu) nên bản này chưa được cài. Bấm “Thử lại” để kiểm tra lại.',
   disk: 'Ổ đĩa không đủ chỗ để tải bản cập nhật.',
   'install-failed': 'Không khởi động được trình cài bản cập nhật.',
   failed: 'Không kiểm tra được bản cập nhật.',
@@ -311,7 +311,7 @@ export function installBlockers(c: InstallBlockerCounts): string[] {
   const out: string[] = []
   const jobs = [c.processing > 0 ? `${c.processing} video đang tạo` : '', c.queued > 0 ? `${c.queued} video đang chờ` : ''].filter(Boolean)
   if (jobs.length) out.push(jobs.join(' · '))
-  if (c.sending > 0) out.push(`${c.sending} video đang được gửi đi — SanoVids sẽ đợi gửi xong rồi mới khởi động lại.`)
+  if (c.sending > 0) out.push(`${c.sending} video đang được gửi đi — ${PRODUCT_NAME} sẽ đợi gửi xong rồi mới khởi động lại.`)
   if (c.topupInFlight) out.push('Đang nạp credit — nên đợi xong rồi hãy cập nhật.')
   if (c.pendingDownloads > 0) out.push(`${c.pendingDownloads} video đang chờ lưu vào thư mục — sẽ mất nếu khởi động lại.`)
   return out
@@ -422,9 +422,9 @@ const LATER: UpdateDialogAction = { id: 'later', label: 'Để sau' }
 const READY_TEXT = 'Đã tải xong. Khởi động lại để cập nhật ngay — dự án, video và cài đặt giữ nguyên.'
 const READY_BUSY_TEXT = 'Đã tải xong. Có thể cập nhật khi xong việc đang dở, hoặc cập nhật ngay — dự án, video và cài đặt giữ nguyên.'
 const STUCK_NOTE = 'Nếu video bị kẹt (hết credit, cần đăng nhập…), bấm “Cập nhật ngay” hoặc “Huỷ chờ”.'
-const LATER_HINT = 'Chọn “Để sau” thì bản mới tự cài khi bạn tắt SanoVids.'
+const LATER_HINT = `Chọn “Để sau” thì bản mới tự cài khi bạn tắt ${PRODUCT_NAME}.`
 const SAFE_NOW =
-  'Cập nhật ngay vẫn an toàn: video đang tạo vẫn chạy tiếp trên máy chủ và SanoVids theo dõi lại sau khi mở lại; video đang chờ sẽ được gửi sau đó. Không bị trừ credit hai lần.'
+  `Cập nhật ngay vẫn an toàn: video đang tạo vẫn chạy tiếp trên máy chủ và ${PRODUCT_NAME} theo dõi lại sau khi mở lại; video đang chờ sẽ được gửi sau đó. Không bị trừ credit hai lần.`
 
 /**
  * How to recognise a genuine installer before installing one by hand. The download page may be the very place that
@@ -432,7 +432,7 @@ const SAFE_NOW =
  * impostor alike: only the certificate thumbprint tells them apart.
  */
 export const SIGNATURE_CHECK_CALLOUT = {
-  title: 'Trước khi tự cài một bộ cài SanoVids:',
+  title: `Trước khi tự cài một bộ cài ${PRODUCT_NAME}:`,
   lines: [
     `Chuột phải file → Properties → Digital Signatures: người ký phải là ${ABOUT_AUTHOR}.`,
     'Bấm Details → View Certificate → Details → Thumbprint: phải trùng dấu vân tay dưới đây (Windows có thể viết liền, chữ thường).',
@@ -497,7 +497,7 @@ export function dialogView(state: UpdateState, ctx: UpdateDialogCtx): UpdateDial
       return {
         ...base,
         showNotes: !!state.version,
-        statusText: `${state.error?.message ?? UPDATE_ERROR_TEXT.failed} SanoVids sẽ tự thử lại sau.`,
+        statusText: `${state.error?.message ?? UPDATE_ERROR_TEXT.failed} ${PRODUCT_NAME} sẽ tự thử lại sau.`,
         actions: [{ id: 'retry', label: 'Thử lại', primary: true }, CLOSE],
       }
     case 'available':
@@ -521,7 +521,7 @@ export function dialogView(state: UpdateState, ctx: UpdateDialogCtx): UpdateDial
         showProgress: true,
         showNotes: true,
         statusText: downloadLine(state),
-        hint: 'Bạn cứ làm việc bình thường — tải xong SanoVids sẽ báo.',
+        hint: `Bạn cứ làm việc bình thường — tải xong ${PRODUCT_NAME} sẽ báo.`,
         actions: [CLOSE],
       }
     case 'ready': {

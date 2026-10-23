@@ -52,9 +52,9 @@ const ERROR_TEXT = {
   checksum: 'File cập nhật tải về bị lỗi (sai mã kiểm tra) nên đã bị bỏ.',
   // Never "download it from the release page": that page may be the very place that served the refused file.
   signature:
-    'Bản cập nhật này không mang chữ ký số đúng của tác giả hoặc không đúng phiên bản được báo (có thể là file giả mạo) nên SanoVids đã xoá nó, không cài gì. Đừng tự tải bản này về cài. Chỉ cài bộ cài có dấu vân tay chứng chỉ trùng với Cài đặt → Giới thiệu, hoặc hỏi tác giả.',
+    'Bản cập nhật này không mang chữ ký số đúng của tác giả hoặc không đúng phiên bản được báo (có thể là file giả mạo) nên đã bị xoá, không cài gì. Đừng tự tải bản này về cài. Chỉ cài bộ cài có dấu vân tay chứng chỉ trùng với Cài đặt → Giới thiệu, hoặc hỏi tác giả.',
   'signature-unverified':
-    'Chưa kiểm tra được chữ ký số của bản cập nhật (máy đang chặn việc kiểm tra hoặc kiểm tra quá lâu) nên SanoVids chưa cài bản này. Bấm “Thử lại” để kiểm tra lại.',
+    'Chưa kiểm tra được chữ ký số của bản cập nhật (máy đang chặn việc kiểm tra hoặc kiểm tra quá lâu) nên bản này chưa được cài. Bấm “Thử lại” để kiểm tra lại.',
   disk: 'Ổ đĩa không đủ chỗ để tải bản cập nhật.',
   'install-failed': 'Không khởi động được trình cài bản cập nhật.',
 }
@@ -223,6 +223,19 @@ function appUserModelId(appName) {
 /** Name of userData/updater.json and logs/updater(.1).log: Sano Agent shares the folder, never SanoVids' updater files. */
 function updaterStem(appName) {
   return appName === SANO_AGENT ? 'updater-sano-agent' : 'updater'
+}
+
+/**
+ * D223: SanoVids and Sano Agent share one Chromium profile but update apart, so the older app can be started after the
+ * other moved the profile to a newer Chromium (it cannot open that safely). `seen` = userData/electron-version, the
+ * newest Electron that opened the profile. Only a newer major (= Chromium milestone) migrates the profile; refusing a
+ * newer patch would strand the older app, which cannot update itself without starting.
+ * → 'refuse' | 'write' (record this Electron) | 'ok'
+ */
+function profileElectronGate(seen, running) {
+  const s = typeof seen === 'string' ? seen.trim() : ''
+  const c = compareVersions(s, running)
+  return c > 0 && parseInt(s, 10) > parseInt(running, 10) ? 'refuse' : c < 0 ? 'write' : 'ok'
 }
 
 /** The public download page of this app (opened by main only). */
@@ -1103,6 +1116,7 @@ module.exports = {
   resolveProfileDir,
   appUserModelId,
   updaterStem,
+  profileElectronGate,
   releasesUrl,
   detectKind,
   macPlacement,

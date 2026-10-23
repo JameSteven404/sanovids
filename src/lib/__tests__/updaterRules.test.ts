@@ -90,6 +90,7 @@ interface Rules {
   resolveProfileDir(o: { env?: string; baked?: string; appData: string; appName: string; platform?: string; pathMod: PathMod; fsMod?: FsMod }): ProfileResult
   appUserModelId(appName: string): string
   updaterStem(appName: string): string
+  profileElectronGate(seen: string | undefined, running: string): 'refuse' | 'write' | 'ok'
   releasesUrl(appName: string): string
   detectKind(o: {
     platform: string
@@ -354,6 +355,19 @@ describe('updater rules: data folder override (test isolation)', () => {
     expect(rules.appUserModelId('Sano Agent')).toBe('com.sanoagent.app')
     expect(rules.updaterStem('Sano Agent')).toBe('updater-sano-agent')
     for (const name of ['SanoVids', 'SanoVidsUpdTest', 'sano agent', '']) expect(rules.updaterStem(name), name).toBe('updater')
+  })
+
+  it('D223: an older Electron major never opens the shared profile a newer one opened; the newest is recorded', () => {
+    expect(rules.profileElectronGate('45.0.0\r\n', '44.2.1')).toBe('refuse')
+    // same Chromium milestone: the older app still starts (it could not update itself otherwise)
+    for (const seen of ['44.3.0', '44.2.1']) expect(rules.profileElectronGate(seen, '44.2.1'), seen).toBe('ok')
+    for (const seen of [undefined, '', 'garbage', '43.9.9', '44.2.0']) expect(rules.profileElectronGate(seen, '44.2.1'), String(seen)).toBe('write')
+    // after the lock, before ready (before Chromium opens the profile): refused = an error box and exit, no window
+    const gate = mainSource.indexOf('updaterRules.profileElectronGate(seen, process.versions.electron)')
+    const ready = mainSource.indexOf('app.whenReady()')
+    expect(gate).toBeGreaterThan(mainSource.indexOf('requestSingleInstanceLock'))
+    expect(gate).toBeLessThan(ready)
+    expect(mainSource.slice(gate, ready)).toMatch(/if \(gate === 'refuse'\) \{\n\s+const name = app\.getName\(\)\n\s+dialog\.showErrorBox\([^\n]*\n\s+process\.exit\(4\)\n\s+\}/)
   })
 
   it('AppUserModelId stays com.sanovids.app for the real app only', () => {
@@ -699,10 +713,10 @@ describe('updater rules: errors become fixed Vietnamese texts', () => {
     expect(rules.mapUpdaterError({ code: 'HTTP_ERROR_429' }, 'check').message).toBe('Máy chủ cập nhật đang bận.')
     expect(rules.mapUpdaterError({ code: 'ERR_CHECKSUM_MISMATCH' }, 'download').message).toBe('File cập nhật tải về bị lỗi (sai mã kiểm tra) nên đã bị bỏ.')
     expect(rules.mapUpdaterError({ code: 'ERR_UPDATER_INVALID_SIGNATURE' }, 'download').message).toBe(
-      'Bản cập nhật này không mang chữ ký số đúng của tác giả hoặc không đúng phiên bản được báo (có thể là file giả mạo) nên SanoVids đã xoá nó, không cài gì. Đừng tự tải bản này về cài. Chỉ cài bộ cài có dấu vân tay chứng chỉ trùng với Cài đặt → Giới thiệu, hoặc hỏi tác giả.',
+      'Bản cập nhật này không mang chữ ký số đúng của tác giả hoặc không đúng phiên bản được báo (có thể là file giả mạo) nên đã bị xoá, không cài gì. Đừng tự tải bản này về cài. Chỉ cài bộ cài có dấu vân tay chứng chỉ trùng với Cài đặt → Giới thiệu, hoặc hỏi tác giả.',
     )
     expect(rules.mapUpdaterError({ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'sanovids-signature:policy' }, 'download').message).toBe(
-      'Chưa kiểm tra được chữ ký số của bản cập nhật (máy đang chặn việc kiểm tra hoặc kiểm tra quá lâu) nên SanoVids chưa cài bản này. Bấm “Thử lại” để kiểm tra lại.',
+      'Chưa kiểm tra được chữ ký số của bản cập nhật (máy đang chặn việc kiểm tra hoặc kiểm tra quá lâu) nên bản này chưa được cài. Bấm “Thử lại” để kiểm tra lại.',
     )
     for (const code of ['signature', 'signature-unverified']) {
       const text = rules.ERROR_TEXT[code]
