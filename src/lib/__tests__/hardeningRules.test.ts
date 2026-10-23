@@ -388,7 +388,7 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     const from = mainSource.slice(mainSource.indexOf('function fromSano(event) {'), mainSource.indexOf('async function sanoDesktopClientId()'))
     expect(from).toContain('event.senderFrame === win.webContents.mainFrame && event.senderFrame.origin === SANO.origin')
     // the client id comes from SANO's server; Google's endpoints are constants of google-signin-rules.cjs
-    expect(mainSource).toContain('await net.fetch(`${SANO.origin}/api/assistant/status`)')
+    expect(mainSource).toContain('await net.fetch(`${SANO.origin}/api/assistant/status`, { signal: AbortSignal.timeout(15_000) })')
     expect(mainSource).not.toMatch(/googleapis|oauth2/)
     // the gateway still answers app://bdp frames only
     expect(mainSource).toContain("return url.startsWith(ORIGIN + '/')")

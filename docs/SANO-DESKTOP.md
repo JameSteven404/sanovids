@@ -26,7 +26,8 @@ Máy chủ SANO không giữ phiên hay cookie canvasapp nào.
 - Trang SANO thấy `window.sanoDesktop = { sanovidsUrl: 'app://bdp/', google: { signIn, token, signOut } }` và đặt khung
   Dựng phim vào `sanovidsUrl`: bản SanoVids nằm trong app (`dist/`), không tải từ máy chủ SANO. Chỉ khung chính của trang
   SANO nhận `sanoDesktop` (preload kiểm `process.isMainFrame`); main kiểm lại khung gửi của mọi lời gọi Google (`fromSano`:
-  khung chính của cửa sổ chính, đúng origin SANO).
+  khung chính của cửa sổ chính, đúng origin SANO). Kiểm hai cổng này trong Electron thật (không chạy trong CI, không đăng
+  nhập): `npx electron scripts/sano-desktop-probe.cjs`.
 - **Đăng nhập bằng Google** (TH-36) chạy trong trình duyệt mặc định, không trong cửa sổ app (Google chặn trình duyệt nhúng):
   - `google.signIn()`: main lấy client ID từ `googleDesktopClientId` của `/api/assistant/status` trên máy chủ SANO (trang
     không đưa được client ID hay địa chỉ nào vào), mở trang đăng nhập Google (địa chỉ cố định trong
@@ -36,9 +37,12 @@ Máy chủ SANO không giữ phiên hay cookie canvasapp nào.
     Kết quả: `{ ok: true, idToken }` hoặc `{ ok: false, code, message }` (`cancelled`, `timeout`, `superseded`,
     `not-configured`, `failed`, `not-allowed`).
   - `google.token()`: ID token đang giữ; còn dưới 5 phút thì main gia hạn bằng refresh token (nhiều lời gọi dùng chung một
-    lần). Google từ chối (`invalid_grant`) hoặc không trả ID token: `null`, trang hiện lại nút đăng nhập. Mất mạng: giữ token
-    cũ khi còn hạn và thử lại ở lần gọi sau.
-  - `google.signOut()`: xoá token trong bộ nhớ, không thu hồi ở Google (Google thu hồi theo cả project).
+    lần). Google từ chối (`invalid_grant`) hoặc không trả ID token: `null`, trang hiện lại nút đăng nhập. Google không trả
+    lời (mất mạng, lỗi máy chủ, quá 15 giây): giữ token cũ khi còn hạn; hết hạn thì lời gọi báo lỗi (không phải `null`, vẫn
+    đăng nhập), trang chỉ hỏng request đó. Lần gọi sau thử lại.
+  - `google.signOut()`: xoá token trong bộ nhớ, không thu hồi ở Google (Google thu hồi theo cả project). Lượt đăng nhập
+    đang chờ trình duyệt kết thúc với `cancelled`, kết quả về muộn bị bỏ.
+  - Lấy client ID từ máy chủ SANO cũng dừng sau 15 giây (coi như chưa bật: `not-configured`).
   - Refresh token chỉ nằm trong bộ nhớ của main, không xuống đĩa và không qua cầu sang trang. Token có scope ngoài đăng nhập
     (`openid`, `email`, `profile`) bị bỏ.
   - `SANO_GOOGLE_DESKTOP_CLIENT_SECRET` (tuỳ chọn): chỉ đặt trên máy chạy SANO desktop nếu Google bắt client Desktop gửi secret

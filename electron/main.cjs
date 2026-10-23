@@ -683,7 +683,7 @@ function fromSano(event) {
 /** googleDesktopClientId of SANO's /api/assistant/status, or null (not configured, SANO unreachable). */
 async function sanoDesktopClientId() {
   try {
-    const res = await net.fetch(`${SANO.origin}/api/assistant/status`)
+    const res = await net.fetch(`${SANO.origin}/api/assistant/status`, { signal: AbortSignal.timeout(15_000) })
     return res.ok ? googleSignInRules.desktopClientId(await res.json()) : null
   } catch {
     return null

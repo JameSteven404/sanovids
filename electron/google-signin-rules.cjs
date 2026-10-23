@@ -120,7 +120,8 @@ function createGoogleSignIn(fx) {
 
   async function post(form) {
     const body = new URLSearchParams(fx.secret ? { ...form, client_secret: fx.secret } : form).toString()
-    const res = await fx.fetch(TOKEN_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body })
+    // a stalled request would hold every SANO request waiting on token(); the timeout counts as no answer
+    const res = await fx.fetch(TOKEN_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body, signal: AbortSignal.timeout(15_000) })
     return { ok: res.ok, json: await res.json().catch(() => ({})) }
   }
 
@@ -193,18 +194,25 @@ function createGoogleSignIn(fx) {
     try {
       answer = await post({ grant_type: 'refresh_token', refresh_token: h.refreshToken, client_id: h.clientId })
     } catch {
-      // no answer (offline): keep the tokens for the next try
+      // no answer (offline, timeout): keep the tokens for the next try
     }
     if (held !== h) return held && held.idToken // signed out / in again meanwhile
     // Google answered: a usable ID token or none (invalid_grant incl. invalid_rapt, no id_token) → signed out.
-    if (answer && (answer.ok || answer.json.error === 'invalid_grant')) {
+    const answered = answer && (answer.ok || answer.json.error === 'invalid_grant')
+    if (answered) {
       const t = answer.ok ? readTokenResponse(answer.json, h.refreshToken) : null
       held = t && { ...t, clientId: h.clientId }
     }
-    return held && held.expiresAt > fx.now() ? held.idToken : null
+    if (held && held.expiresAt > fx.now()) return held.idToken
+    // not null (= signed out): the refresh token still holds, so the page fails only this request
+    if (!answered) throw new Error('Google did not answer the token refresh')
+    return null
   }
 
-  /** The ID token, renewed under RENEW_BEFORE_MS (concurrent calls share one refresh), or null: sign in again. */
+  /**
+   * The ID token, renewed under RENEW_BEFORE_MS (concurrent calls share one refresh), or null: sign in again. Rejects
+   * when the ID token ran out and Google did not answer the refresh (offline, 5xx, timeout).
+   */
   async function token() {
     if (!held) return null
     if (held.expiresAt - fx.now() > RENEW_BEFORE_MS) return held.idToken
@@ -218,6 +226,8 @@ function createGoogleSignIn(fx) {
 
   /** Forgets the tokens. No revoke: Google revokes per project, i.e. this person's desktop sign-in on every computer. */
   function signOut() {
+    // a sign-in still waiting on the browser would store its answer (maybe another account) after the sign-out
+    if (current) current(fail('cancelled'))
     held = null
     return true
   }

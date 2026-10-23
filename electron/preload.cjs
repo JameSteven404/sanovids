@@ -47,9 +47,12 @@ if (sanoArg && process.isMainFrame && location.origin === sanoArg.slice('--bdp-s
     google: {
       /** → { ok: true, idToken } | { ok: false, code: 'cancelled'|'timeout'|'superseded'|'not-configured'|'failed'|'not-allowed', message } */
       signIn: () => ipcRenderer.invoke('sano:googleSignIn'),
-      /** → the ID token (renewed when under 5 minutes are left), or null: signed out, show "Đăng nhập" again. */
+      /**
+       * → the ID token (renewed when under 5 minutes are left), or null: signed out, show "Đăng nhập" again.
+       * Rejects when Google did not answer the renewal: still signed in, fail only this request.
+       */
       token: () => ipcRenderer.invoke('sano:googleToken'),
-      /** Forgets the tokens in main's memory (no revoke). → true */
+      /** Forgets the tokens in main's memory (no revoke); a sign-in still waiting ends 'cancelled'. → true */
       signOut: () => ipcRenderer.invoke('sano:googleSignOut'),
     },
   })

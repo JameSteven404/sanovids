@@ -3,7 +3,7 @@
 // itself) and a fake token endpoint. Never Google: every token request goes to the fake `fetch` below.
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 type Fail = { ok: false; code: string; message: string }
 type SignInResult = { ok: true; idToken: string } | Fail
@@ -12,7 +12,7 @@ interface Fx {
   secret?: string
   createServer: typeof createServer
   openExternal(url: string): unknown
-  fetch(url: string, init: { method: string; headers: Record<string, string>; body: string }): Promise<{ ok: boolean; json(): Promise<unknown> }>
+  fetch(url: string, init: { method: string; headers: Record<string, string>; body: string; signal?: AbortSignal }): Promise<{ ok: boolean; json(): Promise<unknown> }>
   focus(): void
   now(): number
   timeoutMs?: number
@@ -41,14 +41,14 @@ const idToken = (expMs: number, sub = 'u1') => jwt({ sub, email: 'a@sanogroup.tv
 /** A fake token endpoint: answers queued per call (a function gets the form), records every form it got. */
 function tokenEndpoint() {
   const forms: Record<string, string>[] = []
-  const answers: (((form: Record<string, string>) => unknown) | { status?: number; body?: unknown; throws?: boolean })[] = []
+  const answers: (((form: Record<string, string>, signal?: AbortSignal) => unknown) | { status?: number; body?: unknown; throws?: boolean })[] = []
   const fetch: Fx['fetch'] = async (url, init) => {
     expect(url).toBe(R.TOKEN_ENDPOINT)
     expect(init.method).toBe('POST')
     const form = Object.fromEntries(new URLSearchParams(init.body))
     forms.push(form)
     const next = answers.shift()
-    const a = (typeof next === 'function' ? await next(form) : next) as { status?: number; body?: unknown; throws?: boolean } | undefined
+    const a = (typeof next === 'function' ? await next(form, init.signal) : next) as { status?: number; body?: unknown; throws?: boolean } | undefined
     if (!a || a.throws) throw new Error('offline')
     const status = a.status ?? 200
     return { ok: status >= 200 && status < 300, json: async () => a.body }
@@ -262,6 +262,19 @@ describe('google-signin-rules: sign-in through the loopback port', () => {
     expect(s.focused()).toBe(1) // the dropped answer did not bring the window forward
   })
 
+  it('signOut ends a sign-in still waiting on the browser: its late answer (maybe another account) is not stored', async () => {
+    const s = setup()
+    s.t.answers.push({ body: { id_token: idToken(NOW + 3600_000, 'other') } })
+    const auth = s.nextOpen()
+    const signIn = s.g.signIn()
+    const u = await auth
+    expect(s.g.signOut()).toBe(true)
+    expect(await signIn).toMatchObject({ ok: false, code: 'cancelled' })
+    await expect(visit(u, `?code=c&state=${u.searchParams.get('state')}`)).rejects.toThrow() // port closed
+    expect(await s.g.token()).toBeNull()
+    expect(s.t.forms).toHaveLength(0)
+  })
+
   it('client secret (only when set: T1) goes with the code exchange and the refresh', async () => {
     const s = setup({ secret: 'shh' })
     s.t.answers.push({ body: { id_token: idToken(NOW + 60_000), refresh_token: 'r1' } }, { body: { id_token: idToken(NOW + 3600_000) } })
@@ -277,6 +290,8 @@ describe('google-signin-rules: sign-in through the loopback port', () => {
 })
 
 describe('google-signin-rules: token() renews in memory', () => {
+  afterEach(() => void vi.restoreAllMocks())
+
   /** Signed in with an ID token expiring at `exp`, refresh token 'r1' (unless `refresh` is null). */
   async function signedIn(exp: number, refresh: string | null = 'r1') {
     const s = setup()
@@ -317,7 +332,7 @@ describe('google-signin-rules: token() renews in memory', () => {
     }
   })
 
-  it('no answer (offline) or a server error → kept: the still-valid token, and the next call tries again', async () => {
+  it('no answer (offline) or a server error → kept: the still-valid token, the next call tries again; expired → rejects, still signed in', async () => {
     for (const a of [{ throws: true }, { status: 503, body: { error: 'temporarily_unavailable' } }]) {
       const s = await signedIn(NOW + 60_000)
       s.t.answers.push(a, { body: { id_token: idToken(NOW + 3600_000) } })
@@ -326,9 +341,24 @@ describe('google-signin-rules: token() renews in memory', () => {
       expect(await s.g.token()).not.toBe(old)
       expect(s.t.forms).toHaveLength(2)
       s.setNow(NOW + 7200_000)
-      s.t.answers.push({ throws: true })
-      expect(await s.g.token()).toBeNull() // expired while offline
+      const later = idToken(NOW + 10_800_000)
+      s.t.answers.push({ throws: true }, { body: { id_token: later } })
+      // expired while offline: not null (signed out), the refresh token still holds: only this call fails
+      await expect(s.g.token()).rejects.toThrow()
+      expect(await s.g.token()).toBe(later)
     }
+  })
+
+  it('a token request that hangs gives up after 15 s, which counts as no answer', async () => {
+    const s = await signedIn(NOW + 60_000)
+    const timeout = new AbortController()
+    const spy = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(timeout.signal)
+    s.t.answers.push((_form, signal) => new Promise((_r, reject) => signal?.addEventListener('abort', () => reject(signal.reason))))
+    const pending = s.g.token()
+    await expect.poll(() => s.t.forms.length).toBe(1)
+    expect(spy).toHaveBeenCalledWith(15_000)
+    timeout.abort(new DOMException('timed out', 'TimeoutError'))
+    expect(await pending).toBe(idToken(NOW + 60_000)) // the still-valid token
   })
 
   it('no refresh token → signed out when the ID token runs low', async () => {
