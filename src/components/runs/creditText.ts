@@ -7,8 +7,7 @@ import type { Take } from '../../core/types'
 import { chargedDemo, creditKindOf, formatCredits, type CreditKind } from '../../lib/credits'
 import { PROVIDER_LABEL } from '../../providers'
 import { providerOf, type ProviderId } from '../../providers/types'
-import { SANO_UNAVAILABLE } from '../../providers/sano'
-import { cannotRunHere, isUncertainSubmit } from '../../store/runs'
+import { isUncertainSubmit, parkedReason } from '../../store/runs'
 import { takeCostInferred, takeCostKnown } from './importedTake'
 
 /** Wallet a take was paid from: its provider decides, never the provider chosen now. */
@@ -80,7 +79,7 @@ export interface TakeCostLine {
 }
 
 type CostTake = Pick<Take, 'provider' | 'charged' | 'cost' | 'status' | 'remoteId' | 'error'> &
-  Partial<Pick<Take, 'startedAt' | 'submitUnknown' | 'imported' | 'foreignProvider' | 'foreignCharged' | 'foreignStatus' | 'simulated'>>
+  Partial<Pick<Take, 'startedAt' | 'submitUnknown' | 'imported' | 'foreignProvider' | 'foreignCharged' | 'foreignStatus' | 'simulated' | 'account'>>
 
 /** Take viewer "Chi phí" line: the amount and which credits paid it (take.provider / take.charged / remoteId). */
 export function takeCostLine(t: CostTake): TakeCostLine {
@@ -108,9 +107,9 @@ export function takeCostLine(t: CostTake): TakeCostLine {
   const amount = est === '—' || !w.approx ? est : `≈ ${est}`
   // SANO's simulator made a sample clip: never billed, whatever became of the job (same words as the Run dialog)
   if (t.simulated) return { kind, amount, note: 'giả lập — clip mẫu, không phát sinh phí', struck: true }
-  // outside the SANO app it waits (submit defers, poll gets no news): say why, before what is (maybe) billed
-  const waits = (t.status === 'queued' || t.status === 'processing') && cannotRunHere(t)
-  const why = (note: string) => (waits ? `${SANO_UNAVAILABLE.replace(/\.$/, '')} · ${note}` : note)
+  // a SANO take that waits here (outside SANO, signed out, another SANO account's): say why, before what is (maybe) billed
+  const waits = t.status === 'queued' || t.status === 'processing' ? parkedReason(t) : null
+  const why = (note: string) => (waits ? `${waits.replace(/\.$/, '')} · ${note}` : note)
   if (t.remoteId) {
     return {
       kind,
@@ -125,7 +124,7 @@ export function takeCostLine(t: CostTake): TakeCostLine {
   }
   if (isUncertainSubmit(t)) return { kind, amount, note: `${w.credit} · không rõ đã bị trừ chưa — ${w.check}`, struck: false }
   if (t.status === 'queued' || t.status === 'processing') {
-    return { kind, amount, note: waits ? SANO_UNAVAILABLE : `${w.credit} · trừ trên ${w.site} khi job được nhận`, struck: false }
+    return { kind, amount, note: waits ?? `${w.credit} · trừ trên ${w.site} khi job được nhận`, struck: false }
   }
   if (t.status === 'failed') return { kind, amount, note: `${w.site} không nhận job — không bị trừ credit`, struck: true }
   if (t.status === 'cancelled') {

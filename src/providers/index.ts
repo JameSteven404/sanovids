@@ -23,7 +23,9 @@
 //   canvasappEnabled()                      the canvasapp gateway may be used for new takes now.
 //   providerBlockedReason(id)               Vietnamese reason new takes cannot use `id` right now, or null: 'dev' while
 //                                          locked (DEV_LOCKED_REASON — also blocks "Thử lại" of a DEV take), 'canvasapp'
-//                                          outside the desktop app (WEB_UNAVAILABLE) or turned off (CANVASAPP_OFF_REASON).
+//                                          outside the desktop app (WEB_UNAVAILABLE) or turned off (CANVASAPP_OFF_REASON),
+//                                          'sano-gateway' outside SANO (SANO_UNAVAILABLE), without a usable SANO token
+//                                          (SANO_LOGIN_TEXT) or, given a take's `account`, under another SANO account.
 //   gatewayFor(id) / activeGateway()        { id, label, simulated, api, bridge(), provider() } of the dev or the real
 //                                          canvasapp gateway (null for 'mock'). EVERYTHING that talks to "canvasapp"
 //                                          (balance, login, top-up, credit history) goes through activeGateway(): in
@@ -62,7 +64,7 @@ import { browserStorage, createCanvasappProvider, JOBS_KEY, STATE_KEY, type Canv
 import { canvasappBridge, createDesktopTransport, hasCanvasappBridge, WEB_UNAVAILABLE, type CanvasappBridge } from './canvasapp/transport'
 import { DEV_JOB_LIST_CACHE_MS, devBridge, devResult, resetDevServer, withDevWording } from './dev'
 import { devAllowed, useDevAccess, type DevAccessKind } from './devAccess'
-import { createBrowserSanoGateway, SANO_LABEL, SANO_UNAVAILABLE, sanoBuild, sanoGatewayAvailable, type SanoGatewayProvider } from './sano'
+import { createBrowserSanoGateway, SANO_LABEL, sanoBuild, type SanoGatewayProvider } from './sano'
 import { NO_LIMITS, NO_LIMITS_INFO, type LimitsInfo, type ProviderId, type RefreshLimitsOptions, type RefreshLimitsResult, type SettingsLimits, type VideoProvider } from './types'
 
 export type { LimitsInfo, ProviderId, RefreshLimitsOptions, RefreshLimitsResult, SettingsLimits, VideoProvider } from './types'
@@ -281,10 +283,13 @@ export function activeProviderId(): ProviderId {
   return effectiveNow(useProviderPrefs.getState().provider)
 }
 
-/** Synchronous pre-check used by enqueue / retry (login is checked when the job is submitted). Null = OK. */
-export function providerBlockedReason(id: ProviderId): string | null {
+/**
+ * Synchronous pre-check used by enqueue / retry (canvasapp's login is checked when the job is submitted). Null = OK.
+ * 'sano-gateway' also needs a usable SANO token, and `account` (a take's Take.account) must be the one signed in.
+ */
+export function providerBlockedReason(id: ProviderId, account?: string): string | null {
   if (id === 'dev' && !devAllowed()) return DEV_LOCKED_REASON
-  if (id === 'sano-gateway' && !sanoGatewayAvailable()) return SANO_UNAVAILABLE
+  if (id === 'sano-gateway') return (getProvider(id) as SanoGatewayProvider).blockedReason(account)
   if (id === 'canvasapp') {
     if (!hasCanvasappBridge()) return WEB_UNAVAILABLE
     if (!canvasappEnabled()) return CANVASAPP_OFF_REASON

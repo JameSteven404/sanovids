@@ -11,9 +11,15 @@
 // `mode` ('simulator' | 'live', on /capabilities and on every job): what SANO runs. Missing (no backend) = unknown,
 // never taken as 'live'; a job answered 'simulator' marks its take `simulated` (a sample clip, nothing billed). Only
 // /capabilities and a newly created job (202) say what SANO runs now: an old job's poll / recover marks its take only.
-// Auth: `Authorization: Bearer <the host page's token>` only (SANO's /api/video has no cookie auth). No token yet (not
-// signed in to SANO) → 'deferred' with SANO_LOGIN_TEXT before any request: the take waits and goes on once SANO gives
-// one. 401 (a token SANO refuses) → SANO_LOGIN_TEXT (code 'login-required'), never retried here.
+// Auth: `Authorization: Bearer <the host page's token>` only (SANO's /api/video has no cookie auth): SANO's Google ID
+// token, null until sign-in, never renewed (refused after ~1 h). Its state (tokenState: 'none' | 'expired' — the JWT's
+// exp, unverified — | 'refused' — this very token got a 401 | 'ok') is read on every request and every 3 s; while it is
+// not 'ok', blockedReason() says SANO_LOGIN_TEXT, so the engine parks SANO takes (store/runs cannotRunHere: nothing
+// sent, no lock, no refs read) and they go on once a usable token appears (onLimitsChange wakes the engine). Jobs are
+// per SANO account: a take is bound to the account (the token's sub, as a key) it was sent / looked up under and waits
+// under another one (SANO_OTHER_ACCOUNT); a job request whose token turns out to be another account's than the one
+// the engine chose for is 'deferred' before it is sent. A request without a usable token, or answered 401, is
+// 'deferred' with SANO_LOGIN_TEXT (nothing created).
 // The idempotency key is the take id: sending a take again (lost answer, "Chạy lại") never creates — or pays for — a
 // second job, so an uncertain submit is simply sent again with the same key (no ledger like canvasapp's).
 // `model` is SanoVids' ModelId ('seedance_2_5', 'minimax_h3'): SANO's /capabilities must list models under those ids.
@@ -21,6 +27,7 @@
 // Pure: fetch, the host's token and the media store are injected (tests use a fake server, no DOM here).
 import { MODELS } from '../../core/models'
 import type { ModelId, VideoSettings } from '../../core/types'
+import { accountKey } from '../canvasapp/adapter'
 import { capabilitiesFromModels } from '../capabilities'
 import {
   NO_LIMITS,
@@ -40,6 +47,9 @@ export const SANO_API = '/api/video'
 export const SANO_LABEL = 'SANO'
 export const SANO_LOGIN_TEXT = 'Cần đăng nhập SANO — đăng nhập lại trong app SANO rồi thử lại.'
 export const SANO_UNAVAILABLE = 'Nhà cung cấp SANO chỉ dùng được khi mở SanoVids bên trong app SANO.'
+export const SANO_OTHER_ACCOUNT = 'Take này thuộc tài khoản SANO khác — đăng nhập lại tài khoản đó trong app SANO để SanoVids theo dõi tiếp.'
+/** How often the host's token is read besides each request (SANO signs in / switches account without telling). */
+export const TOKEN_RECHECK_MS = 3_000
 /** Cap on a job's reference images, measured on what is sent (the base64 text of every ref). */
 export const MAX_REFS_BYTES = 20 * 1024 * 1024
 /** Same cap as the canvasapp gateway: a bigger video is never taken. */
@@ -53,6 +63,7 @@ const MAX_CONCURRENCY = 10
 const POLL_MS = 15_000
 
 export type SanoMode = 'simulator' | 'live'
+export type SanoTokenState = 'none' | 'expired' | 'refused' | 'ok'
 
 export interface SanoModel {
   id: string
@@ -78,9 +89,12 @@ export interface SanoGatewayDeps {
 }
 
 export type SanoGatewayProvider = VideoProvider &
-  Required<Pick<VideoProvider, 'recover' | 'mayHaveSent' | 'cancel' | 'reset' | 'settingsLimits' | 'limitsInfo' | 'refreshLimits'>> & {
+  Required<Pick<VideoProvider, 'recover' | 'mayHaveSent' | 'cancel' | 'reset' | 'settingsLimits' | 'limitsInfo' | 'refreshLimits' | 'account'>> & {
     /** What SANO last said it runs (/capabilities or a newly created job); null = it has not said. */
     mode(): SanoMode | null
+    tokenState(): SanoTokenState
+    /** Synchronous: why a new take — or a take bound to `account` — cannot be sent / followed from here now, or null. */
+    blockedReason(account?: string): string | null
   }
 
 const STATES: Record<string, RemoteState> = { queued: 'queued', running: 'processing', done: 'completed', failed: 'failed' }
@@ -144,9 +158,19 @@ async function serverText(res: Response): Promise<string> {
   return typeof b?.error === 'string' && b.error.trim() ? b.error.trim() : `HTTP ${res.status}`
 }
 
-const loginError = () => new ProviderError('login-required', SANO_LOGIN_TEXT)
-/** A 401, or no token yet ('deferred'): the user has to sign in to SANO. */
+/** No usable token, or a 401: nothing was created, the take waits until SANO gives a usable token. */
+const loginDeferred = () => new ProviderError('deferred', SANO_LOGIN_TEXT)
 const needsLogin = (e: unknown) => (e as Error | null)?.message === SANO_LOGIN_TEXT
+
+/** What a JWT's payload says, unverified (SANO's server checks it; here a hint only): its exp and its sub as a key. */
+export function tokenHints(token: string): { exp?: number; account?: string } {
+  try {
+    const { exp, sub } = (JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))) ?? {}) as { exp?: unknown; sub?: unknown }
+    return { ...(typeof exp === 'number' ? { exp } : {}), ...(typeof sub === 'string' && sub ? { account: accountKey(sub) } : {}) }
+  } catch {
+    return {} // not a JWT: no expiry, no account known
+  }
+}
 
 /** No answer to a POST /jobs that may have arrived: the job may exist (the same key resent finds it). */
 function uncertainError(why: string): ProviderError {
@@ -165,17 +189,64 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
   const sent = new Set<string>()
   /** Last known state of each job (cancel only asks while it is queued). */
   const states = new Map<string, RemoteState>()
+  /** The host's token as last read, what its payload hints, the token SANO answered 401. */
+  let host: string | null = null
+  let hints: ReturnType<typeof tokenHints> = {}
+  let refusedToken: string | null = null
+  /** The state + account the app was last told of (onLimitsChange: the run gates, Settings, the engine re-read them). */
+  let told = 'none '
+  let recheck: ReturnType<typeof setInterval> | null = null
 
-  async function call(path: string, init: RequestInit = {}, beforeSend?: () => void): Promise<Response> {
-    const token = await deps.token()
-    // without it SANO can only answer 401: send nothing, the engine asks again (submit re-queued, recover / poll no news)
-    if (!token) throw new ProviderError('deferred', SANO_LOGIN_TEXT)
+  function tokenState(): SanoTokenState {
+    // inside SANO only, from the first look on: sign-in, another account, a new token all come without a word
+    if (!recheck && deps.available()) {
+      recheck = setInterval(() => void readToken().catch(() => undefined), TOKEN_RECHECK_MS)
+      ;(recheck as { unref?: () => void }).unref?.()
+      void readToken().catch(() => undefined)
+    }
+    if (!host) return 'none'
+    if (host === refusedToken) return 'refused'
+    return hints.exp !== undefined && hints.exp * 1000 <= now() ? 'expired' : 'ok'
+  }
+
+  function tell() {
+    const said = `${tokenState()} ${hints.account ?? ''}`
+    if (said === told) return
+    told = said
+    deps.onLimitsChange?.()
+  }
+
+  async function readToken(): Promise<string | null> {
+    const token = (await deps.token()) ?? null
+    if (token !== host) {
+      host = token
+      hints = token ? tokenHints(token) : {}
+    }
+    tell()
+    return token
+  }
+
+  /**
+   * One request with the host's token, none (deferred) without a usable one. `want` (job requests): the account the
+   * engine chose its take for — the token now names another one → deferred, nothing sent (404 or a second job there).
+   */
+  async function call(path: string, init: RequestInit = {}, beforeSend?: () => void, want?: string | null): Promise<Response> {
+    const token = await readToken()
+    if (tokenState() !== 'ok' || !token) throw loginDeferred()
+    if (want !== undefined && (hints.account ?? null) !== want) throw new ProviderError('deferred', SANO_OTHER_ACCOUNT)
     const headers: Record<string, string> = { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` }
     beforeSend?.() // same synchronous step as the request itself (mayHaveSent)
     const res = await deps.fetch(SANO_API + path, { ...init, headers, credentials: 'include' })
-    if (res.status === 401) throw loginError()
+    if (res.status === 401) {
+      refusedToken = token
+      tell()
+      throw loginDeferred()
+    }
     return res
   }
+
+  /** The account a job operation starting now is for (taken before any await: what the engine just chose by). */
+  const wanted = () => hints.account ?? null
 
   const jobPath = (id: string) => `/jobs/${encodeURIComponent(id)}`
 
@@ -248,6 +319,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
       }
       // outside SANO nothing is sent: the take stays queued and runs once its project is opened inside SANO (see recover)
       if (!deps.available()) throw new ProviderError('deferred', SANO_UNAVAILABLE)
+      const want = wanted()
       stopIfCancelled()
       const refs = await refsOf(req)
       const models = freshCaps() ?? (await readCaps())
@@ -268,9 +340,9 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
           stopIfCancelled()
           sent.add(req.key)
           posted = true
-        })
+        }, want)
       } catch (e) {
-        // the host's token() failing before the POST, cancelled, 401: nothing was created
+        // the host's token() failing before the POST, no usable token / another account, cancelled, 401: nothing created
         if (!posted || e instanceof ProviderError) throw e
         throw uncertainError((e as Error)?.message || 'mất kết nối')
       }
@@ -296,7 +368,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
     async recover(req) {
       // outside SANO a 404 of this origin is no answer: no news, the take waits to be opened inside SANO
       if (!deps.available()) throw new ProviderError('deferred', SANO_UNAVAILABLE)
-      const res = await call(`/jobs?idempotencyKey=${encodeURIComponent(req.key)}`)
+      const res = await call(`/jobs?idempotencyKey=${encodeURIComponent(req.key)}`, {}, undefined, wanted())
       if (res.status === 404) return null
       if (!res.ok) throw new ProviderError('server', `Không hỏi được máy chủ SANO về take này (${await serverText(res)}).`)
       const b = await bodyOf(res)
@@ -311,15 +383,26 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
 
     mode: () => mode,
 
+    tokenState,
+
+    account: () => hints.account ?? null,
+
+    blockedReason(account) {
+      if (!deps.available()) return SANO_UNAVAILABLE
+      if (tokenState() !== 'ok') return SANO_LOGIN_TEXT
+      return account && hints.account && account !== hints.account ? SANO_OTHER_ACCOUNT : null
+    },
+
     async poll(remoteIds) {
       if (!deps.available()) return [] // outside SANO: no news (see recover)
+      const want = wanted()
       // One broken job (5xx / network) is no news for that job only: the others' statuses still reach the engine.
       let failure: unknown = null
       let failed = 0
       const out = await Promise.all(
         remoteIds.map(async (id): Promise<RemoteStatus | null> => {
           try {
-            const res = await call(jobPath(id))
+            const res = await call(jobPath(id), {}, undefined, want)
             if (res.status === 404) return { remoteId: id, state: 'failed', error: 'Máy chủ SANO không còn job này.' }
             if (!res.ok) throw new ProviderError('server', `Máy chủ SANO trả lỗi khi hỏi trạng thái job (${await serverText(res)}).`)
             const b = await bodyOf(res)
@@ -330,8 +413,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
             const error = state === 'failed' ? { error: typeof b?.error === 'string' && b.error.trim() ? b.error.trim() : 'Máy chủ SANO báo job lỗi.' } : {}
             return { remoteId: id, state, ...progress, ...error }
           } catch (e) {
-            if ((e as ProviderError).code === 'login-required') throw e
-            if ((e as ProviderError).code === 'deferred') return null // no token yet: no news, never a back-off
+            if ((e as ProviderError).code === 'deferred') return null // no usable token / another account: no news, no back-off
             failure = e
             failed++
             return null
@@ -345,7 +427,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
     // shortcut: a cut download starts again from 0 on the engine's next try; resume with Range when videos get big.
     async fetchResult(remoteId, opts = {}) {
       if (!deps.available()) throw new ProviderError('deferred', SANO_UNAVAILABLE) // not a failed download (see recover)
-      const res = await call(`${jobPath(remoteId)}/result`, opts.signal ? { signal: opts.signal } : {})
+      const res = await call(`${jobPath(remoteId)}/result`, opts.signal ? { signal: opts.signal } : {}, undefined, wanted())
       if (!res.ok) throw new ProviderError('download', `Không tải được video từ máy chủ SANO (${await serverText(res)}).`)
       const tooLarge = () => new ProviderError('too-large', 'Video lớn hơn 1 GB — SanoVids không tải được, lấy trực tiếp trong app SANO.')
       const total = Number(res.headers.get('Content-Length')) || null
@@ -391,6 +473,11 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
       caps = null
       mode = null
       states.clear()
+      if (recheck) clearInterval(recheck)
+      recheck = null
+      host = refusedToken = null
+      hints = {}
+      told = 'none '
       deps.onLimitsChange?.()
     },
 

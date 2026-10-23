@@ -8,7 +8,8 @@
 // a switch "Dùng canvasapp.io.vn cho take mới" that is off until the user confirms the real-money warning
 // (CANVASAPP_NEEDS_OPT_IN). While it is off, nothing here talks to canvasapp (no balance read, no login block).
 // Inside the SANO app ('sano-gateway', providers/sano): one SANO note instead of the canvasapp switch, callouts and
-// login block — SANO keeps the account and the costs (still selectable here while development mode is open).
+// login block — SANO keeps the account and the costs (still selectable here while development mode is open, never
+// outside SANO); why SANO cannot take new takes now (providerBlockedReason: outside SANO, signed out) is a warning.
 // Login state and balance come from the shared gateway-credit store (store/credits useRealCredits: GET /api/me of the
 // active gateway) — the same numbers as the top bar pill, no separate request here.
 import { Bug, Cable, Cloud, CloudDownload, FlaskConical, History, LoaderCircle, LogIn, LogOut, Plus, RefreshCw, TriangleAlert, Wallet } from 'lucide-react'
@@ -16,8 +17,19 @@ import { useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { openDevPanel, openTopUp } from '../../actions'
 import { openImportJobs } from '../../siteJobActions'
-import { activeGateway, activeProviderId, PROVIDER_LABEL, selectableProviders, useDevAllowed, useProviderPrefs, type ProviderId } from '../../providers'
+import {
+  activeGateway,
+  activeProviderId,
+  PROVIDER_LABEL,
+  providerBlockedReason,
+  selectableProviders,
+  useDevAllowed,
+  useProviderLimits,
+  useProviderPrefs,
+  type ProviderId,
+} from '../../providers'
 import { canvasappBridge, WEB_UNAVAILABLE, type CanvasappBridge } from '../../providers/canvasapp/transport'
+import { SANO_UNAVAILABLE, sanoGatewayAvailable } from '../../providers/sano'
 import { DEV_CREDIT_HINT, formatCredits, formatVnd, refreshRealCredits, resetRealCredits, useRealCredits } from '../../store/credits'
 import { activeCount, useRuns } from '../../store/runs'
 import { toast } from '../../store/ui'
@@ -186,6 +198,10 @@ export function GatewaySection() {
   // Re-renders when the development-mode lock flips (the gateway below follows it).
   useProviderPrefs((s) => s.active)
   const sano = activeProviderId() === 'sano-gateway'
+  // why SANO cannot take new takes here (outside SANO, signed out…), re-read when its token state changes
+  useProviderLimits((s) => s.rev['sano-gateway'])
+  const sanoBlocked = sano ? providerBlockedReason('sano-gateway') : null
+  const inSano = sanoGatewayAvailable()
   /** Locked and the canvasapp gateway not turned on: nothing here may talk to canvasapp. */
   const off = !devOpen && provider !== 'canvasapp'
   // The gateway new takes use (re-read on every render: it follows the Settings choice above).
@@ -246,7 +262,7 @@ export function GatewaySection() {
 
   const choose = (p: ProviderId) => {
     if (p === provider) return
-    if (p === 'canvasapp' && !desktop) return
+    if ((p === 'canvasapp' && !desktop) || (p === 'sano-gateway' && !inSano)) return
     setProvider(p)
     toast(
       p === 'canvasapp'
@@ -307,12 +323,14 @@ export function GatewaySection() {
                 p === 'dev'
                   ? 'canvasapp giả lập, credit dev — không tốn tiền'
                   : p === 'sano-gateway'
-                    ? 'Máy chủ SANO — video thật'
+                    ? inSano
+                      ? 'Máy chủ SANO — video thật'
+                      : 'Chỉ có trong app SANO'
                     : desktop
                       ? 'Video thật, trừ credit canvasapp'
                       : 'Chỉ có trong bản desktop',
-              disabled: p === 'canvasapp' && !desktop,
-              title: p === 'canvasapp' && !desktop ? WEB_UNAVAILABLE : undefined,
+              disabled: p === 'canvasapp' ? !desktop : p === 'sano-gateway' && !inSano,
+              title: p === 'canvasapp' && !desktop ? WEB_UNAVAILABLE : p === 'sano-gateway' && !inSano ? SANO_UNAVAILABLE : undefined,
             }))}
           />
           {!desktop && <div className="dg-field-hint">{WEB_UNAVAILABLE}</div>}
@@ -433,10 +451,10 @@ export function GatewaySection() {
 
       {gwBridge && !off && !sano && typeof gwBridge.keepLogin === 'function' && <KeepLoginRow key={gw.id} bridge={gwBridge} dev={dev} loginState={login.state} />}
 
-      {issue && (
+      {(issue || sanoBlocked) && (
         <div className="dg-callout warn">
           <TriangleAlert size={15} />
-          <div>{issue}</div>
+          <div>{issue ?? sanoBlocked}</div>
         </div>
       )}
 

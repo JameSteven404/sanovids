@@ -32,6 +32,8 @@ import {
   useRuns,
 } from '../../../store/runs'
 import { useUI } from '../../../store/ui'
+import { SANO_LOGIN_TEXT, SANO_UNAVAILABLE } from '../../../providers/sano/gateway'
+import { GatewaySection } from '../../dialogs/GatewaySection'
 import { Inspector } from '../../inspector/Inspector'
 import { costTitle } from '../../sidebar/shared'
 import { RunConfirmDialog } from '../RunConfirmDialog'
@@ -138,5 +140,20 @@ describe('SANO wording', () => {
       expect(text).toMatch(/SANO|Chạy lại/)
       expect(text).not.toMatch(/canvasapp/i)
     }
+  })
+
+  it('Settings says why SANO cannot take new takes: a plain tab of the SANO build (its choice off), signed out inside SANO', () => {
+    vi.stubGlobal('window', { location: { origin: 'https://sano.example' } }) // SANO's /sanovids/ in a plain tab
+    const seg = /<button[^>]*data-seg="sano-gateway"[^>]*>/
+    for (const access of ['locked', 'build'] as const) {
+      applyDevAccessState(bareState(access))
+      const html = renderToStaticMarkup(createElement(GatewaySection))
+      expect(html).toContain(SANO_UNAVAILABLE)
+      // development mode open: SANO is listed, but disabled here (like canvasapp outside the desktop app)
+      if (access === 'build') expect(html.match(seg)?.[0]).toMatch(/disabled=""/)
+    }
+    stubInsideSano() // inside SANO, before sign-in
+    applyDevAccessState(bareState('locked'))
+    expect(renderToStaticMarkup(createElement(GatewaySection))).toContain(SANO_LOGIN_TEXT)
   })
 })

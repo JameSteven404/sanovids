@@ -6,7 +6,9 @@ import { activeGateway, activeProviderId, effectiveProvider, getProvider, normal
 import { applyDevAccessState, bareState } from '../devAccess'
 import { sanoGatewayAvailable } from '../sano'
 import { stubInsideSano } from './insideSano'
-import { createSanoGatewayProvider, SANO_LOGIN_TEXT, SANO_UNAVAILABLE, type SanoGatewayDeps } from '../sano/gateway'
+import { accountKey } from '../canvasapp/adapter'
+import { createSanoGatewayProvider, SANO_LOGIN_TEXT, SANO_OTHER_ACCOUNT, SANO_UNAVAILABLE, type SanoGatewayDeps } from '../sano/gateway'
+import { jwt } from './insideSano'
 import { isResultTooLarge, isSubmitUncertain, ProviderError, type JobRequest } from '../types'
 
 const req = (over: Partial<JobRequest> = {}): JobRequest => ({
@@ -46,11 +48,11 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 function fakeSano() {
   const jobs = new Map<string, Job>()
   const video = new Uint8Array(300_000).map((_, i) => i % 251)
-  const opts = { refuse401: (_path: string, _method: string) => false, dropNextAnswer: false, mode: undefined as string | undefined }
+  const opts = { refuse401: (_path: string, _method: string, _auth?: string) => false, dropNextAnswer: false, mode: undefined as string | undefined }
   const fetch = vi.fn(async (url: string, init: RequestInit): Promise<Response> => {
     const u = new URL(url, 'https://sano.test')
     const method = init.method ?? 'GET'
-    if (opts.refuse401(u.pathname, method)) return json(401, { error: 'unauthenticated' })
+    if (opts.refuse401(u.pathname, method, (init.headers as Record<string, string> | undefined)?.Authorization)) return json(401, { error: 'unauthenticated' })
     if (u.pathname === '/api/video/capabilities') {
       return json(200, { ...(opts.mode ? { mode: opts.mode } : {}), models: [{ id: 'seedance_2_5', label: 'Seedance 2.5', ratios: ['16:9', '9:16'], resolutions: ['720p'], durations: [5, 10], maxRefs: 4 }, { bad: true }] })
     }
@@ -222,20 +224,63 @@ describe('sano-gateway provider', () => {
     expect(s.calls('POST', '/api/video/jobs')).toHaveLength(0)
   })
 
-  it('401 (a token SANO refuses) → the SANO sign-in error, once (no retry loop), never "maybe billed"', async () => {
+  it('401 (a token SANO refuses): deferred with the sign-in text (nothing made, never "maybe billed"), that token is never sent again, a new one is', async () => {
     const s = fakeSano()
-    const p = make(s)
-    s.opts.refuse401 = (path) => path.startsWith('/api/video/jobs')
+    let token = 'tok'
+    const p = make(s, { token: async () => token })
+    s.opts.refuse401 = (path, _m, auth) => auth === 'Bearer tok' && path.startsWith('/api/video/jobs')
     const err = await p.submit(req()).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ProviderError)
-    expect(err).toMatchObject({ code: 'login-required', message: SANO_LOGIN_TEXT })
+    expect(err).toMatchObject({ code: 'deferred', message: SANO_LOGIN_TEXT })
     expect(isSubmitUncertain(err)).toBe(false)
+    expect(p.tokenState()).toBe('refused')
+    expect(p.blockedReason()).toBe(SANO_LOGIN_TEXT)
+    const sent = s.fetch.mock.calls.length // /capabilities + the refused POST
     expect(s.calls('POST', '/api/video/jobs')).toHaveLength(1)
-    await expect(p.poll(['job_1'])).rejects.toMatchObject({ code: 'login-required' })
-    await expect(p.fetchResult('job_1')).rejects.toMatchObject({ code: 'login-required' })
-    s.opts.refuse401 = () => true
+    expect(await p.poll(['job_1'])).toEqual([]) // no news, no back-off
+    await expect(p.fetchResult('job_1')).rejects.toMatchObject({ code: 'deferred' })
     expect(await p.refreshLimits({ force: true })).toBe('login')
     expect(p.limitsInfo().lastAttempt?.result).toBe('login')
+    expect(s.fetch).toHaveBeenCalledTimes(sent)
+    token = 'tok2' // signed in again in SANO
+    expect((await p.submit(req())).remoteId).toBe('job_1')
+    expect(p.blockedReason()).toBeNull()
+  })
+
+  it('an expired token (its JWT exp, read unverified) is never sent: the sign-in text until a fresh one', async () => {
+    const s = fakeSano()
+    let token = jwt({ sub: 'A', exp: 1_000 })
+    const p = make(s, { token: async () => token, now: () => 2_000_000 })
+    await expect(p.submit(req())).rejects.toMatchObject({ code: 'deferred', message: SANO_LOGIN_TEXT })
+    expect(p.tokenState()).toBe('expired')
+    expect(p.blockedReason()).toBe(SANO_LOGIN_TEXT)
+    expect(s.fetch).not.toHaveBeenCalled()
+    token = jwt({ sub: 'A', exp: 3_000 })
+    expect((await p.submit(req())).remoteId).toBe('job_1')
+    expect(p.tokenState()).toBe('ok')
+  })
+
+  it("jobs are per SANO account: another account's take is blocked, and a job request whose token turned out to be another account's is never sent", async () => {
+    const s = fakeSano()
+    const [tokA, tokB] = [jwt({ sub: 'A' }), jwt({ sub: 'B' })]
+    let token = tokA
+    const p = make(s, { token: async () => token })
+    await p.refreshLimits({ force: true }) // read: the engine sends only once the state is 'ok' (its account known)
+    const { remoteId } = await p.submit(req())
+    const a = p.account()!
+    expect(a).toBe(accountKey('A')) // the sub as a key, never itself
+    expect(p.blockedReason(a)).toBeNull()
+    token = tokB // switched in SANO, not read here yet: the engine still chose this job for A
+    expect(await p.poll([remoteId])).toEqual([])
+    expect(s.calls('GET', `/api/video/jobs/${remoteId}`)).toHaveLength(0)
+    expect(p.blockedReason(a)).toBe(SANO_OTHER_ACCOUNT)
+    expect(p.blockedReason()).toBeNull() // a new take goes under B
+    token = tokA
+    await expect(p.recover(req())).rejects.toMatchObject({ code: 'deferred', message: SANO_OTHER_ACCOUNT })
+    expect(s.calls('GET', /idempotencyKey/)).toHaveLength(0)
+    expect(p.blockedReason(a)).toBeNull() // A again: its take goes on
+    p.reset() // forgets the token too
+    expect(p.tokenState()).toBe('none')
   })
 
   it('no token yet (not signed in to SANO): deferred with the sign-in text before any request; poll is no news', async () => {
@@ -247,6 +292,9 @@ describe('sano-gateway provider', () => {
     expect(await p.poll(['job_1'])).toEqual([])
     await expect(p.fetchResult('job_1')).rejects.toMatchObject({ code: 'deferred' })
     expect(await p.refreshLimits({ force: true })).toBe('login')
+    expect(p.limitsInfo().lastAttempt?.result).toBe('login')
+    expect(p.tokenState()).toBe('none')
+    expect(p.blockedReason()).toBe(SANO_LOGIN_TEXT)
     expect(p.mayHaveSent('take_1')).toBe(false)
     expect(s.fetch).not.toHaveBeenCalled()
     token = 'tok' // signed in: the same take goes
@@ -287,6 +335,7 @@ describe('sano-gateway provider', () => {
     const s = fakeSano()
     const p = make(s, { available: () => false })
     expect(await p.available()).toEqual({ ok: false, reason: SANO_UNAVAILABLE })
+    expect(p.blockedReason()).toBe(SANO_UNAVAILABLE)
     await expect(p.submit(req())).rejects.toMatchObject({ code: 'deferred' })
     expect(await p.refreshLimits()).toBe('unavailable')
     expect(await p.poll(['job_1'])).toEqual([])
@@ -298,6 +347,7 @@ describe('sano-gateway provider', () => {
 
 describe('sano-gateway in the registry', () => {
   afterEach(() => {
+    getProvider('sano-gateway').reset?.()
     vi.unstubAllGlobals()
     vi.unstubAllEnvs()
     applyDevAccessState(bareState('build'))
@@ -305,7 +355,7 @@ describe('sano-gateway in the registry', () => {
 
   it('on only for the flagged build in an iframe of a same-origin page, whatever sets __SANO_GATEWAY__', () => {
     stubInsideSano()
-    expect(providerBlockedReason('sano-gateway')).toBeNull()
+    expect(providerBlockedReason('sano-gateway')).toBe(SANO_LOGIN_TEXT) // inside SANO: only the sign-in is missing
     vi.stubEnv('VITE_SANO_GATEWAY', '') // the public web build, even framed
     expect(sanoGatewayAvailable()).toBe(false)
     stubInsideSano({ bdpDesktop: {} }) // Electron
@@ -353,7 +403,7 @@ describe('sano-gateway in the registry', () => {
     expect(sanoGatewayAvailable()).toBe(true)
     expect(activeProviderId()).toBe('sano-gateway')
     expect(selectableProviders()).toEqual(['canvasapp', 'sano-gateway'])
-    expect(providerBlockedReason('sano-gateway')).toBeNull()
+    expect(providerBlockedReason('sano-gateway')).toBe(SANO_LOGIN_TEXT) // not signed in to SANO yet
     expect(getProvider('sano-gateway').id).toBe('sano-gateway')
     // no canvasapp account in SANO: the canvasapp gateway stands in (no bridge on the web)
     expect(activeGateway().id).toBe('canvasapp')

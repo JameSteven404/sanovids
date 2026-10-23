@@ -160,6 +160,9 @@ describe('migrateTake provider fields', () => {
     // SANO's simulator mark: only a real `true` is kept
     expect(migrateTake({ id: 't', provider: 'sano-gateway', simulated: true }).simulated).toBe(true)
     expect(migrateTake({ id: 't', provider: 'sano-gateway', simulated: 'yes' }).simulated).toBeUndefined()
+    // the SANO account its job belongs to: only a real key is kept (a bad one would park the take for good)
+    expect(migrateTake({ id: 't', provider: 'sano-gateway', account: 'ab12' }).account).toBe('ab12')
+    expect(migrateTake({ id: 't', provider: 'sano-gateway', account: 7 }).account).toBeUndefined()
   })
 })
 

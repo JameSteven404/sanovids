@@ -7,3 +7,6 @@ export function stubInsideSano(win: object = {}): void {
   vi.stubEnv('VITE_SANO_GATEWAY', '1')
   vi.stubGlobal('window', { location, ...win, parent: { location } })
 }
+
+/** A JWT as SANO's host gives it (SanoVids only reads its payload, unverified). */
+export const jwt = (payload: object): string => `h.${btoa(JSON.stringify(payload)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')}.s`

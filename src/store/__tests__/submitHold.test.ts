@@ -188,15 +188,20 @@ describe('restartWork', () => {
     expect(currentRestartWork()).toEqual({ queued: 0, processing: 0, sending: 0 })
   })
 
-  it('outside the SANO app never waits for a SANO take (submit defers, poll / look-up get no news until SanoVids opens in SANO)', () => {
+  it('never waits for a SANO take that cannot run here (outside SANO, or inside before sign-in): it waits, untouched', async () => {
     const t = (id: string, status: Take['status'], remoteId: string | null) => ({ id, sceneId: 's1', status, provider: 'sano-gateway', remoteId }) as Take
     const takes = [t('q', 'queued', null), t('p', 'processing', 'job_p'), t('s', 'processing', null)]
+    setEngineHooks({ mayRun: () => false }) // counted only: no engine sends them here
     useRuns.setState({ takes })
     expect(restartWork(takes, new Set(['s1']))).toEqual({ queued: 0, processing: 0, sending: 0 })
     expect(sendingCount()).toBe(0) // "Cập nhật ngay" never waits 15 s for it
-    stubInsideSano() // the queue sends, polls and looks them up
-    expect(restartWork(takes, new Set(['s1']))).toEqual({ queued: 1, processing: 2, sending: 1 })
+    stubInsideSano() // not signed in to SANO yet: nothing runs either
+    expect(restartWork(takes, new Set(['s1']))).toEqual({ queued: 0, processing: 0, sending: 0 })
+    stubInsideSano({ __SANO_GATEWAY__: { token: () => 'tok' } }) // signed in: the queue sends, polls and looks them up
+    getProvider('sano-gateway').reset?.() // forgets the unsigned look (its next look reads the token)
+    await vi.waitFor(() => expect(restartWork(takes, new Set(['s1']))).toEqual({ queued: 1, processing: 2, sending: 1 }))
     expect(sendingCount()).toBe(1)
+    getProvider('sano-gateway').reset?.()
     vi.unstubAllEnvs()
     vi.unstubAllGlobals()
   })

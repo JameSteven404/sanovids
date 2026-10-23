@@ -215,6 +215,11 @@ export interface Take {
   submitUnknown?: boolean
   /** Its job came back with SANO's mode 'simulator': a sample clip, nothing billed (providers/sano). */
   simulated?: boolean
+  /**
+   * The provider account (VideoProvider.account: SANO's token sub as a key) its job was sent or looked up under: SANO
+   * jobs are per account, so under another one the take waits (store/runs cannotRunHere), never failed or sent again.
+   */
+  account?: string
   /** Cost was taken from the local (demo) credit counter → refunded on failure/cancel. Missing = true. */
   charged?: boolean
   /**

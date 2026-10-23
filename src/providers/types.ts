@@ -217,9 +217,15 @@ export interface VideoProvider {
   /**
    * Find the job an earlier submit of `req.key` created (the page closed / reloaded before its id was saved)
    * WITHOUT ever creating one. Null = none known. Optional: without it such takes fail as "unknown". Code 'deferred'
-   * = cannot ask from this page now (SANO outside the SANO app): no news, the take stays as it is.
+   * = cannot ask from this page now (SANO: outside the SANO app, no usable token, another account): no news, the take
+   * stays as it is.
    */
   recover?(req: JobRequest): Promise<{ remoteId: string; simulated?: boolean } | null>
+  /**
+   * Synchronous: the account (a key, a hint) its requests go under now; null = not known. Optional (SANO only): a take
+   * it sends or looks up is bound to it (Take.account) and only followed — or sent again — under that account.
+   */
+  account?(): string | null
   /**
    * Synchronous, never a request, never throws: may a request of `key` have reached the provider — the request that
    * creates (bills) its job sent or about to be sent in the same synchronous step, its answer pending or lost, a job
