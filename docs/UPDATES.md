@@ -110,6 +110,9 @@ renderer: lib/updates.ts ⇄ src/updateActions.ts ⇄ UpdatePill · UpdateDialog
    4. đăng bản riêng, rồi **cuối cùng** mới đăng bản công khai (`--draft=false --prerelease=false --latest`) — từ giây này máy người dùng thấy bản mới;
    5. kiểm tra như một máy lạ (không đăng nhập): `/releases/latest` = tag mới, `latest.yml` tải về giống hệt file trên máy, `releases.atom` có tag mới (5 lần, cách 10 giây).
 7. Mở trang tải về xem lại bằng mắt. Máy đã cài bản Setup sẽ nhận bản mới trong vòng vài giờ.
+8. **Bản này đổi Electron** (hoặc định dạng dữ liệu): phát hành luôn **Sano Agent** từ đúng commit này (tăng `version` trong
+   `sano-agent/electron-builder.cjs` ngay ở bước 1; [SANO-DESKTOP.md](SANO-DESKTOP.md) mục 6). Hai app dùng chung
+   `%APPDATA%\SanoVids`: Sano Agent còn Electron cũ sẽ mở thư mục mà Electron mới đã nâng cấp.
 
 **`release:check` kiểm tra gì**:
 - (a) mục CHANGELOG (thiếu dòng liên kết chỉ ⚠);
@@ -148,8 +151,9 @@ Ghi chú GitHub được lưu ở `release/_build/publish/notes-private.md` và 
 ([SANO-DESKTOP.md](SANO-DESKTOP.md) mục 6). Nguồn cập nhật là repo công khai riêng `JameSteven404/sano-agent-releases`
 (tag `vX.Y.Z` ở đó; repo nguồn chỉ có tag `sano-agent-vX.Y.Z`, không có release riêng tư, không có bản Mac), cache
 `%LOCALAPPDATA%\sano-agent-updater`. Sano Agent dùng chung thư mục dữ liệu với SanoVids nhưng file riêng:
-`updater-sano-agent.json`, `logs\updater-sano-agent.log`. Hai app phải cùng Electron (cổng kiểm tra báo ✗ khi khác): đổi
-Electron hoặc định dạng dữ liệu thì phát hành cả hai.
+`updater-sano-agent.json`, `logs\updater-sano-agent.log`. Sano Agent build từ commit của bản SanoVids công khai mới nhất
+(cổng kiểm tra báo ✗ khi tag đó không phải HEAD hoặc khác Electron): đổi Electron hoặc định dạng dữ liệu thì phát hành cả hai
+(bước 8 ở trên).
 
 ### Quy tắc an toàn (đừng phá)
 - **Không bao giờ build bản phát hành thiếu `build.publish`** (hoặc trỏ nơi khác): người cài bản đó sẽ không bao giờ nhận bản sau. `tidy-release` cảnh báo, `release:check` chặn.

@@ -125,6 +125,16 @@ function readBakedSanoUrl() {
   }
 }
 
+/** `name` of the app's own package.json ('sanovids', 'sano-agent'), else undefined. */
+function readPackageName() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'))
+    return pkg && typeof pkg.name === 'string' ? pkg.name : undefined
+  } catch {
+    return undefined
+  }
+}
+
 let portableFileMemo = null
 
 /**
@@ -142,6 +152,7 @@ function portableFile() {
         execPath: process.execPath,
         tmpDir: app.getPath('temp'),
         appName: app.getName(),
+        packageName: readPackageName(),
         exists: fs.existsSync,
         realpath: fs.realpathSync.native,
         pathMod: path,
@@ -440,26 +451,32 @@ function createWindow() {
     event.preventDefault()
     if (isExternal(url)) void shell.openExternal(url)
   })
+  // SANO desktop: SANO did not open. Say so in the window (a packaged app has no console), never a blank window or a
+  // silent exit: Thử lại loads SANO again, Thoát quits. The open window keeps the app running meanwhile.
+  const sanoFailed = (message, detail) => {
+    win.show()
+    void dialog
+      .showMessageBox(win, { type: 'error', title: 'Sano Agent', message, detail, buttons: ['Thử lại', 'Thoát'], defaultId: 0, cancelId: 1, noLink: true })
+      .then(({ response }) => (response === 0 ? void win.loadURL(SANO.url) : app.quit()))
+  }
   // SANO desktop: SANO's page comes from a server now, and a server redirect must not take the window elsewhere either.
   // A redirect is the server's, not the user's click: never opened in the browser. Refused on the very first load, the
-  // window would never show: say why and stop, like a wrong SANO_URL.
+  // window would never show: say why.
   webContents.on('will-redirect', (event, url) => {
     if (!event.isMainFrame || url.startsWith(home)) return
     event.preventDefault()
     if (mainWindowShown) return
     console.error(`[SanoVids] SANO_URL redirects to ${url}: set SANO_URL to the address it ends at`)
-    app.exit(2)
+    if (SANO) sanoFailed(`SANO tại ${SANO.url} chuyển hướng sang ${url}`, 'Địa chỉ SANO nướng sẵn trong app (từ mã nguồn: SANO_URL) phải là địa chỉ cuối, không chuyển hướng. Sửa máy chủ SANO rồi bấm Thử lại.')
+    else app.exit(2)
   })
 
-  // SANO desktop: SANO's server is not up (or not on that port): say so, never a blank window. -3 = a navigation
-  // replaced or refused (will-redirect), not a failure.
+  // SANO desktop: SANO's server is not up (or not on that port). -3 = a navigation replaced or refused (will-redirect),
+  // not a failure.
   if (SANO) {
     webContents.on('did-fail-load', (_event, errorCode, _description, _url, isMainFrame) => {
       if (!isMainFrame || errorCode === -3) return
-      win.show()
-      void dialog
-        .showMessageBox(win, { type: 'error', title: 'Sano Agent', message: `Không mở được SANO tại ${SANO.url}`, detail: 'Kiểm tra máy chủ SANO đã chạy chưa, rồi bấm Thử lại.', buttons: ['Thử lại', 'Thoát'], defaultId: 0, cancelId: 1, noLink: true })
-        .then(({ response }) => (response === 0 ? void win.loadURL(SANO.url) : app.quit()))
+      sanoFailed(`Không mở được SANO tại ${SANO.url}`, 'Kiểm tra máy chủ SANO đã chạy chưa, rồi bấm Thử lại.')
     })
   }
 

@@ -48,7 +48,8 @@ Máy chủ SANO không giữ phiên hay cookie canvasapp nào.
 - Không mở cùng lúc SanoVids và SANO desktop (cùng thư mục dữ liệu: lần mở thứ hai chỉ đưa cửa sổ đang mở lên trước).
 - Google có thể từ chối đăng nhập trong cửa sổ app. Khi đó SANO ở chế độ demo; Dựng phim với canvasapp vẫn chạy vì không cần
   đăng nhập SANO. Tài khoản Google Workspace đăng nhập qua nhà cung cấp riêng (SSO) bị chặn ở bước chuyển hướng đó.
-- `SANO_URL` phải là địa chỉ cuối: máy chủ chuyển hướng ngay lần mở đầu thì SanoVids báo lỗi và thoát (exit 2).
+- Địa chỉ SANO (`SANO_URL`, hoặc địa chỉ nướng sẵn của Sano Agent) phải là địa chỉ cuối: máy chủ chuyển hướng ngay lần mở
+  đầu thì cửa sổ báo "SANO tại … chuyển hướng sang …" với **Thử lại / Thoát** (từ mã nguồn: in cả lỗi ra console).
 - Trong khung, SanoVids không có nút “Chọn thư mục tải về” (trình duyệt không cho khung khác origin mở hộp chọn thư mục).
   “Lưu video” và nút Thư mục trên canvas vẫn dùng hộp thoại của app.
 - Tải tệp từ trang SANO bị chặn (chỉ cho tải `blob:app://bdp/…`).
@@ -71,8 +72,9 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
   thư mục đó.
 - **Sao lưu** `%APPDATA%\SanoVids` (đóng cả hai app) trước lần mở Sano Agent đầu tiên. **Không mở cùng lúc** hai app.
 - **Cùng commit, cùng Electron:** bản Sano Agent build từ commit của bản SanoVids công khai mới nhất;
-  `release:check:sano-agent` báo ✗ khi Electron trong `package-lock.json` khác Electron của tag SanoVids đó. Đổi Electron
-  hoặc định dạng dữ liệu thì phát hành **cả hai**.
+  `release:check:sano-agent` báo ✗ khi tag SanoVids đó không trỏ vào HEAD hoặc Electron trong `package-lock.json` khác
+  Electron của tag đó. Đổi Electron hoặc định dạng dữ liệu thì phát hành **cả hai**, theo cả hai chiều: SanoVids lên Electron
+  mới thì cũng phát hành Sano Agent từ commit đó ([UPDATES.md](UPDATES.md) mục 3, bước 8).
 - **Chế độ Phát triển** của bản cài bị khoá như SanoVids, chỉ mở bằng khoá của chủ (`sanovids.devUnlockKeys`). Chưa mở
   khoá thì take đi qua cổng canvasapp và **tốn credit thật**.
 - **Máy chủ SANO** ở cổng 8080 phải có khung desktop (`window.sanoDesktop`): build image từ nhánh SANO
@@ -107,6 +109,6 @@ Chủ dự án làm theo đúng thứ tự (từ checkout `main` sạch, trên m
    `scripts/releases-repo/`).
 6. **Build:** `npm ci`, `npm test`, rồi `npm run dist:sano-agent` (ra `release\sano-agent\`).
 7. **Kiểm tra:** `npm run release:check:sano-agent`: mọi dòng ✓ (chữ ký, app-update.yml trỏ `sano-agent-releases` với
-   `updaterCacheDirName: sano-agent-updater`, cùng Electron với SanoVids). Thử cài trên máy đã sao lưu dữ liệu (mục 5).
+   `updaterCacheDirName: sano-agent-updater`, cùng commit và Electron với SanoVids). Thử cài trên máy đã sao lưu dữ liệu (mục 5).
 8. **Đăng:** `npm run release:publish:sano-agent` (chỉ repo công khai; repo nguồn chỉ có tag `sano-agent-v…`, không có
    release). Repo công khai dùng tag `v0.1.0`, như electron-updater cần.

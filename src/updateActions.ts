@@ -24,7 +24,7 @@ import { flushAllPromptEditors } from './components/inspector/PromptEditor'
 import { pendingDownloadCount } from './lib/downloads'
 import { installBlockers, manualCheckToast, noticeToast, signatureToastKey, UPDATE_ERROR_TEXT, type InstallBusy } from './lib/updateModel'
 import { updatesClient, type UpdatesClient } from './lib/updates'
-import type { UpdateState } from './lib/updateTypes'
+import { PRODUCT_NAME, type UpdateState } from './lib/updateTypes'
 import { flush, useSave } from './store/persist'
 import { activeCount, currentRestartWork, holdNewSubmits, sendingCount, useRuns } from './store/runs'
 import { toast, useUI, type ToastAction, type Toast } from './store/ui'
@@ -109,7 +109,7 @@ export const UPDATE_TOAST = {
   saveFailed: 'Chưa lưu được dự án nên chưa cập nhật. Thử lại sau giây lát.',
   installFailed: 'Không khởi động được bản cập nhật. Bản mới sẽ tự cài khi bạn tắt SanoVids.',
   countdown: 'Video đã xong — SanoVids sẽ khởi động lại để cập nhật sau 5 giây.',
-  ready: (v: string) => `Đã tải xong SanoVids ${v}.`,
+  ready: (v: string) => `Đã tải xong ${PRODUCT_NAME} ${v}.`,
   /** n = videos still running / queued; 0 when the wait is for something else (a top-up, downloads waiting for a folder). */
   waitSet: (n: number) => (n > 0 ? `Sẽ cập nhật khi xong ${n} video.` : 'Sẽ cập nhật khi xong các việc đang dở.'),
 } as const

@@ -442,6 +442,14 @@ describe('signed build checks', () => {
     expect(checkRotation({ prevVersion: '0.5.0', prevPkg: { version: '0.5.0' }, signer: PIN }).level).toBe('fail')
     expect(checkRotation({ prevVersion: '0.4.2', prevPkg: { version: '0.4.2' }, signer: PIN }).level).toBe('ok')
     expect(checkRotation({ prevVersion: '0.5.0', prevPkg: pkgWith([PIN]), signer: 'nope' }).level).toBe('fail')
+    // the texts name the product's own source tag (Sano Agent: sano-agent-v…); SanoVids' stay v…
+    expect(checkRotation({ prevVersion: '0.5.0', prevPkg: null, signer: PIN }).text).toBe(
+      'Không đọc được package.json của v0.5.0 (git show v0.5.0:package.json; chạy git fetch origin --tags): không kiểm tra được quy tắc "ghim trước, ký sau".',
+    )
+    const agent = checkRotation({ prevVersion: '0.1.0', prevPkg: pkgWith([PIN]), signer: TEST_PIN, tagPrefix: 'sano-agent-v' })
+    expect(agent.text).toContain('nhưng sano-agent-v0.1.0 (bản công khai mới nhất)')
+    expect(agent.text).not.toMatch(/(^| )v0\.1\.0/)
+    expect(checkRotation({ prevVersion: '0.1.0', prevPkg: null, signer: PIN, tagPrefix: 'sano-agent-v' }).text).toContain('git show sano-agent-v0.1.0:package.json')
   })
 
   it('checkAsarIntegrity: exactly resources\\app.asar, SHA256, the header hash', () => {
@@ -643,7 +651,7 @@ describe('release scripts (source guarantees)', () => {
     expect(src.indexOf('await inspectWindowsBuild(')).toBeLessThan(src.indexOf("console.log('\\nĐang thực hiện…')"))
     // every file signed by THE release certificate, the rotation rule, the licences shipped next to the exe
     expect(src).toContain('signer: SIGNER_THUMBPRINT,')
-    expect(src).toContain('checkRotation({ prevVersion, prevPkg, signer: SIGNER_THUMBPRINT })')
+    expect(src).toContain('checkRotation({ prevVersion, prevPkg, signer: SIGNER_THUMBPRINT, tagPrefix: PRODUCT.sourceTagPrefix })')
     expect(src).toContain('newestPublishedVersion(publicReleases, V)')
     expect(src).toContain("git(['show', `${tagRef(prevVersion)}:package.json`])")
     expect(src.indexOf('checkRotation({')).toBeLessThan(src.indexOf("console.log('\\nĐang thực hiện…')"))
@@ -1308,6 +1316,18 @@ describe('Sano Agent (--sano-agent: SANO_AGENT, sano-agent/electron-builder.cjs)
     expect(lib.checkSameElectron({ ours: '45.0.0', theirs: '44.5.1', sanovidsVersion: '0.6.0' }).level).toBe('fail')
     expect(lib.checkSameElectron({ ours: '44.5.1', theirs: null, sanovidsVersion: '0.6.0' }).level).toBe('fail')
     expect(lib.checkSameElectron({ ours: '44.5.1', theirs: '44.5.1', sanovidsVersion: null }).level).toBe('fail')
+  })
+
+  it('checkSameCommit: built from the commit of the newest public SanoVids (same renderer code), or ✗', () => {
+    const [a, b] = ['a'.repeat(40), 'b'.repeat(40)]
+    expect(lib.checkSameCommit({ head: a, theirs: a, sanovidsVersion: '0.6.0' }).level).toBe('ok')
+    const other = lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.6.0' })
+    expect(other).toMatchObject({ level: 'fail' })
+    expect(other.text).toContain('phát hành SanoVids từ commit này trước')
+    expect(lib.checkSameCommit({ head: a, theirs: null, sanovidsVersion: '0.6.0' }).level).toBe('fail')
+    const src = fs.readFileSync(path.join(root, 'scripts', 'publish-release.mjs'), 'utf8')
+    expect(src).toContain("git(['rev-parse', '-q', '--verify', `${tagRef(sanovidsVersion, SANOVIDS)}^{commit}`])")
+    expect(src).toContain('checkSameCommit({ head, theirs: sanovidsCommit.code === 0 ? sanovidsCommit.out : null, sanovidsVersion })')
   })
 
   it('publish-release: every source tag goes through the product (sano-agent-v…), the feed tag stays v…', () => {

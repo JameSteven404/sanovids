@@ -80,5 +80,13 @@ export const UPDATE_NOTES_MAX = 8000
 export function releasesPageLabel(product: unknown): string {
   return product === 'Sano Agent' ? 'github.com/JameSteven404/sano-agent-releases' : 'github.com/JameSteven404/sanovids-releases'
 }
-/** This app's download page: the preload runs before any page script, so the bridge is there at load. */
-export const UPDATE_RELEASES_PAGE_LABEL = releasesPageLabel(typeof window !== 'undefined' ? window.bdpDesktop?.product : undefined)
+/** The app's own name next to its version (update toast and dialog, Giới thiệu): Sano Agent its own, else SanoVids. */
+export function productName(product: unknown): string {
+  return product === 'Sano Agent' ? 'Sano Agent' : 'SanoVids'
+}
+/** The preload runs before any page script, so the bridge is there at load. */
+const DESKTOP_PRODUCT = typeof window !== 'undefined' ? window.bdpDesktop?.product : undefined
+/** This app's download page. */
+export const UPDATE_RELEASES_PAGE_LABEL = releasesPageLabel(DESKTOP_PRODUCT)
+/** This app's name. */
+export const PRODUCT_NAME = productName(DESKTOP_PRODUCT)

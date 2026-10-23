@@ -274,11 +274,12 @@ function portableEnvOf(env) {
  * started) would otherwise take that other .exe for itself (kind 'portable', a taskbar pin relaunching it):
  *   packaged win32; the file an absolute path to an existing .exe without '"', CR, LF or NUL (it is quoted into the
  *   relaunch command); no uninstaller next to the running exe (an NSIS install is never the portable); the stub's app
- *   name (PORTABLE_EXECUTABLE_APP_FILENAME) = the running exe's name without '.exe' (case-insensitive); the running exe
- *   inside the Windows temp folder (real paths, as placement: the stub extracts there).
+ *   name (PORTABLE_EXECUTABLE_APP_FILENAME) = the running exe's name without '.exe' or `packageName` (the app's own
+ *   package.json name: electron-builder's stub writes that, 'sano-agent' for 'Sano Agent.exe'), case-insensitive; the
+ *   running exe inside the Windows temp folder (real paths, as placement: the stub extracts there).
  * → the file, or undefined. Never throws.
  */
-function trustedPortableFile({ platform, isPackaged, portable, execPath, tmpDir, appName, exists, realpath, pathMod }) {
+function trustedPortableFile({ platform, isPackaged, portable, execPath, tmpDir, appName, packageName, exists, realpath, pathMod }) {
   try {
     if (platform !== 'win32' || !isPackaged || !portable || typeof portable !== 'object') return undefined
     const file = portable.file
@@ -289,7 +290,8 @@ function trustedPortableFile({ platform, isPackaged, portable, execPath, tmpDir,
     }
     if (exists(pathMod.join(pathMod.dirname(execPath), `Uninstall ${appName}.exe`))) return undefined
     const own = pathMod.basename(execPath).replace(/\.exe$/i, '').toLowerCase()
-    if (typeof portable.appFilename !== 'string' || portable.appFilename.toLowerCase() !== own) return undefined
+    const names = [own, typeof packageName === 'string' ? packageName.toLowerCase() : own]
+    if (typeof portable.appFilename !== 'string' || !names.includes(portable.appFilename.toLowerCase())) return undefined
     if (typeof realpath !== 'function') return undefined
     const realExec = realpath(execPath)
     const realTmp = realpath(tmpDir)

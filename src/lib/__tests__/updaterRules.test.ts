@@ -12,7 +12,10 @@ import preloadSource from '../../../electron/preload.cjs?raw'
 import rulesSource from '../../../electron/updater-rules.cjs?raw'
 import updaterSource from '../../../electron/updater.cjs?raw'
 import pkgSource from '../../../package.json?raw'
-import { releasesPageLabel } from '../updateTypes'
+import settingsBasicSource from '../../components/dialogs/SettingsBasic.tsx?raw'
+import updateDialogSource from '../../components/dialogs/UpdateDialog.tsx?raw'
+import updateActionsSource from '../../updateActions.ts?raw'
+import { productName, releasesPageLabel } from '../updateTypes'
 
 type PathMod = typeof nodePath.win32
 type Kind = 'installer' | 'portable' | 'mac-manual' | 'dev'
@@ -128,6 +131,7 @@ interface Rules {
     execPath: unknown
     tmpDir: unknown
     appName: string
+    packageName?: unknown
     exists: (p: string) => boolean
     realpath?: unknown
     pathMod: PathMod
@@ -542,6 +546,17 @@ describe('updater rules: PORTABLE_EXECUTABLE_FILE is trusted only for a run its 
     expect(rules.trustedPortableFile({ ...base, execPath: `${temp}\\nsA1.tmp\\app\\SanoVids.exe` })).toBe(file) // older stubs
     expect(rules.trustedPortableFile({ ...base, portable: { ...portable, appFilename: 'sanovids' } })).toBe(file) // case-insensitive
     expect(rules.trustedPortableFile({ ...base, appName: 'SanoVidsIconTest', execPath: `${temp}\\x\\SanoVidsIconTest.exe`, portable: { ...portable, appFilename: 'SanoVidsIconTest' } })).toBe(file)
+  })
+
+  it("Sano Agent: the stub names the app by its package name ('sano-agent'), not its exe ('Sano Agent')", () => {
+    const agent = { ...base, appName: 'Sano Agent', execPath: `${temp}\\x\\Sano Agent.exe`, portable: { ...portable, appFilename: 'sano-agent' } }
+    expect(rules.trustedPortableFile({ ...agent, packageName: 'sano-agent' })).toBe(file)
+    expect(rules.trustedPortableFile({ ...agent, packageName: 'Sano-Agent' })).toBe(file) // case-insensitive
+    expect(rules.trustedPortableFile({ ...agent, portable: { ...portable, appFilename: 'Sano Agent' }, packageName: 'sano-agent' })).toBe(file)
+    expect(rules.trustedPortableFile(agent)).toBeUndefined()
+    expect(rules.trustedPortableFile({ ...agent, packageName: 'sanovids' })).toBeUndefined() // another app's stub
+    expect(mainSource).toContain('packageName: readPackageName(),')
+    expect(mainSource).toContain("return pkg && typeof pkg.name === 'string' ? pkg.name : undefined")
   })
 
   it('inherited by an installed SanoVids (another portable app, a browser a Portable opened…) → not trusted', () => {
@@ -1048,6 +1063,13 @@ describe('updater rules: schedule, prefs, persistence, notices, log', () => {
     expect(rules.releasesUrl('SanoVidsUpdTest')).toBe(rules.RELEASES_URL)
     expect(rules.releasesUrl('Sano Agent')).toBe('https://github.com/JameSteven404/sano-agent-releases/releases/latest')
     for (const name of ['SanoVids', 'Sano Agent', undefined]) expect(rules.releasesUrl(name as string)).toBe(`https://${releasesPageLabel(name)}/releases/latest`)
+  })
+
+  it('the app names itself next to its own version (update toast, update dialog, Giới thiệu): Sano Agent or SanoVids', () => {
+    expect(['Sano Agent', 'SanoVids', 'SanoVidsUpdTest', undefined].map(productName)).toEqual(['Sano Agent', 'SanoVids', 'SanoVids', 'SanoVids'])
+    expect(updateActionsSource).toContain('ready: (v: string) => `Đã tải xong ${PRODUCT_NAME} ${v}.`,')
+    expect(updateDialogSource).toContain('title={`Cập nhật ${PRODUCT_NAME}`}')
+    expect(settingsBasicSource).toContain('<b>{PRODUCT_NAME}</b>')
   })
 })
 

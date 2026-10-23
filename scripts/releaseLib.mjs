@@ -914,32 +914,34 @@ const pinList = (raw) =>
  * "Ghim trước, ký sau" (docs/SIGNING.md §7): an installed app only accepts an update signed by a thumbprint IT pins,
  * so the certificate that signs this release must already be in sanovids.signers of the newest PUBLIC release before
  * it. prevVersion = that version (newestPublishedVersion(public releases, V); null = nothing published yet);
- * prevPkg = its package.json (`git show v<prev>:package.json`), null when unreadable; signer = SIGNER_THUMBPRINT.
+ * prevPkg = its package.json (`git show v<prev>:package.json`), null when unreadable; signer = SIGNER_THUMBPRINT;
+ * tagPrefix = the product's source tag prefix (sourceTagPrefix: 'v', 'sano-agent-v'), as the texts name the tag.
  * → { level: 'ok' | 'fail', text }.
  */
-export function checkRotation({ prevVersion, prevPkg, signer }) {
+export function checkRotation({ prevVersion, prevPkg, signer, tagPrefix = 'v' }) {
+  const prevTag = `${tagPrefix}${prevVersion}`
   const want = String(signer ?? '').replace(/\s+/g, '').toUpperCase()
   if (!THUMBPRINT.test(want)) return { level: 'fail', text: 'Không biết chứng chỉ ký của bản này (SIGNER_THUMBPRINT trong scripts/releaseLib.mjs).' }
   if (!prevVersion) return { level: 'ok', text: 'Chưa có bản công khai nào trước bản này: không máy nào cần nhận chữ ký mới.' }
   if (!prevPkg || typeof prevPkg !== 'object' || Array.isArray(prevPkg)) {
     return {
       level: 'fail',
-      text: `Không đọc được package.json của v${prevVersion} (git show v${prevVersion}:package.json; chạy git fetch origin --tags): không kiểm tra được quy tắc "ghim trước, ký sau".`,
+      text: `Không đọc được package.json của ${prevTag} (git show ${prevTag}:package.json; chạy git fetch origin --tags): không kiểm tra được quy tắc "ghim trước, ký sau".`,
     }
   }
   const raw = prevPkg.sanovids && typeof prevPkg.sanovids === 'object' ? prevPkg.sanovids.signers : undefined
   if (raw == null && compareVersions(prevVersion, '0.5.0') < 0) {
-    return { level: 'ok', text: `v${prevVersion} có trước 0.5.0 (chưa tự cập nhật, chưa ghim chữ ký): người dùng cài tay bản này.` }
+    return { level: 'ok', text: `${prevTag} có trước 0.5.0 (chưa tự cập nhật, chưa ghim chữ ký): người dùng cài tay bản này.` }
   }
   const prev = pinList(raw)
   if (prev.includes(want)) {
-    return { level: 'ok', text: `Chứng chỉ ký ${want.slice(0, 8)}… đã được ghim trong v${prevVersion} (bản công khai mới nhất): máy đang dùng bản đó nhận được bản này.` }
+    return { level: 'ok', text: `Chứng chỉ ký ${want.slice(0, 8)}… đã được ghim trong ${prevTag} (bản công khai mới nhất): máy đang dùng bản đó nhận được bản này.` }
   }
   return {
     level: 'fail',
     text:
-      `Bản này ký bằng chứng chỉ ${want}, nhưng v${prevVersion} (bản công khai mới nhất) chỉ ghim ${prev.length ? prev.join(', ') : 'không chứng chỉ nào'}: ` +
-      `mọi máy đang dùng v${prevVersion} sẽ TỪ CHỐI bản cập nhật này. Quy tắc "ghim trước, ký sau" (docs/SIGNING.md mục 7): ` +
+      `Bản này ký bằng chứng chỉ ${want}, nhưng ${prevTag} (bản công khai mới nhất) chỉ ghim ${prev.length ? prev.join(', ') : 'không chứng chỉ nào'}: ` +
+      `mọi máy đang dùng ${prevTag} sẽ TỪ CHỐI bản cập nhật này. Quy tắc "ghim trước, ký sau" (docs/SIGNING.md mục 7): ` +
       'phát hành trước một bản vẫn ký bằng chứng chỉ cũ, có thêm chứng chỉ mới trong sanovids.signers, rồi mới đổi chứng chỉ ký.',
   }
 }
@@ -1141,6 +1143,22 @@ export function checkSameElectron({ ours, theirs, sanovidsVersion }) {
     }
   }
   return { level: 'ok', text: `Cùng Electron ${ours} với SanoVids ${sanovidsVersion} (bản công khai mới nhất)` }
+}
+
+/**
+ * Sano Agent is built from the commit of the newest public SanoVids (docs/SANO-DESKTOP.md §5): the same renderer code
+ * and Electron open the shared data folder. head = HEAD; theirs = the commit of tag v<sanovidsVersion> (null when
+ * unreadable). → { level: 'ok' | 'fail', text }.
+ */
+export function checkSameCommit({ head, theirs, sanovidsVersion }) {
+  if (!head || !theirs) return { level: 'fail', text: `Không đọc được commit của tag v${sanovidsVersion} hoặc HEAD (chạy git fetch origin --tags).` }
+  if (head !== theirs) {
+    return {
+      level: 'fail',
+      text: `SanoVids ${sanovidsVersion} (bản công khai mới nhất) build từ ${theirs.slice(0, 7)}, không phải HEAD ${head.slice(0, 7)}: phát hành SanoVids từ commit này trước (hai app dùng chung thư mục dữ liệu).`,
+    }
+  }
+  return { level: 'ok', text: `Cùng commit ${head.slice(0, 7)} với SanoVids ${sanovidsVersion} (bản công khai mới nhất)` }
 }
 
 /** SHA-1 thumbprint (40 hex, upper case) of a certificate (DER or PEM), or null. */

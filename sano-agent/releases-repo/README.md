@@ -25,7 +25,7 @@ Cần **Windows 10 hoặc 11, 64-bit** và máy chủ SANO đang chạy ở `htt
 
 - **Dùng chung dữ liệu với SanoVids.** Sano Agent mở đúng thư mục dữ liệu của SanoVids (`%APPDATA%\SanoVids`): cùng dự án, cùng đăng nhập canvasapp. Trước lần mở đầu, đóng SanoVids và chép thư mục đó ra chỗ khác để sao lưu.
 - **Không mở cùng lúc** SanoVids và Sano Agent: mở app thứ hai thì nó tự thoát và đưa cửa sổ app đang mở lên trước.
-- **Cài vào thư mục riêng.** Đừng chọn thư mục cài của SanoVids: bộ cài sẽ ghi đè và SanoVids không mở được nữa. Thư mục mặc định (`%LOCALAPPDATA%\Programs\Sano Agent`) là đúng.
+- **Cài vào thư mục riêng.** Đừng chọn thư mục cài của SanoVids: Sano Agent sẽ nằm bên trong thư mục đó, và lần cập nhật hay gỡ cài tiếp theo của SanoVids có thể xoá mất nó. Thư mục mặc định (`%LOCALAPPDATA%\Programs\Sano Agent`) là đúng.
 - Bộ cài hỏi ngôn ngữ, hiện **Giấy phép sử dụng** và cho chọn thư mục cài. Windows SmartScreen hỏi như với bộ cài SanoVids: bấm **Thông tin khác** (*More info*), xem **Nhà phát hành**, rồi **Vẫn chạy** (*Run anyway*) — chỉ sau khi đã [kiểm tra chữ ký số](#kiểm-tra-chữ-ký-số).
 
 ---

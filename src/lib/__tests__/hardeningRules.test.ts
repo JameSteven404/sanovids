@@ -373,7 +373,8 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(mainSource).toContain("if (SANO && url.startsWith('https://accounts.google.com/')) return { action: 'allow', overrideBrowserWindowOptions: { parent: win, autoHideMenuBar: true } }")
     expect(mainSource).toContain('void win.loadURL(SANO ? SANO.url : `${ORIGIN}/index.html`)')
     // server redirects of SANO's page are held to the same home; the Google popup is guarded, its cookies dropped on close
-    expect(mainSource).toMatch(/webContents\.on\('will-redirect', \(event, url\) => \{\s+if \(!event\.isMainFrame \|\| url\.startsWith\(home\)\) return\s+event\.preventDefault\(\)\s+if \(mainWindowShown\) return\s+console\.error\([^\n]*\)\s+app\.exit\(2\)\s+\}\)/)
+    // refused on the first load: plain SanoVids prints and exits; SANO mode prints too (from source) and asks in the window
+    expect(mainSource).toMatch(/webContents\.on\('will-redirect', \(event, url\) => \{\s+if \(!event\.isMainFrame \|\| url\.startsWith\(home\)\) return\s+event\.preventDefault\(\)\s+if \(mainWindowShown\) return\s+console\.error\([^\n]*\)\s+if \(SANO\) sanoFailed\(`SANO tại \$\{SANO\.url\} chuyển hướng sang \$\{url\}`, '[^'\n]*địa chỉ cuối[^'\n]*'\)\s+else app\.exit\(2\)\s+\}\)/)
     // a redirect is the server's, never opened in the browser (only will-navigate, the user's click, is)
     const redirect = mainSource.slice(at("webContents.on('will-redirect'"), at("webContents.on('will-redirect'") + 400)
     expect(redirect.slice(0, redirect.indexOf('\n  })'))).not.toContain('openExternal')
@@ -397,8 +398,15 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     const fail = mainSource.slice(mainSource.indexOf("webContents.on('did-fail-load'"), mainSource.indexOf('void win.loadURL(SANO ? SANO.url'))
     expect(mainSource).toMatch(/if \(SANO\) \{\s+webContents\.on\('did-fail-load'/)
     expect(fail).toContain('if (!isMainFrame || errorCode === -3) return')
-    expect(fail).toContain("buttons: ['Thử lại', 'Thoát']")
-    expect(fail).toContain('(response === 0 ? void win.loadURL(SANO.url) : app.quit())')
+    expect(fail).toContain('sanoFailed(`Không mở được SANO tại ${SANO.url}`, ')
+    // one dialog for both (did-fail-load, a refused first redirect): shown in the window, Thử lại / Thoát
+    const dialogAt = mainSource.indexOf('const sanoFailed = (message, detail) => {')
+    expect(dialogAt).toBeGreaterThan(-1)
+    const failed = mainSource.slice(dialogAt, mainSource.indexOf("webContents.on('will-redirect'"))
+    expect(failed).toContain('win.show()')
+    expect(failed).toContain("title: 'Sano Agent', message, detail, buttons: ['Thử lại', 'Thoát']")
+    expect(failed).toContain('(response === 0 ? void win.loadURL(SANO.url) : app.quit())')
+    expect(failed).not.toContain('app.exit')
     // the page learns which app it is (download page label), from main only
     expect(preloadSource).toContain("product: productArg ? productArg.slice('--bdp-product='.length) : '',")
   })

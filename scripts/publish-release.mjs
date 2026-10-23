@@ -62,6 +62,7 @@ import {
   checkMacFetch,
   checkPackagedIdentity,
   checkRotation,
+  checkSameCommit,
   checkSameElectron,
   compareAssets,
   compareVersions,
@@ -471,13 +472,13 @@ if (!publicReleases) {
       prevPkg = null
     }
   }
-  const rotation = checkRotation({ prevVersion, prevPkg, signer: SIGNER_THUMBPRINT })
+  const rotation = checkRotation({ prevVersion, prevPkg, signer: SIGNER_THUMBPRINT, tagPrefix: PRODUCT.sourceTagPrefix })
   results.push({ level: rotation.level, group: 'Chữ ký số', text: rotation.text })
 }
 
 // ───────────────────────────── Sano Agent: SanoVids' data folder ─────────────────────────────
 
-// Both apps open %APPDATA%\SanoVids (D223): Sano Agent ships the Electron of the newest public SanoVids.
+// Both apps open %APPDATA%\SanoVids (D223): Sano Agent ships the commit and Electron of the newest public SanoVids.
 if (PRODUCT.config) {
   const sanovidsReleases = ghReady ? readReleases(`${OWNER}/${SANOVIDS.publicRepoName}`) : null
   const sanovidsVersion = sanovidsReleases ? newestPublishedVersion(sanovidsReleases) : null
@@ -490,6 +491,11 @@ if (PRODUCT.config) {
   }
   const same = checkSameElectron({ ours, theirs: theirs && theirs.code === 0 ? lockElectronVersion(theirs.out) : null, sanovidsVersion })
   results.push({ level: same.level, group: 'Dữ liệu chung với SanoVids', text: same.text })
+  if (sanovidsVersion) {
+    const sanovidsCommit = git(['rev-parse', '-q', '--verify', `${tagRef(sanovidsVersion, SANOVIDS)}^{commit}`])
+    const sameCommit = checkSameCommit({ head, theirs: sanovidsCommit.code === 0 ? sanovidsCommit.out : null, sanovidsVersion })
+    results.push({ level: sameCommit.level, group: 'Dữ liệu chung với SanoVids', text: sameCommit.text })
+  }
 }
 
 // ───────────────────────────── (k) Bản Mac ─────────────────────────────

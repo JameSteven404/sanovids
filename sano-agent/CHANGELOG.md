@@ -9,7 +9,7 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 ## [0.1.0] — 2026-10-23 — Bản đầu: SANO trên máy tính
 
 ✨ **SANO trong cửa sổ riêng**
-- Mở app SANO ở `http://127.0.0.1:8080`. Không mở được (máy chủ chưa chạy) thì app báo rõ, có nút **Thử lại**.
+- Mở app SANO ở `http://127.0.0.1:8080`. Không mở được (máy chủ chưa chạy, hoặc chuyển hướng sang địa chỉ khác) thì app báo rõ, có nút **Thử lại**.
 - **SẢN XUẤT → Dựng phim** là SanoVids bản desktop: tạo video thật bằng tài khoản canvasapp.io.vn của bạn.
 
 ✨ **Dùng chung dự án với SanoVids**
