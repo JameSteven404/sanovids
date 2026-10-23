@@ -12,6 +12,7 @@ import preloadSource from '../../../electron/preload.cjs?raw'
 import rulesSource from '../../../electron/updater-rules.cjs?raw'
 import updaterSource from '../../../electron/updater.cjs?raw'
 import pkgSource from '../../../package.json?raw'
+import { releasesPageLabel } from '../updateTypes'
 
 type PathMod = typeof nodePath.win32
 type Kind = 'installer' | 'portable' | 'mac-manual' | 'dev'
@@ -85,6 +86,8 @@ interface Rules {
   compareVersions(a: string, b: string): -1 | 0 | 1
   resolveProfileDir(o: { env?: string; baked?: string; appData: string; appName: string; platform?: string; pathMod: PathMod; fsMod?: FsMod }): ProfileResult
   appUserModelId(appName: string): string
+  updaterStem(appName: string): string
+  releasesUrl(appName: string): string
   detectKind(o: {
     platform: string
     isPackaged: boolean
@@ -340,6 +343,13 @@ describe('updater rules: data folder override (test isolation)', () => {
     expect(linux(real.toLowerCase()).ok).toBe(true)
     expect(mac('/private/tmp/sanovids-e2e/profile')).toEqual({ ok: true, dir: '/private/tmp/sanovids-e2e/profile', source: 'env' })
     expect(mac(`${appData}/SanoVidsMacTest`).ok).toBe(true)
+  })
+
+  it('Sano Agent (D223): SanoVids’ own data folder, its own taskbar identity and updater files', () => {
+    expect(resolveWin({ appName: 'Sano Agent' })).toEqual({ ok: true, dir: realWin, source: 'default' })
+    expect(rules.appUserModelId('Sano Agent')).toBe('com.sanoagent.app')
+    expect(rules.updaterStem('Sano Agent')).toBe('updater-sano-agent')
+    for (const name of ['SanoVids', 'SanoVidsUpdTest', 'sano agent', '']) expect(rules.updaterStem(name), name).toBe('updater')
   })
 
   it('AppUserModelId stays com.sanovids.app for the real app only', () => {
@@ -1033,6 +1043,11 @@ describe('updater rules: schedule, prefs, persistence, notices, log', () => {
   it('the feed constants point at the public releases repo', () => {
     expect(rules.RELEASES_URL).toBe('https://github.com/JameSteven404/sanovids-releases/releases/latest')
     expect(rules.FEED).toEqual({ provider: 'github', owner: 'JameSteven404', repo: 'sanovids-releases' })
+    // the page main opens and the label the page shows name the same repo, per app
+    expect(rules.releasesUrl('SanoVids')).toBe(rules.RELEASES_URL)
+    expect(rules.releasesUrl('SanoVidsUpdTest')).toBe(rules.RELEASES_URL)
+    expect(rules.releasesUrl('Sano Agent')).toBe('https://github.com/JameSteven404/sano-agent-releases/releases/latest')
+    for (const name of ['SanoVids', 'Sano Agent', undefined]) expect(rules.releasesUrl(name as string)).toBe(`https://${releasesPageLabel(name)}/releases/latest`)
   })
 })
 

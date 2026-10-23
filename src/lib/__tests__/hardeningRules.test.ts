@@ -42,6 +42,7 @@ interface Hardening {
   inlineScriptHashes(html: unknown): string[]
   contentSecurityPolicy(html: unknown, frameAncestors?: string): string
   sanoShell(o: unknown): { url: string; origin: string } | null | false
+  appFrames(wc: unknown): { url: string }[]
   GOOGLE_SIGN_IN: RegExp
   appSignaturePayload(verdict: unknown, opts: { packaged: boolean }): Payload
   SIGNED_DLLS: readonly string[]
@@ -334,6 +335,15 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(shell('http://localhost:8080/')).toEqual({ url: 'http://localhost:8080/', origin: 'http://localhost:8080' })
   })
 
+  it('packaged: only the address baked into app.asar (Sano Agent), never the environment; from source: never the baked one', () => {
+    const SANO_AGENT = { url: 'http://127.0.0.1:8080/', origin: 'http://127.0.0.1:8080' }
+    expect(h.sanoShell({ isPackaged: true, value: 'https://evil.example.vn', baked: 'http://127.0.0.1:8080/' })).toEqual(SANO_AGENT)
+    expect(h.sanoShell({ isPackaged: true, value: 'https://evil.example.vn' })).toBeNull()
+    expect(h.sanoShell({ isPackaged: true, baked: 'http://sano.example.vn/' })).toBe(false)
+    expect(h.sanoShell({ isPackaged: false, baked: 'http://127.0.0.1:8080/' })).toBeNull()
+    expect(mainSource).toMatch(/return pkg && pkg\.sanoAgent && typeof pkg\.sanoAgent\.url === 'string' \? pkg\.sanoAgent\.url : undefined/)
+  })
+
   it('unset or packaged → null (plain SanoVids); anything else → false (main refuses to start)', () => {
     expect(shell(undefined)).toBeNull()
     expect(shell('')).toBeNull()
@@ -350,7 +360,7 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
       expect(i, s).toBeGreaterThan(-1)
       return i
     }
-    expect(at('const SANO = hardening.sanoShell({ isPackaged: PACKAGED, value: process.env.SANO_URL })')).toBeLessThan(at('fs.mkdirSync(profile.dir'))
+    expect(at('const SANO = hardening.sanoShell({ isPackaged: PACKAGED, value: process.env.SANO_URL, baked: readBakedSanoUrl() })')).toBeLessThan(at('fs.mkdirSync(profile.dir'))
     expect(mainSource).toMatch(/if \(SANO === false\) \{\s+console\.error\([^)]*\)\s+process\.exit\(2\)/)
     expect(mainSource).toContain('nodeIntegrationInSubFrames: !!SANO,')
     // D223: shared projects with SanoVids — set before ready, SANO mode only, the only Chromium switch main adds
@@ -379,6 +389,28 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(google).toContain('if (open && isExternal(url)) void shell.openExternal(url)')
     expect(google).toContain('if (hardening.GOOGLE_SIGN_IN.test(url)) return')
     expect(google).toContain('keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies)')
+  })
+
+  it('SANO mode window: Sano Agent title, the exe icon on Windows, and a retry / quit dialog when SANO does not load', () => {
+    expect(mainSource).toContain("title: SANO ? 'Sano Agent' : TITLE,")
+    expect(mainSource).toContain("...(SANO && process.platform === 'win32' ? {} : { icon: path.join(DIST, 'icons', process.platform === 'win32' ? 'icon.ico' : 'icon-512.png') }),")
+    const fail = mainSource.slice(mainSource.indexOf("webContents.on('did-fail-load'"), mainSource.indexOf('void win.loadURL(SANO ? SANO.url'))
+    expect(mainSource).toMatch(/if \(SANO\) \{\s+webContents\.on\('did-fail-load'/)
+    expect(fail).toContain('if (!isMainFrame || errorCode === -3) return')
+    expect(fail).toContain("buttons: ['Thử lại', 'Thoát']")
+    expect(fail).toContain('(response === 0 ? void win.loadURL(SANO.url) : app.quit())')
+    // the page learns which app it is (download page label), from main only
+    expect(preloadSource).toContain("product: productArg ? productArg.slice('--bdp-product='.length) : '',")
+  })
+
+  it('appFrames: the live app://bdp frames of a window (main frame or SANO’s Dựng phim frame), never SANO’s page', () => {
+    const frame = (url: string, destroyed = false) => ({ url, isDestroyed: () => destroyed })
+    const sano = frame('http://127.0.0.1:8080/')
+    const bdp = frame('app://bdp/index.html')
+    expect(h.appFrames({ mainFrame: { framesInSubtree: [sano, bdp, frame('app://bdp/x', true), frame('app://bdpx/')] } })).toEqual([bdp])
+    expect(h.appFrames({ mainFrame: { framesInSubtree: [bdp] } })).toEqual([bdp])
+    expect(h.appFrames({ get mainFrame() { throw new Error('Object has been destroyed') } })).toEqual([])
+    expect(h.appFrames(null)).toEqual([])
   })
 
   it('GOOGLE_SIGN_IN: Google sign-in hosts over https only', () => {
@@ -1224,7 +1256,7 @@ describe('development-mode lock wiring (main.cjs / preload.cjs / devaccess*.cjs 
     const setup = idx(mainSource, "devAccess = setupDevAccess({ userDataDir: app.getPath('userData'), buildOpen: DEV_OPEN_BUILD, isAppSender: fromApp, getMainWindow: () => mainWindow })")
     expect(setup).toBeGreaterThan(ready)
     expect(setup).toBeLessThan(mainSource.indexOf('createWindow()', ready))
-    expect(mainSource).toContain("additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : [])]")
+    expect(mainSource).toContain("additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, `--bdp-product=${app.getName()}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : [])]")
     expect(mainSource).toContain('if (devAccess) devAccess.attachWindow(win)')
     // only one place builds the unlock module, and nothing else in main touches its channels
     expect(mainSource.split('setupDevAccess(').length - 1).toBe(1)

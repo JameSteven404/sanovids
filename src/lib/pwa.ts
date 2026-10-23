@@ -29,6 +29,8 @@ export interface DesktopInfo {
   version: string
   electron?: string
   platform?: string
+  /** app.getName() of the desktop build ('SanoVids' | 'Sano Agent'); missing before Sano Agent. */
+  product?: string
   /**
    * self-check of the app's code signature (missing in builds before 0.5.0) and where the app runs from
    * (`placement`, lib/appPlacement.ts; missing in builds before 0.6.0)

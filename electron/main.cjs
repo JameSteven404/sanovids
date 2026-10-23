@@ -87,12 +87,11 @@ const DEVTOOLS = hardening.allowDevTools({ isPackaged: PACKAGED, profileSource: 
  */
 const DEV_OPEN_BUILD = require('./devaccess-rules.cjs').devOpenBuild({ devToolsAllowed: DEVTOOLS, testDevLock: readTestDevLock() })
 /**
- * SANO desktop (docs/SANO-DESKTOP.md): from source, SANO_URL makes the window open SANO's web app, with SanoVids
- * (app://bdp/) as its Dựng phim frame: same profile, canvasapp gateway and checks (fromApp) as SanoVids. Packaged: ignored.
- * shortcut: main → page pushes (devAccess:state, updates:state) reach the main frame only, so SanoVids inside SANO gets
- * none; harmless from source (development mode open, no updater) — send them to the app://bdp frame before a packaged SANO build.
+ * SANO desktop (docs/SANO-DESKTOP.md): the window opens SANO's web app, with SanoVids (app://bdp/) as its Dựng phim
+ * frame: same profile, canvasapp gateway and checks (fromApp) as SanoVids. From source: SANO_URL. Packaged: only the
+ * address Sano Agent bakes into its package.json (sano-agent/electron-builder.cjs); plain SanoVids has none.
  */
-const SANO = hardening.sanoShell({ isPackaged: PACKAGED, value: process.env.SANO_URL })
+const SANO = hardening.sanoShell({ isPackaged: PACKAGED, value: process.env.SANO_URL, baked: readBakedSanoUrl() })
 if (SANO === false) {
   console.error('[SanoVids] SANO_URL must be https://… or http://localhost:<port>/')
   process.exit(2)
@@ -111,6 +110,16 @@ function readBakedProfileDir() {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'))
     return pkg && typeof pkg.sanovidsTestProfileDir === 'string' ? pkg.sanovidsTestProfileDir : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** `sanoAgent.url` of the app's own package.json (only the Sano Agent build has it), else undefined. */
+function readBakedSanoUrl() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'))
+    return pkg && pkg.sanoAgent && typeof pkg.sanoAgent.url === 'string' ? pkg.sanoAgent.url : undefined
   } catch {
     return undefined
   }
@@ -318,11 +327,13 @@ function createWindow() {
     minWidth: 1100,
     minHeight: 700,
     show: false,
-    title: SANO ? 'SANO' : TITLE,
+    // SANO's page sets its own <title> once it loads.
+    title: SANO ? 'Sano Agent' : TITLE,
     backgroundColor: '#0f1012',
     autoHideMenuBar: true,
-    // Windows: the multi-size .ico (sharp taskbar / Alt+Tab icon at every scale); elsewhere the 512 px PNG.
-    icon: path.join(DIST, 'icons', process.platform === 'win32' ? 'icon.ico' : 'icon-512.png'),
+    // Windows: the multi-size .ico (sharp taskbar / Alt+Tab icon at every scale); elsewhere the 512 px PNG. SANO mode on
+    // Windows: none, so the window shows the exe's own icon (Sano Agent's, not SanoVids').
+    ...(SANO && process.platform === 'win32' ? {} : { icon: path.join(DIST, 'icons', process.platform === 'win32' ? 'icon.ico' : 'icon-512.png') }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -334,7 +345,7 @@ function createWindow() {
       spellcheck: false,
       // Hover previews / the take viewer may start with sound before any click (the speaker switch decides).
       autoplayPolicy: 'no-user-gesture-required',
-      additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : [])],
+      additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, `--bdp-product=${app.getName()}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : [])],
     },
   })
 
@@ -439,6 +450,18 @@ function createWindow() {
     console.error(`[SanoVids] SANO_URL redirects to ${url}: set SANO_URL to the address it ends at`)
     app.exit(2)
   })
+
+  // SANO desktop: SANO's server is not up (or not on that port): say so, never a blank window. -3 = a navigation
+  // replaced or refused (will-redirect), not a failure.
+  if (SANO) {
+    webContents.on('did-fail-load', (_event, errorCode, _description, _url, isMainFrame) => {
+      if (!isMainFrame || errorCode === -3) return
+      win.show()
+      void dialog
+        .showMessageBox(win, { type: 'error', title: 'Sano Agent', message: `Không mở được SANO tại ${SANO.url}`, detail: 'Kiểm tra máy chủ SANO đã chạy chưa, rồi bấm Thử lại.', buttons: ['Thử lại', 'Thoát'], defaultId: 0, cancelId: 1, noLink: true })
+        .then(({ response }) => (response === 0 ? void win.loadURL(SANO.url) : app.quit()))
+    })
+  }
 
   void win.loadURL(SANO ? SANO.url : `${ORIGIN}/index.html`)
   return win

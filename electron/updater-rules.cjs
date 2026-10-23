@@ -14,6 +14,11 @@ const RELEASES_URL = 'https://github.com/JameSteven404/sanovids-releases/release
  * package.json build.publish. The app never calls setFeedURL.
  */
 const FEED = Object.freeze({ provider: 'github', owner: 'JameSteven404', repo: 'sanovids-releases' })
+/**
+ * The SANO desktop build of the same code (sano-agent/electron-builder.cjs, D220/D223): its own installer, feed and
+ * taskbar identity, but SanoVids' data folder (the same projects).
+ */
+const SANO_AGENT = 'Sano Agent'
 
 const NOTES_MAX = 8000 // = src/lib/updateTypes.ts UPDATE_NOTES_MAX
 const VERSION_MAX = 64
@@ -184,7 +189,8 @@ function profileDirProblem(candidate, real, pathMod, fsMod, platform) {
 }
 
 /**
- * The userData folder. Real users: %APPDATA%\SanoVids (or <appData>\<appName> for another product name).
+ * The userData folder. Real users: %APPDATA%\SanoVids, for Sano Agent too (D223: the same projects); another product
+ * name (a test build) gets <appData>\<appName>.
  * Agent / E2E tests only: SANOVIDS_PROFILE_DIR (env), else `sanovidsTestProfileDir` baked into the packaged
  * package.json by test builds. Such a folder must be absolute, not a root, never the real folder, inside it or one of
  * its parents — also through Windows aliases (UNC / \\?\ paths, trailing dots or spaces, 8.3 names, streams) and, with
@@ -197,7 +203,7 @@ function resolveProfileDir({ env, baked, appData, appName, platform, pathMod, fs
   const fromEnv = typeof env === 'string' && env !== ''
   const candidate = fromEnv ? env : typeof baked === 'string' && baked !== '' ? baked : null
   if (candidate === null) {
-    if (appName === 'SanoVids') return { ok: true, dir: real, source: 'default' }
+    if (appName === 'SanoVids' || appName === SANO_AGENT) return { ok: true, dir: real, source: 'default' }
     let leaf = String(appName || '').replace(/[^A-Za-z0-9._-]/g, '_')
     if (/^\.*$/.test(leaf)) leaf = 'SanoVids-other' // never '', '.' or '..'
     return { ok: true, dir: pathMod.join(appData, leaf), source: 'default' }
@@ -210,7 +216,18 @@ function resolveProfileDir({ env, baked, appData, appName, platform, pathMod, fs
 /** Windows taskbar / notification identity: the real app keeps com.sanovids.app, test builds get their own. */
 function appUserModelId(appName) {
   if (appName === 'SanoVids') return 'com.sanovids.app'
+  if (appName === SANO_AGENT) return 'com.sanoagent.app' // = sano-agent/electron-builder.cjs appId
   return 'com.sanovids.test.' + String(appName || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+/** Name of userData/updater.json and logs/updater(.1).log: Sano Agent shares the folder, never SanoVids' updater files. */
+function updaterStem(appName) {
+  return appName === SANO_AGENT ? 'updater-sano-agent' : 'updater'
+}
+
+/** The public download page of this app (opened by main only). */
+function releasesUrl(appName) {
+  return appName === SANO_AGENT ? 'https://github.com/JameSteven404/sano-agent-releases/releases/latest' : RELEASES_URL
 }
 
 /**
@@ -1083,6 +1100,8 @@ module.exports = {
   compareVersions,
   resolveProfileDir,
   appUserModelId,
+  updaterStem,
+  releasesUrl,
   detectKind,
   macPlacement,
   macFeedMissing,

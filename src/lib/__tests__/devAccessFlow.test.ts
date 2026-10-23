@@ -67,9 +67,18 @@ const APP = { senderFrame: { url: 'app://bdp/index.html' } }
 const OTHER = { senderFrame: { url: 'https://canvasapp.io.vn/' } }
 const T0 = Date.UTC(2026, 9, 7, 9, 0, 0)
 
+type Sent = { channel: string; state: Record<string, unknown> }[]
+const fakeFrame = (url: string, into: Sent) => ({ url, isDestroyed: () => false, send: (channel: string, state: Record<string, unknown>) => into.push({ channel, state }) })
+/** SanoVids' window: its app://bdp page is the main frame, or (sano) a frame inside SANO's page, which must hear nothing. */
 class FakeWindow extends EventEmitter {
-  sent: { channel: string; state: Record<string, unknown> }[] = []
-  webContents = { send: (channel: string, state: Record<string, unknown>) => this.sent.push({ channel, state }) }
+  sent: Sent = []
+  sanoSent: Sent = []
+  webContents: { mainFrame: { framesInSubtree: unknown[] } }
+  constructor(sano = false) {
+    super()
+    const app = fakeFrame('app://bdp/index.html', this.sent)
+    this.webContents = { mainFrame: { framesInSubtree: sano ? [fakeFrame('http://127.0.0.1:8080/', this.sanoSent), app] : [app] } }
+  }
   isDestroyed = () => false
 }
 
@@ -114,12 +123,12 @@ describe('devaccess.cjs flow (fake electron, real files and crypto)', () => {
   })
 
   let n = 0
-  function boot(o: { dir?: string; pins?: unknown[]; buildOpen?: boolean; platform?: string; clock?: { now: number } } = {}) {
+  function boot(o: { dir?: string; pins?: unknown[]; buildOpen?: boolean; platform?: string; clock?: { now: number }; sano?: boolean } = {}) {
     const dir = o.dir ?? nodeFs.mkdtempSync(nodePath.join(root, `u${++n}-`))
     const pkg = nodePath.join(dir, 'package.json.test')
     nodeFs.writeFileSync(pkg, JSON.stringify({ sanovids: { signers: ['X'], devUnlockKeys: o.pins ?? [key.pin] } }))
     const clock = o.clock ?? { now: T0 }
-    const win = new FakeWindow()
+    const win = new FakeWindow(o.sano)
     const d = setupDevAccess({
       userDataDir: dir,
       pkgJsonPath: pkg,
@@ -295,6 +304,14 @@ describe('devaccess.cjs flow (fake electron, real files and crypto)', () => {
     expect(((await call('setKeep', { days: 1 })).state as { until: number; keepDays: number }).until).toBe(clock.now + R.DAY_MS)
     expect(await call('setKeep', { days: 5 })).toEqual({ ok: false, error: 'bad-days' })
     expect((await call('totpRemove')).ok).toBe(true)
+  })
+
+  it('SANO desktop: the push reaches SanoVids’ app://bdp frame, never SANO’s page around it', async () => {
+    const { call, win } = boot({ sano: true })
+    const dc = String((await call('getState')).deviceCode)
+    expect((await call('unlock', { code: makeCode(dc) })).ok).toBe(true)
+    expect(win.sent.some((s) => s.channel === 'devAccess:state' && s.state.access === 'unlocked')).toBe(true)
+    expect(win.sanoSent).toEqual([])
   })
 
   it('expiry and the clock going back lock and push the reason; minimize ends a link window', async () => {
