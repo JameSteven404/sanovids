@@ -495,6 +495,8 @@ export interface EngineHooks {
    * storage (another tab may have run jobs meanwhile). Resolve false to give the lock back without running.
    */
   beforeTakeover?: (projectId: string) => Promise<boolean>
+  /** Persist only these takes' enqueue-time account, even after their project was closed. */
+  accountBound?: (projectId: string, takeIds: readonly string[], account: string) => Promise<void>
 }
 let hooks: EngineHooks = {}
 
@@ -711,6 +713,11 @@ export const useRuns = create<RunsState>()((set, get) => ({
     if (!ok.length) return { queued: 0, cost: 0, skipped, error: skipped.length ? 'Không có cảnh nào chạy được.' : 'Chưa chọn cảnh nào.' }
     const blocked = providerBlockedReason(providerId)
     if (blocked) return { queued: 0, cost, skipped, error: blocked }
+    const provider = getProvider(providerId)
+    // A cold host read has no identity to preserve. Do not create an ownerless take that another account can adopt.
+    if (providerId === 'sano-gateway' && !provider.account?.()) {
+      return { queued: 0, cost, skipped, error: 'Đang xác định tài khoản SANO. Chờ đăng nhập xong rồi bấm Chạy lại.' }
+    }
     // Only the demo provider spends the local demo credits; a real provider charges the user's own account (and is
     // never blocked by the demo balance — canvasapp itself refuses a job the account cannot pay).
     const chargeLocal = providerId === 'mock'
@@ -724,7 +731,6 @@ export const useRuns = create<RunsState>()((set, get) => ({
     }
 
     const now = Date.now()
-    const provider = getProvider(providerId)
     // The account (SANO) their jobs are for — under another one they wait, never sent (and billed) there: the last read,
     // on the takes now (kept even when the project is closed before the fresh read below ends), then read afresh.
     const account = provider.account?.() ?? undefined
@@ -772,8 +778,12 @@ export const useRuns = create<RunsState>()((set, get) => ({
       for (const id of ids) binding.add(id)
       void provider
         .freshAccount()
-        .then((fresh) => {
-          if (fresh && fresh !== account) set((s) => ({ takes: s.takes.map((t) => (ids.has(t.id) ? { ...t, account: fresh } : t)) }))
+        .then(async (fresh) => {
+          if (!fresh) return
+          if (useProject.getState().project.id === project.id) {
+            set((s) => ({ takes: s.takes.map((t) => (ids.has(t.id) ? { ...t, account: fresh } : t)) }))
+          }
+          await hooks.accountBound?.(project.id, [...ids], fresh)
         })
         .catch(() => undefined)
         .finally(() => {
@@ -793,7 +803,7 @@ export const useRuns = create<RunsState>()((set, get) => ({
     fetchRetryAt.delete(takeId)
     const remoteId = remoteIdOf(take)
     // a parked take's job is another SANO account's (or cannot be reached from here): never asked under this one
-    if (remoteId && !cannotRunHere(take)) {
+    if (remoteId && !needsAccountProof(take) && !cannotRunHere(take)) {
       try {
         void getProvider(providerOf(take)).cancel?.(remoteId)
       } catch {
@@ -1124,7 +1134,7 @@ function adoptOrphans() {
       changed = true
       return { ...t, status: 'queued', progress: 0, startedAt: null, remoteId: null }
     }
-    if (remoteIdOf(t)) return t
+    if (remoteIdOf(t) && !needsAccountProof(t)) return t
     if (canRecover(providerOf(t))) {
       lookUp.push(t.id)
       return t
@@ -1163,6 +1173,9 @@ function bindAccount(t: Take, provider: VideoProvider): Take {
   patchTake(t.id, { account })
   return { ...t, account }
 }
+
+/** Old SANO jobs must prove ownership before their owner is persisted or their remote id is polled. */
+const needsAccountProof = (t: Take): boolean => providerOf(t) === 'sano-gateway' && !t.account
 
 /** Mark a running take failed, refunding demo credits when they were charged. */
 function failTake(id: string, error: string, progress?: number) {
@@ -1300,7 +1313,7 @@ function tick() {
   // Running takes without a remote id whose submit is not in flight: the demo submits again (free, same key);
   // a remote one is never submitted twice — it is looked up at the provider once (not found → fails with a hint).
   for (const t of active) {
-    if (remoteIdOf(t) || submitting.has(t.id) || fetching.has(t.id)) continue
+    if ((remoteIdOf(t) && !needsAccountProof(t)) || submitting.has(t.id) || fetching.has(t.id)) continue
     if (providerOf(t) === 'mock') void submitTake(t.id)
     else if (!ownedHere.has(t.id) && canRecover(providerOf(t))) {
       if (now >= (recoverAt.get(t.id) ?? 0)) void recoverTake(t.id)
@@ -1311,7 +1324,7 @@ function tick() {
   const due = new Map<ProviderId, string[]>()
   for (const t of active) {
     const rid = remoteIdOf(t)
-    if (!rid || fetching.has(t.id)) continue
+    if (!rid || fetching.has(t.id) || needsAccountProof(t)) continue
     const pid = providerOf(t)
     due.set(pid, [...(due.get(pid) ?? []), rid])
   }
@@ -1397,6 +1410,8 @@ async function submitTake(id: string) {
   if (!t || submitting.has(id)) return
   // A remote job is submitted once per take (a second submit could be paid twice) — except an explicit retry().
   if (providerOf(t) !== 'mock' && (ownedHere.has(id) || remoteIdOf(t))) return
+  // A legacy unknown request has no proven owner: lookup only, never bind the current login and POST a new job.
+  if (needsAccountProof(t) && t.submitUnknown) return recoverTake(id)
   // Never sent with a model this build does not know (a newer build's take is parked by migrate; this is the backstop):
   // canvasapp would get no model_profile and could still bill the account.
   if (!isModelId(t.settings?.model)) return failTake(id, UNKNOWN_MODEL_ERROR)
@@ -1501,13 +1516,34 @@ async function recoverTake(id: string) {
   // Never posts, so nothing to stop; a cancel meanwhile (flight.stopped) only keeps the outcome for the take.
   const flight = startFlight(id, 'recover', useProject.getState().project.id, providerOf(t))
   const unknown = unknownSubmitError(providerOf(t))
+  const proving = needsAccountProof(t)
   try {
     const provider = (flight.provider = getProvider(providerOf(t)))
-    bindAccount(t, provider) // as in submitTake
+    const candidate = proving ? provider.account?.() : t.account
+    // A missing identity is no evidence about an older job. Never attach it to a failed/current login.
+    if (proving && !candidate) {
+      ownedHere.delete(id)
+      recoverAt.set(id, Date.now() + pollIntervalFor(providerOf(t)))
+      return
+    }
     const found = provider.recover ? await provider.recover(buildRequest(t)) : null
+    const proved = !proving || !!(found && provider.account?.() === candidate && (!t.remoteId || t.remoteId === found.remoteId))
+    if (!proved) {
+      // Another account's 404 is not a failed job and must not become its owner. Keep the key/id for the right login.
+      ownedHere.delete(id)
+      recoverAt.set(id, Date.now() + pollIntervalFor(providerOf(t)))
+      return
+    }
+    const bound = proving ? { ...t, account: candidate! } : t
+    if (proving && gen === generation) patchTake(id, { account: candidate! })
+    if (proving) await hooks.accountBound?.(flight.projectId, [id], candidate!)
     // Cancelled / deleted during the look-up (also once another project is open): a job found stays on the cancelled
     // take; none found = not known to exist, never "not billed" — it stays "maybe billed" (lateOutcome).
-    if (flight.stopped) return void lateOutcome(id, flight, found ? { kind: 'job', ...jobOf(found) } : { kind: 'uncertain', error: unknown })
+    if (flight.stopped) {
+      lateOutcome(id, flight, found ? { kind: 'job', ...jobOf(found) } : { kind: 'uncertain', error: unknown })
+      if (found && !cannotRunHere(bound)) void provider.cancel?.(found.remoteId)
+      return
+    }
     if (gen !== generation) return
     const cur = findTake(id)
     if (!found) return failTake(id, unknown)
@@ -1518,7 +1554,7 @@ async function recoverTake(id: string) {
     // 'deferred': the provider cannot ask from this page now (SANO: outside SANO, no usable token, the account changed,
     // its server unreachable a moment) — no news, asked again after a poll interval (an account bound just now stays:
     // never looked up under another)
-    else if ((e as { code?: unknown })?.code === 'deferred') {
+    else if (proving || (e as { code?: unknown })?.code === 'deferred') {
       ownedHere.delete(id)
       recoverAt.set(id, Date.now() + pollIntervalFor(providerOf(t)))
     } else if (gen === generation) failTake(id, unknown)
@@ -1612,6 +1648,7 @@ async function finishTake(id: string, remoteId: string, gen: number) {
   const ctrl = new AbortController()
   fetchAborts.get(id)?.abort()
   fetchAborts.set(id, ctrl)
+  let releaseResult: (() => void) | undefined
   try {
     if (!t) return
     const result = await getProvider(providerOf(t)).fetchResult(remoteId, {
@@ -1620,6 +1657,8 @@ async function finishTake(id: string, remoteId: string, gen: number) {
         if (fetchAborts.get(id) === ctrl && !ctrl.signal.aborted) reportTakeTransfer(id, p)
       },
     })
+    // A provider may keep a download slot until the returned bytes have also left the persistence pipeline.
+    releaseResult = (result as { release?: () => void }).release
     if (!stillProcessing(id, gen) || ctrl.signal.aborted) return // cancelled meanwhile
     const poster = result.poster ?? (result.video ? await posterFromVideo(result.video) : null)
     const posterId = poster ? await putBlob(poster, 'poster') : null
@@ -1655,6 +1694,7 @@ async function finishTake(id: string, remoteId: string, gen: number) {
     }
     failTake(id, errorText(e))
   } finally {
+    releaseResult?.()
     if (fetchAborts.get(id) === ctrl) {
       fetchAborts.delete(id)
       clearTakeTransfer(id)
