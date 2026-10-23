@@ -10,7 +10,7 @@ import { linkToastWithFill } from './placeholderActions'
 import { isModelId, MODELS, normalizeSettings } from './core/models'
 import { nameDate, nameTime, renderNameTemplate, type NameValues } from './core/nameTemplate'
 import { chargedDemo, creditKindOf, formatCredits } from './lib/credits'
-import { activeProviderId, devAllowed, providerBlockedReason, providerOf } from './providers'
+import { activeProviderId, devAllowed, providerBlockedReason, providerOf, sanoGatewayProvider } from './providers'
 import { cancelQuestion, cancelToastText, type CancelFacts } from './components/runs/creditText'
 import { restoredFromTake } from './components/runs/restore'
 import { restoreBlock, restoreNotes, restorePlan } from './components/runs/importedTake'
@@ -697,7 +697,7 @@ export const PARKED_RETRY_TEXT =
 
 /**
  * "Chạy lại" on a take. A canvasapp take whose submit outcome is unknown is re-sent as the SAME take (same key: the
- * job it may already have created is looked up first, so it is never paid twice). One whose earlier request can no
+ * job it may already have created is looked up first, so it is never paid twice); a SANO one without asking. One whose earlier request can no
  * longer be checked (isUnverifiableSubmit) is never re-sent: "Tạo lại" = after a warning, the cost dialog for a NEW
  * take (new key — the user's explicit choice). A parked take of a newer build is refused (PARKED_RETRY_TEXT).
  * Anything else → the cost dialog for a new take of its scene.
@@ -739,18 +739,29 @@ export function rerunTake(takeId: string, opts: { follow?: boolean } = {}) {
     if (ok) requestRun([take.sceneId], opts)
     return
   }
-  const ok = window.confirm(
-    dev
-      ? `${takeLabel(takeId)}: không rõ lần gửi trước đã tới canvasapp giả lập (chế độ Phát triển) hay chưa.\n\n` +
-          'SanoVids sẽ tìm job đó trên máy chủ giả lập trước và chỉ gửi lại (cùng mã yêu cầu) khi chắc chắn chưa có job; không chắc thì không gửi (take chuyển sang “Tạo lại”). Muốn xem trước: Bảng phát triển › Job & đơn nạp / Nhật ký.\n\nGửi lại?'
-      : `${takeLabel(takeId)}: không rõ lần gửi trước đã tới canvasapp hay chưa.\n\n` +
-          'SanoVids sẽ tìm job đó trên canvasapp trước và chỉ gửi lại (cùng mã yêu cầu) khi chắc chắn chưa có job; không chắc thì không gửi (take chuyển sang “Tạo lại”). Chắc ăn nhất: mở canvasapp.io.vn, xem phiên “SanoVids bridge” — nếu job đã có ở đó thì bấm Huỷ và tải video trên canvasapp.\n\nGửi lại?',
-  )
+  // SANO finds the earlier job by the same idempotency key (the take id): sending again never makes — or bills — a
+  // second one, so there is nothing to check on a site first
+  const sano = providerOf(take) === 'sano-gateway'
+  const ok =
+    sano ||
+    window.confirm(
+      dev
+        ? `${takeLabel(takeId)}: không rõ lần gửi trước đã tới canvasapp giả lập (chế độ Phát triển) hay chưa.\n\n` +
+            'SanoVids sẽ tìm job đó trên máy chủ giả lập trước và chỉ gửi lại (cùng mã yêu cầu) khi chắc chắn chưa có job; không chắc thì không gửi (take chuyển sang “Tạo lại”). Muốn xem trước: Bảng phát triển › Job & đơn nạp / Nhật ký.\n\nGửi lại?'
+        : `${takeLabel(takeId)}: không rõ lần gửi trước đã tới canvasapp hay chưa.\n\n` +
+            'SanoVids sẽ tìm job đó trên canvasapp trước và chỉ gửi lại (cùng mã yêu cầu) khi chắc chắn chưa có job; không chắc thì không gửi (take chuyển sang “Tạo lại”). Chắc ăn nhất: mở canvasapp.io.vn, xem phiên “SanoVids bridge” — nếu job đã có ở đó thì bấm Huỷ và tải video trên canvasapp.\n\nGửi lại?',
+    )
   if (!ok) return
   const res = useRuns.getState().retry(takeId)
   if (!res) return
   if (res.error) toast(res.error, { tone: 'error' })
-  else toast(`Đang gửi lại ${takeLabel(takeId)} (cùng mã yêu cầu, tìm job cũ trước).`, { tone: 'success' })
+  else
+    toast(
+      sano
+        ? `Đang gửi lại ${takeLabel(takeId)} lên máy chủ SANO (cùng mã yêu cầu — SANO không tạo job thứ hai).`
+        : `Đang gửi lại ${takeLabel(takeId)} (cùng mã yêu cầu, tìm job cũ trước).`,
+      { tone: 'success' },
+    )
 }
 
 /** What "Huỷ" concerns, read now (cancelTake and the right-click menu's label share it). */
@@ -801,7 +812,10 @@ export function runNow(sceneIds: string[]) {
       : kind === 'dev'
         ? `≈ ${formatCredits(res.cost, kind)} (giả lập, trừ khi máy chủ giả lập nhận job)`
         : pid === 'sano-gateway'
-          ? `≈ ${formatCredits(res.cost, kind)} · chi phí do SANO quản lý`
+          ? // read in enqueue's tick: the same mode its takes were marked expectSimulated by
+            sanoGatewayProvider().mode() === 'simulator'
+            ? 'giả lập — clip mẫu, không phát sinh phí'
+            : `≈ ${formatCredits(res.cost, kind)} · chi phí do SANO quản lý`
           : `≈ ${formatCredits(res.cost, kind)} canvasapp (trừ khi canvasapp nhận job)`
   toast(`Đã gửi ${res.queued} cảnh vào hàng đợi · ${cost}${res.skipped.length ? ` · bỏ qua ${res.skipped.length}` : ''}`, { tone: 'success' })
   return res

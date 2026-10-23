@@ -73,6 +73,8 @@ const PROGRESS_MS = 250
 const MAX_CONCURRENCY = 10
 /** The engine floor for remote providers (store/runs MIN_REMOTE_POLL_MS). */
 const POLL_MS = 15_000
+/** Videos downloaded at once (canvasapp's download lane is 2 too); the others are deferred, asked again later. */
+const MAX_DOWNLOADS = 2
 
 export type SanoMode = 'simulator' | 'live'
 export type SanoTokenState = 'none' | 'refused' | 'ok'
@@ -208,6 +210,12 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
   let refusedToken: string | null = null
   /** A read of the host's token has ended: before it 'none' only means "not known yet". */
   let read = false
+  /** Reads of the host's token started, the newest one whose answer was taken, the watcher's own read not ended. */
+  let reads = 0
+  let taken = 0
+  let watching = false
+  /** Videos being downloaded (each held whole in memory until its Blob is made). */
+  let downloading = 0
   /** The state + account the app was last told of (onLimitsChange: the run gates, Settings, the engine re-read them). */
   let told = ''
   let recheck: ReturnType<typeof setInterval> | null = null
@@ -215,9 +223,16 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
   function watch() {
     // inside SANO only, from the gateway's creation on: sign-in, another account, a new token all come without a word
     if (recheck || !deps.available()) return
-    recheck = setInterval(() => void readToken().catch(() => undefined), TOKEN_RECHECK_MS)
+    const tick = () => {
+      if (watching) return // a stalled host token() is waited for, never piled up every 3 s
+      watching = true
+      void readToken()
+        .catch(() => undefined)
+        .finally(() => (watching = false))
+    }
+    recheck = setInterval(tick, TOKEN_RECHECK_MS)
     ;(recheck as { unref?: () => void }).unref?.()
-    void readToken().catch(() => undefined)
+    tick()
   }
 
   function tokenState(): SanoTokenState {
@@ -234,12 +249,16 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
   }
 
   async function readToken(): Promise<string | null> {
+    const n = ++reads
     let token: string | null = null
     try {
       token = (await deps.token()) ?? null
     } catch {
       // the host failing = an ended read with no token: takes wait for the sign-in, never fail on the host's error
     }
+    // an older read answering after a newer one (a slow host during a sign-in / switch): the newer answer stands
+    if (n < taken) return host
+    taken = n
     read = true
     if (token !== host) {
       host = token
@@ -259,7 +278,8 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
     if (want !== undefined && (hostAccount ?? null) !== want) throw new ProviderError('deferred', SANO_OTHER_ACCOUNT)
     const headers: Record<string, string> = { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` }
     beforeSend?.() // same synchronous step as the request itself (mayHaveSent)
-    const res = await deps.fetch(SANO_API + path, { ...init, headers, credentials: 'include' })
+    // no cookies: the token alone says whose job it is (an ambient SANO session of another account never rides along)
+    const res = await deps.fetch(SANO_API + path, { ...init, headers, credentials: 'omit' })
     if (res.status === 401) {
       refusedToken = token
       tell()
@@ -475,35 +495,42 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
     // shortcut: a cut download starts again from 0 on the engine's next try; resume with Range when videos get big.
     async fetchResult(remoteId, opts = {}) {
       if (!deps.available()) throw new ProviderError('deferred', SANO_UNAVAILABLE) // not a failed download (see recover)
-      const res = await call(`${jobPath(remoteId)}/result`, opts.signal ? { signal: opts.signal } : {}, undefined, wanted())
-      if (!res.ok) throw new ProviderError('download', `Không tải được video từ máy chủ SANO (${await serverText(res)}).`)
-      const tooLarge = () => new ProviderError('too-large', 'Video lớn hơn 1 GB — SanoVids không tải được, lấy trực tiếp trong app SANO.')
-      const total = Number(res.headers.get('Content-Length')) || null
-      if (total !== null && total > MAX_RESULT_BYTES) throw tooLarge()
-      if (!res.body) throw new ProviderError('download', 'Máy chủ SANO trả về video rỗng.')
-      const reader = res.body.getReader()
-      const chunks: Uint8Array[] = []
-      let received = 0
-      let shown = -Infinity
-      for (;;) {
-        opts.signal?.throwIfAborted()
-        const { done, value } = await reader.read()
-        if (done) break
-        received += value.byteLength
-        if (received > MAX_RESULT_BYTES) {
-          void reader.cancel()
-          throw tooLarge()
+      // the engine starts one per finished job of a poll (up to 10): whole videos in memory at once could crash the tab
+      if (downloading >= MAX_DOWNLOADS) throw new ProviderError('deferred', 'Đang tải video khác từ máy chủ SANO — SanoVids tải video này sau.')
+      downloading++
+      try {
+        const res = await call(`${jobPath(remoteId)}/result`, opts.signal ? { signal: opts.signal } : {}, undefined, wanted())
+        if (!res.ok) throw new ProviderError('download', `Không tải được video từ máy chủ SANO (${await serverText(res)}).`)
+        const tooLarge = () => new ProviderError('too-large', 'Video lớn hơn 1 GB — SanoVids không tải được, lấy trực tiếp trong app SANO.')
+        const total = Number(res.headers.get('Content-Length')) || null
+        if (total !== null && total > MAX_RESULT_BYTES) throw tooLarge()
+        if (!res.body) throw new ProviderError('download', 'Máy chủ SANO trả về video rỗng.')
+        const reader = res.body.getReader()
+        const chunks: Uint8Array[] = []
+        let received = 0
+        let shown = -Infinity
+        for (;;) {
+          opts.signal?.throwIfAborted()
+          const { done, value } = await reader.read()
+          if (done) break
+          received += value.byteLength
+          if (received > MAX_RESULT_BYTES) {
+            void reader.cancel()
+            throw tooLarge()
+          }
+          chunks.push(value)
+          if (opts.onProgress && now() - shown >= PROGRESS_MS) {
+            shown = now()
+            opts.onProgress({ received, total })
+          }
         }
-        chunks.push(value)
-        if (opts.onProgress && now() - shown >= PROGRESS_MS) {
-          shown = now()
-          opts.onProgress({ received, total })
-        }
+        // a 200 with no bytes (Content-Length: 0, an empty stream) is a failed download, retried — never an empty video
+        if (!received) throw new ProviderError('download', 'Máy chủ SANO trả về video rỗng.')
+        opts.onProgress?.({ received, total })
+        return { video: new Blob(chunks as BlobPart[], { type: res.headers.get('Content-Type') || 'video/mp4' }) }
+      } finally {
+        downloading--
       }
-      // a 200 with no bytes (Content-Length: 0, an empty stream) is a failed download, retried — never an empty video
-      if (!received) throw new ProviderError('download', 'Máy chủ SANO trả về video rỗng.')
-      opts.onProgress?.({ received, total })
-      return { video: new Blob(chunks as BlobPart[], { type: res.headers.get('Content-Type') || 'video/mp4' }) }
     },
 
     async cancel(remoteId) {

@@ -7,7 +7,7 @@ import { applyDevAccessState, bareState } from '../devAccess'
 import { sanoGatewayAvailable } from '../sano'
 import { stubInsideSano } from './insideSano'
 import { accountKey } from '../canvasapp/adapter'
-import { createSanoGatewayProvider, SANO_LOGIN_TEXT, SANO_NOW_LIVE, SANO_OTHER_ACCOUNT, SANO_UNAVAILABLE, tokenAccount, type SanoGatewayDeps } from '../sano/gateway'
+import { createSanoGatewayProvider, SANO_LOGIN_TEXT, SANO_NOW_LIVE, SANO_OTHER_ACCOUNT, SANO_UNAVAILABLE, TOKEN_RECHECK_MS, tokenAccount, type SanoGatewayDeps } from '../sano/gateway'
 import { jwt } from './insideSano'
 import { isResultTooLarge, isSubmitUncertain, ProviderError, type JobRequest } from '../types'
 
@@ -102,7 +102,7 @@ describe('sano-gateway provider', () => {
     expect(remoteId).toBe('job_1')
     const [[url, init]] = s.calls('POST', '/api/video/jobs')
     expect(url).toBe('/api/video/jobs')
-    expect(init.credentials).toBe('include')
+    expect(init.credentials).toBe('omit') // bearer only: no ambient SANO cookie of another account
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer tok')
     expect(JSON.parse(String(init.body))).toEqual({
       idempotencyKey: 'take_1',
@@ -330,6 +330,38 @@ describe('sano-gateway provider', () => {
     expect(outside).not.toHaveBeenCalled()
     p.reset()
     out.reset()
+  })
+
+  it("the host's token read out of order: the newest read's answer stands; a stalled read is waited for, not piled up", async () => {
+    vi.useFakeTimers()
+    try {
+      const answers: ((t: string) => void)[] = []
+      const token = vi.fn(() => new Promise<string>((r) => answers.push(r)))
+      const p = make(fakeSano(), { token }) // read 1: the watcher's, at creation
+      await vi.advanceTimersByTimeAsync(3 * TOKEN_RECHECK_MS)
+      expect(token).toHaveBeenCalledTimes(1)
+      const fresh = p.freshAccount!() // read 2: a ▶ after a switch to B
+      answers[1](jwt({ sub: 'B' }))
+      expect(await fresh).toBe(accountKey('B'))
+      answers[0](jwt({ sub: 'A' })) // the older read answers last
+      await vi.advanceTimersByTimeAsync(0)
+      expect(p.account()).toBe(accountKey('B'))
+      p.reset()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('downloads at most two SANO videos at once (each held whole in memory): another is deferred, nothing fetched', async () => {
+    const s = fakeSano()
+    const p = make(s)
+    const ids: string[] = []
+    for (const k of ['take_1', 'take_2', 'take_3']) ids.push((await p.submit(req({ key: k, takeId: k }))).remoteId)
+    const [a, b, c] = await Promise.allSettled(ids.map((id) => p.fetchResult(id)))
+    expect([a.status, b.status]).toEqual(['fulfilled', 'fulfilled'])
+    expect(c).toMatchObject({ status: 'rejected', reason: { code: 'deferred' } }) // the engine asks again later
+    expect(s.calls('GET', /\/result$/)).toHaveLength(2)
+    expect((await p.fetchResult(ids[2])).video?.size).toBe(s.video.length) // a slot is free again
   })
 
   it("a token's account comes from its base64url payload (Google's: '-' / '_', a Vietnamese name in UTF-8)", () => {

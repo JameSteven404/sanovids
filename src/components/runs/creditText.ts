@@ -79,7 +79,7 @@ export interface TakeCostLine {
 }
 
 type CostTake = Pick<Take, 'provider' | 'charged' | 'cost' | 'status' | 'remoteId' | 'error'> &
-  Partial<Pick<Take, 'startedAt' | 'submitUnknown' | 'imported' | 'foreignProvider' | 'foreignCharged' | 'foreignStatus' | 'simulated' | 'account'>>
+  Partial<Pick<Take, 'startedAt' | 'submitUnknown' | 'imported' | 'foreignProvider' | 'foreignCharged' | 'foreignStatus' | 'simulated' | 'expectSimulated' | 'account'>>
 
 /** Take viewer "Chi phí" line: the amount and which credits paid it (take.provider / take.charged / remoteId). */
 export function takeCostLine(t: CostTake): TakeCostLine {
@@ -110,6 +110,10 @@ export function takeCostLine(t: CostTake): TakeCostLine {
   // a SANO take that waits here (outside SANO, signed out, another SANO account's): say why, before what is (maybe) billed
   const waits = t.status === 'queued' || t.status === 'processing' ? parkedReason(t) : null
   const why = (note: string) => (waits ? `${waits.replace(/\.$/, '')} · ${note}` : note)
+  // queued under SANO's simulator (no fee promised): SANO refuses it unless it still runs the simulator (expectMode)
+  if (t.expectSimulated && !t.remoteId && (t.status === 'queued' || t.status === 'processing')) {
+    return { kind, amount, note: why('giả lập — clip mẫu, không phát sinh phí'), struck: true }
+  }
   if (t.remoteId) {
     return {
       kind,

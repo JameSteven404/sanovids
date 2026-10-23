@@ -82,6 +82,11 @@ describe('takeCostLine / takeCostLabel — a take sent through the SANO gateway'
   it("a take of SANO's simulator is shown unbilled, never paid", () => {
     const sim = takeCostLine({ ...take({ provider: 'sano-gateway', remoteId: 'job_1' }), simulated: true })
     expect(sim).toMatchObject({ amount: '≈ 20 credit', note: 'giả lập — clip mẫu, không phát sinh phí', struck: true })
+    // queued under the simulator, not sent yet: unbilled too (SANO refuses it once it runs live), still saying why it waits
+    expect(takeCostLine({ ...take({ provider: 'sano-gateway', status: 'queued' }), expectSimulated: true })).toMatchObject({
+      note: 'Nhà cung cấp SANO chỉ dùng được khi mở SanoVids bên trong app SANO · giả lập — clip mẫu, không phát sinh phí',
+      struck: true,
+    })
   })
 })
 

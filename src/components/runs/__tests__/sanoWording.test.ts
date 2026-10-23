@@ -21,7 +21,7 @@ import { applyDevAccessState, bareState } from '../../../providers/devAccess'
 import { jwt, stubInsideSano } from '../../../providers/__tests__/insideSano'
 import { accountKey } from '../../../providers/canvasapp/adapter'
 import { LAYOUT, useProject } from '../../../store/project'
-import { runNow } from '../../../actions'
+import { rerunTake, runNow } from '../../../actions'
 import {
   downloadFailedError,
   hasUncertainSubmitText,
@@ -147,6 +147,32 @@ describe('SANO wording', () => {
       expect(text).toMatch(/SANO|Chạy lại/)
       expect(text).not.toMatch(/canvasapp/i)
     }
+  })
+
+  it('run toast under the simulator: no fee, as the Run dialog promised', async () => {
+    await sanoAnswers({ mode: 'simulator', models: [model(4)] })
+    const enqueue = useRuns.getState().enqueue
+    useRuns.setState({ enqueue: () => ({ queued: 1, cost: 20, skipped: [] }) })
+    try {
+      runNow(['s1'])
+    } finally {
+      useRuns.setState({ enqueue })
+    }
+    expect(useUI.getState().toasts.at(-1)?.text).toBe('Đã gửi 1 cảnh vào hàng đợi · giả lập — clip mẫu, không phát sinh phí')
+  })
+
+  it('"Chạy lại" of a SANO take whose answer was lost: the same take goes again at once (same key, one job) — no canvasapp question', () => {
+    const lost = { id: 'tk1', sceneId: 's1', number: 1, provider: 'sano-gateway', status: 'failed', remoteId: null, error: SANO_UNKNOWN_SUBMIT_ERROR, submitUnknown: true } as Take
+    const { retry, takes } = useRuns.getState()
+    const resent = vi.fn(() => ({ queued: 1, cost: 20, skipped: [] }))
+    useRuns.setState({ takes: [lost], retry: resent })
+    try {
+      rerunTake('tk1') // window.confirm does not exist here: asking would throw
+    } finally {
+      useRuns.setState({ retry, takes })
+    }
+    expect(resent).toHaveBeenCalledWith('tk1')
+    expect(useUI.getState().toasts.at(-1)?.text).toBe('Đang gửi lại S01·T1 lên máy chủ SANO (cùng mã yêu cầu — SANO không tạo job thứ hai).')
   })
 
   it('"Huỷ" / delete of a SANO take whose video is made (still downloading), maybe billed or sent: SANO words, never canvasapp', () => {
