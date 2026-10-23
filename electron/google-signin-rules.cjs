@@ -122,7 +122,7 @@ function createGoogleSignIn(fx) {
     const body = new URLSearchParams(fx.secret ? { ...form, client_secret: fx.secret } : form).toString()
     // a stalled request would hold every SANO request waiting on token(); the timeout counts as no answer
     const res = await fx.fetch(TOKEN_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body, signal: AbortSignal.timeout(15_000) })
-    return { ok: res.ok, json: await res.json().catch(() => ({})) }
+    return { ok: res.ok, status: res.status, json: await res.json().catch(() => ({})) }
   }
 
   async function signIn() {
@@ -197,8 +197,10 @@ function createGoogleSignIn(fx) {
       // no answer (offline, timeout): keep the tokens for the next try
     }
     if (held !== h) return held && held.idToken // signed out / in again meanwhile
-    // Google answered: a usable ID token or none (invalid_grant incl. invalid_rapt, no id_token) → signed out.
-    const answered = answer && (answer.ok || answer.json.error === 'invalid_grant')
+    // Google answered: a usable ID token or none (no id_token, or a 4xx refusal: invalid_grant incl. invalid_rapt,
+    // invalid_client, unauthorized_client) → signed out. 408 / 429 only mean "later", like 5xx: retrying can succeed.
+    const s = answer && answer.status
+    const answered = answer && (answer.ok || (s >= 400 && s < 500 && s !== 408 && s !== 429))
     if (answered) {
       const t = answer.ok ? readTokenResponse(answer.json, h.refreshToken) : null
       held = t && { ...t, clientId: h.clientId }
@@ -211,7 +213,7 @@ function createGoogleSignIn(fx) {
 
   /**
    * The ID token, renewed under RENEW_BEFORE_MS (concurrent calls share one refresh), or null: sign in again. Rejects
-   * when the ID token ran out and Google did not answer the refresh (offline, 5xx, timeout).
+   * when the ID token ran out and Google did not answer the refresh (offline, 5xx, 408, 429, timeout).
    */
   async function token() {
     if (!held) return null

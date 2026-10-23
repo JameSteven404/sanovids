@@ -37,9 +37,10 @@ Máy chủ SANO không giữ phiên hay cookie canvasapp nào.
     Kết quả: `{ ok: true, idToken }` hoặc `{ ok: false, code, message }` (`cancelled`, `timeout`, `superseded`,
     `not-configured`, `failed`, `not-allowed`).
   - `google.token()`: ID token đang giữ; còn dưới 5 phút thì main gia hạn bằng refresh token (nhiều lời gọi dùng chung một
-    lần). Google từ chối (`invalid_grant`) hoặc không trả ID token: `null`, trang hiện lại nút đăng nhập. Google không trả
-    lời (mất mạng, lỗi máy chủ, quá 15 giây): giữ token cũ khi còn hạn; hết hạn thì lời gọi báo lỗi (không phải `null`, vẫn
-    đăng nhập), trang chỉ hỏng request đó. Lần gọi sau thử lại.
+    lần). Google từ chối (4xx trừ 408/429: `invalid_grant`, `invalid_client`, `unauthorized_client`…) hoặc không trả ID
+    token: `null`, trang hiện lại nút đăng nhập. Google không trả lời (mất mạng, lỗi máy chủ, 408, 429, quá 15 giây):
+    giữ token cũ khi còn hạn; hết hạn thì lời gọi báo lỗi (không phải `null`, vẫn đăng nhập), trang chỉ hỏng request đó.
+    Lần gọi sau thử lại.
   - `google.signOut()`: xoá token trong bộ nhớ, không thu hồi ở Google (Google thu hồi theo cả project). Lượt đăng nhập
     đang chờ trình duyệt kết thúc với `cancelled`, kết quả về muộn bị bỏ.
   - Lấy client ID từ máy chủ SANO cũng dừng sau 15 giây (coi như chưa bật: `not-configured`).

@@ -12,7 +12,7 @@ interface Fx {
   secret?: string
   createServer: typeof createServer
   openExternal(url: string): unknown
-  fetch(url: string, init: { method: string; headers: Record<string, string>; body: string; signal?: AbortSignal }): Promise<{ ok: boolean; json(): Promise<unknown> }>
+  fetch(url: string, init: { method: string; headers: Record<string, string>; body: string; signal?: AbortSignal }): Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>
   focus(): void
   now(): number
   timeoutMs?: number
@@ -51,7 +51,7 @@ function tokenEndpoint() {
     const a = (typeof next === 'function' ? await next(form, init.signal) : next) as { status?: number; body?: unknown; throws?: boolean } | undefined
     if (!a || a.throws) throw new Error('offline')
     const status = a.status ?? 200
-    return { ok: status >= 200 && status < 300, json: async () => a.body }
+    return { ok: status >= 200 && status < 300, status, json: async () => a.body }
   }
   return { forms, answers, fetch }
 }
@@ -332,8 +332,19 @@ describe('google-signin-rules: token() renews in memory', () => {
     }
   })
 
-  it('no answer (offline) or a server error → kept: the still-valid token, the next call tries again; expired → rejects, still signed in', async () => {
-    for (const a of [{ throws: true }, { status: 503, body: { error: 'temporarily_unavailable' } }]) {
+  it('a client refusal (401 invalid_client, 400 unauthorized_client) after expiry → signed out, not a rejection forever', async () => {
+    for (const a of [{ status: 401, body: { error: 'invalid_client' } }, { status: 400, body: { error: 'unauthorized_client' } }]) {
+      const s = await signedIn(NOW + 60_000)
+      s.setNow(NOW + 7200_000)
+      s.t.answers.push(a)
+      expect(await s.g.token()).toBeNull()
+      expect(await s.g.token()).toBeNull()
+      expect(s.t.forms).toHaveLength(1)
+    }
+  })
+
+  it('no answer (offline), a server error, 408 or 429 → kept: the still-valid token, the next call tries again; expired → rejects, still signed in', async () => {
+    for (const a of [{ throws: true }, { status: 503, body: { error: 'temporarily_unavailable' } }, { status: 408, body: {} }, { status: 429, body: { error: 'rate_limit_exceeded' } }]) {
       const s = await signedIn(NOW + 60_000)
       s.t.answers.push(a, { body: { id_token: idToken(NOW + 3600_000) } })
       const old = await s.g.token()
