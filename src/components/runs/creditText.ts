@@ -110,7 +110,7 @@ export function takeCostLine(t: CostTake): TakeCostLine {
   if (t.simulated) return { kind, amount, note: 'giả lập — clip mẫu, không phát sinh phí', struck: true }
   // outside the SANO app it waits (submit defers, poll gets no news): say why, before what is (maybe) billed
   const waits = (t.status === 'queued' || t.status === 'processing') && cannotRunHere(t)
-  const why = (note: string) => (waits ? `${SANO_UNAVAILABLE} · ${note}` : note)
+  const why = (note: string) => (waits ? `${SANO_UNAVAILABLE.replace(/\.$/, '')} · ${note}` : note)
   if (t.remoteId) {
     return {
       kind,

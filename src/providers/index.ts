@@ -5,13 +5,14 @@
 //                                          (providers/devAccess devAllowed()) → 'canvasapp' when chosen in Settings AND
 //                                          the desktop bridge exists, else 'dev'; development mode LOCKED (release
 //                                          builds) → always 'canvasapp' (blocked until the user turns the gateway on).
-//                                          Inside the SANO app (providers/sano sanoGatewayAvailable()): 'sano-gateway'
-//                                          when chosen, and always while locked on the web. Never 'mock'.
+//                                          The SANO build (providers/sano sanoBuild(), also in a plain tab where
+//                                          providerBlockedReason refuses it): 'sano-gateway' when chosen, and always
+//                                          while locked on the web. Never 'mock'.
 //   providerOf(take): ProviderId            provider a take ran on (take.provider, 'mock' for old takes). Re-exported here.
 //   PROVIDER_LABEL[id]                      'dev' "Phát triển (giả lập)" | 'canvasapp' "canvasapp.io.vn" | 'mock' "Demo cũ"
 //                                          | 'sano-gateway' "SANO".
 //   selectableProviders()                   the Settings choices now: ['dev', 'canvasapp'] open, ['canvasapp'] locked
-//                                          (SELECTABLE_PROVIDERS: the open list, deprecated), + 'sano-gateway' inside SANO.
+//                                          (SELECTABLE_PROVIDERS: the open list, deprecated), + 'sano-gateway' in the SANO build.
 //   useProviderPrefs                        { provider, active, setProvider } — `provider` = the saved Settings choice
 //                                          (persisted, never rewritten by locking / unlocking: unlocking again brings it
 //                                          back); `active` = activeProviderId() kept in the store so selectors re-render
@@ -61,7 +62,7 @@ import { browserStorage, createCanvasappProvider, JOBS_KEY, STATE_KEY, type Canv
 import { canvasappBridge, createDesktopTransport, hasCanvasappBridge, WEB_UNAVAILABLE, type CanvasappBridge } from './canvasapp/transport'
 import { DEV_JOB_LIST_CACHE_MS, devBridge, devResult, resetDevServer, withDevWording } from './dev'
 import { devAllowed, useDevAccess, type DevAccessKind } from './devAccess'
-import { createBrowserSanoGateway, SANO_LABEL, SANO_UNAVAILABLE, sanoGatewayAvailable, type SanoGatewayProvider } from './sano'
+import { createBrowserSanoGateway, SANO_LABEL, SANO_UNAVAILABLE, sanoBuild, sanoGatewayAvailable, type SanoGatewayProvider } from './sano'
 import { NO_LIMITS, NO_LIMITS_INFO, type LimitsInfo, type ProviderId, type RefreshLimitsOptions, type RefreshLimitsResult, type SettingsLimits, type VideoProvider } from './types'
 
 export type { LimitsInfo, ProviderId, RefreshLimitsOptions, RefreshLimitsResult, SettingsLimits, VideoProvider } from './types'
@@ -70,16 +71,16 @@ export { devAllowed, useDevAllowed } from './devAccess'
 
 const PREF_KEY = 'bdp:pref:provider'
 
-/** Providers the user can choose for new takes ('sano-gateway' only inside the SANO app). */
+/** Providers the user can choose for new takes ('sano-gateway' only in the SANO build). */
 export type SelectableProviderId = 'dev' | 'canvasapp' | 'sano-gateway'
 /** @deprecated the choices while development mode is open — use selectableProviders(). */
 export const SELECTABLE_PROVIDERS: readonly SelectableProviderId[] = ['dev', 'canvasapp']
 const LOCKED_PROVIDERS: readonly SelectableProviderId[] = ['canvasapp']
 
-/** The Settings choices now: development mode only while it is open (devAllowed()), SANO only inside the SANO app. */
+/** The Settings choices now: development mode only while it is open (devAllowed()), SANO only in the SANO build. */
 export function selectableProviders(): readonly SelectableProviderId[] {
   const list = devAllowed() ? SELECTABLE_PROVIDERS : LOCKED_PROVIDERS
-  return sanoGatewayAvailable() ? [...list, 'sano-gateway'] : list
+  return sanoBuild() ? [...list, 'sano-gateway'] : list
 }
 
 /**
@@ -92,7 +93,7 @@ export const DEV_LOCKED_REASON = 'Take giả lập chỉ gửi được khi ch�
 export const CANVASAPP_OFF_REASON = 'Chưa bật cổng canvasapp.io.vn — mở Cài đặt → Nhà cung cấp video để bật.'
 
 /**
- * Pure: the provider new takes use. Inside SANO (`sano`): 'sano-gateway' when chosen, and always while locked without
+ * Pure: the provider new takes use. In the SANO build (`sano`): 'sano-gateway' when chosen, and always while locked without
  * the desktop bridge (the SANO web app). Open (build / unlocked): the saved choice, 'canvasapp' only with the desktop
  * bridge (else development mode, like before the lock existed). Locked: always 'canvasapp' — never development mode.
  */
@@ -104,7 +105,7 @@ export function effectiveProvider({ access, saved, bridge, sano = false }: { acc
 
 /**
  * A saved / requested choice → a selectable provider: 'canvasapp' and 'sano-gateway' stay (the latter only takes
- * effect inside SANO, effectiveProvider), anything else (old 'mock' included) is 'dev'.
+ * effect in the SANO build, effectiveProvider), anything else (old 'mock' included) is 'dev'.
  */
 export const normalizeProviderChoice = (v: unknown): SelectableProviderId => (v === 'canvasapp' || v === 'sano-gateway' ? v : 'dev')
 
@@ -129,7 +130,7 @@ interface ProviderPrefs {
 }
 
 const effectiveNow = (saved: ProviderId): ProviderId =>
-  effectiveProvider({ access: useDevAccess.getState().state.access, saved, bridge: hasCanvasappBridge(), sano: sanoGatewayAvailable() })
+  effectiveProvider({ access: useDevAccess.getState().state.access, saved, bridge: hasCanvasappBridge(), sano: sanoBuild() })
 
 export const useProviderPrefs = create<ProviderPrefs>()((set) => {
   const provider = savedProvider()

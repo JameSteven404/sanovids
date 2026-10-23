@@ -11,8 +11,9 @@
 // `mode` ('simulator' | 'live', on /capabilities and on every job): what SANO runs. Missing (no backend) = unknown,
 // never taken as 'live'; a job answered 'simulator' marks its take `simulated` (a sample clip, nothing billed). Only
 // /capabilities and a newly created job (202) say what SANO runs now: an old job's poll / recover marks its take only.
-// Auth: the SANO session cookie (credentials 'include') and, when the host page gives one, `Authorization: Bearer`.
-// 401 → SANO_LOGIN_TEXT (code 'login-required'), never retried here.
+// Auth: `Authorization: Bearer <the host page's token>` only (SANO's /api/video has no cookie auth). No token yet (not
+// signed in to SANO) → 'deferred' with SANO_LOGIN_TEXT before any request: the take waits and goes on once SANO gives
+// one. 401 (a token SANO refuses) → SANO_LOGIN_TEXT (code 'login-required'), never retried here.
 // The idempotency key is the take id: sending a take again (lost answer, "Chạy lại") never creates — or pays for — a
 // second job, so an uncertain submit is simply sent again with the same key (no ledger like canvasapp's).
 // `model` is SanoVids' ModelId ('seedance_2_5', 'minimax_h3'): SANO's /capabilities must list models under those ids.
@@ -65,8 +66,8 @@ export interface SanoModel {
 export interface SanoGatewayDeps {
   /** Same-origin fetch (the browser's; tests pass a fake server). */
   fetch: (url: string, init: RequestInit) => Promise<Response>
-  /** The host page's bearer token (window.__SANO_GATEWAY__.token), null = the cookie alone. */
-  token?: () => Promise<string | null | undefined>
+  /** The host page's bearer token (window.__SANO_GATEWAY__.token); null / undefined = not signed in to SANO yet. */
+  token: () => Promise<string | null | undefined>
   /** Running inside SANO. */
   available: () => boolean
   /** Media store (IndexedDB) blob of a picture. */
@@ -144,6 +145,8 @@ async function serverText(res: Response): Promise<string> {
 }
 
 const loginError = () => new ProviderError('login-required', SANO_LOGIN_TEXT)
+/** A 401, or no token yet ('deferred'): the user has to sign in to SANO. */
+const needsLogin = (e: unknown) => (e as Error | null)?.message === SANO_LOGIN_TEXT
 
 /** No answer to a POST /jobs that may have arrived: the job may exist (the same key resent finds it). */
 function uncertainError(why: string): ProviderError {
@@ -164,9 +167,10 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
   const states = new Map<string, RemoteState>()
 
   async function call(path: string, init: RequestInit = {}, beforeSend?: () => void): Promise<Response> {
-    const token = await deps.token?.()
-    const headers: Record<string, string> = { ...(init.headers as Record<string, string> | undefined) }
-    if (token) headers.Authorization = `Bearer ${token}`
+    const token = await deps.token()
+    // without it SANO can only answer 401: send nothing, the engine asks again (submit re-queued, recover / poll no news)
+    if (!token) throw new ProviderError('deferred', SANO_LOGIN_TEXT)
+    const headers: Record<string, string> = { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` }
     beforeSend?.() // same synchronous step as the request itself (mayHaveSent)
     const res = await deps.fetch(SANO_API + path, { ...init, headers, credentials: 'include' })
     if (res.status === 401) throw loginError()
@@ -189,7 +193,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
         lastAttempt = { at, result: 'read' }
         return models
       } catch (e) {
-        lastAttempt = { at: now(), result: (e as ProviderError).code === 'login-required' ? 'login' : caps ? 'kept' : 'failed' }
+        lastAttempt = { at: now(), result: needsLogin(e) ? 'login' : caps ? 'kept' : 'failed' }
         throw e
       } finally {
         reading = null
@@ -327,6 +331,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
             return { remoteId: id, state, ...progress, ...error }
           } catch (e) {
             if ((e as ProviderError).code === 'login-required') throw e
+            if ((e as ProviderError).code === 'deferred') return null // no token yet: no news, never a back-off
             failure = e
             failed++
             return null
@@ -412,7 +417,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
         await readCaps()
         return 'read'
       } catch (e) {
-        return (e as ProviderError).code === 'login-required' ? 'login' : caps ? 'kept' : 'failed'
+        return needsLogin(e) ? 'login' : caps ? 'kept' : 'failed'
       }
     },
   }

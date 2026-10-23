@@ -43,6 +43,7 @@ import type { LockManagerLike } from '../../store/engineLock'
 import { capabilitiesFromModels } from '../capabilities'
 import { retiredVideoReason } from '../../core/runRules'
 import type { SiteJobClaim, SiteTakeDraft } from '../canvasapp/siteJobs'
+import { stubInsideSano } from './insideSano'
 
 const scene = (id: string, order: number, over: Partial<Scene> = {}): Scene => ({
   id,
@@ -1179,6 +1180,54 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
     expect(take('d').status).toBe('completed')
     expect(locks.held.size).toBe(0)
     expect(take('q')).toMatchObject({ status: 'queued', startedAt: null, error: null })
+  })
+
+  it('inside SANO before sign-in (no token yet): SANO takes keep their state, nothing is sent; they go on by themselves once SANO gives one', async () => {
+    let token: string | null = null
+    stubInsideSano({ __SANO_GATEWAY__: { token: () => token } })
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status })
+    // SANO's /api/video: the Bearer token only, 401 without it
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+      if (!(init?.headers as Record<string, string> | undefined)?.Authorization) return json(401, { error: 'unauthenticated' })
+      const u = String(url)
+      if (u.endsWith('/capabilities')) return json(200, { models: [{ id: 'seedance_2_5', label: 'Seedance 2.5', ratios: ['16:9'], resolutions: ['480p'], durations: [5], maxRefs: 4 }] })
+      if (init?.method === 'POST') return json(202, { id: 'job_q', status: 'queued' })
+      if (u.includes('idempotencyKey=s')) return json(200, { id: 'job_s', status: 'running' })
+      return json(200, { id: u.split('/').pop(), status: 'running', progress: 30 })
+    })
+    const sent = (path: string) => fetchSpy.mock.calls.filter(([u]) => String(u) === `/api/video${path}`).length
+    const sano = (id: string, over: Partial<Take> = {}) => legacyTake(id, 's2', { provider: 'sano-gateway', charged: false, ...over })
+    try {
+      useRuns.getState().loadRuns({ takes: [sano('q'), sano('r', { status: 'processing', startedAt: 5, remoteId: 'job_r' })], credits: 100, spent: 0 })
+      await vi.advanceTimersByTimeAsync(20_000)
+      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(useRuns.getState().takes.map((t) => [t.id, t.status, t.remoteId, t.error])).toEqual([
+        ['q', 'queued', null, null],
+        ['r', 'processing', 'job_r', null],
+      ])
+      expect(useRuns.getState().providerIssue).toBeNull()
+      token = 'tok' // signed in: within one poll interval (no back-off) r is polled and q sent
+      await vi.advanceTimersByTimeAsync(16_000)
+      expect(sent('/jobs/job_r')).toBeGreaterThan(0)
+      expect(take('r').progress).toBe(30)
+      expect(take('q')).toMatchObject({ status: 'processing', remoteId: 'job_q' })
+
+      // running without its job id (SANO reloaded mid-send): waits for a token, then looked up — never failed
+      token = null
+      fetchSpy.mockClear()
+      useRuns.getState().loadRuns({ takes: [sano('s', { status: 'processing', startedAt: 5 })], credits: 100, spent: 0 })
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(take('s')).toMatchObject({ status: 'processing', remoteId: null, error: null })
+      token = 'tok'
+      await vi.advanceTimersByTimeAsync(250)
+      expect(sent('/jobs?idempotencyKey=s')).toBe(1)
+      expect(take('s').remoteId).toBe('job_s')
+    } finally {
+      fetchSpy.mockRestore()
+      vi.unstubAllGlobals()
+      vi.unstubAllEnvs()
+    }
   })
 
   it("a job made in SANO's simulator keeps that mark on its take, through save and migrate", async () => {

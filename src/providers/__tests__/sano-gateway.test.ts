@@ -222,21 +222,35 @@ describe('sano-gateway provider', () => {
     expect(s.calls('POST', '/api/video/jobs')).toHaveLength(0)
   })
 
-  it('401 → the SANO sign-in error, once (no retry loop), never "maybe billed"', async () => {
+  it('401 (a token SANO refuses) → the SANO sign-in error, once (no retry loop), never "maybe billed"', async () => {
     const s = fakeSano()
-    const p = make(s, { token: async () => null })
+    const p = make(s)
     s.opts.refuse401 = (path) => path.startsWith('/api/video/jobs')
     const err = await p.submit(req()).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ProviderError)
     expect(err).toMatchObject({ code: 'login-required', message: SANO_LOGIN_TEXT })
     expect(isSubmitUncertain(err)).toBe(false)
     expect(s.calls('POST', '/api/video/jobs')).toHaveLength(1)
-    expect((s.calls('POST', '/api/video/jobs')[0][1].headers as Record<string, string>).Authorization).toBeUndefined()
     await expect(p.poll(['job_1'])).rejects.toMatchObject({ code: 'login-required' })
     await expect(p.fetchResult('job_1')).rejects.toMatchObject({ code: 'login-required' })
     s.opts.refuse401 = () => true
     expect(await p.refreshLimits({ force: true })).toBe('login')
     expect(p.limitsInfo().lastAttempt?.result).toBe('login')
+  })
+
+  it('no token yet (not signed in to SANO): deferred with the sign-in text before any request; poll is no news', async () => {
+    const s = fakeSano()
+    let token: string | null = null
+    const p = make(s, { token: async () => token })
+    await expect(p.submit(req())).rejects.toMatchObject({ code: 'deferred', message: SANO_LOGIN_TEXT })
+    await expect(p.recover(req())).rejects.toMatchObject({ code: 'deferred', message: SANO_LOGIN_TEXT })
+    expect(await p.poll(['job_1'])).toEqual([])
+    await expect(p.fetchResult('job_1')).rejects.toMatchObject({ code: 'deferred' })
+    expect(await p.refreshLimits({ force: true })).toBe('login')
+    expect(p.mayHaveSent('take_1')).toBe(false)
+    expect(s.fetch).not.toHaveBeenCalled()
+    token = 'tok' // signed in: the same take goes
+    expect((await p.submit(req())).remoteId).toBe('job_1')
   })
 
   it('refs over the 20 MB cap → too-large without a request', async () => {
@@ -308,6 +322,15 @@ describe('sano-gateway in the registry', () => {
     }
     vi.stubGlobal('window', { location: { origin: 'https://sano.example' }, parent: crossOrigin })
     expect(sanoGatewayAvailable()).toBe(false)
+  })
+
+  it("the flagged build in a plain tab: new takes are SANO's, refused with SANO_UNAVAILABLE (not canvasapp's desktop app)", () => {
+    vi.stubEnv('VITE_SANO_GATEWAY', '1')
+    vi.stubGlobal('window', { location: { origin: 'https://sano.example' } })
+    applyDevAccessState(bareState('locked'))
+    expect(activeProviderId()).toBe('sano-gateway')
+    expect(providerBlockedReason(activeProviderId())).toBe(SANO_UNAVAILABLE)
+    expect(selectableProviders()).toEqual(['canvasapp', 'sano-gateway'])
   })
 
   it('outside SANO: never offered, never chosen, refused', () => {

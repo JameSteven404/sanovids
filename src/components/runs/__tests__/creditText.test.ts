@@ -63,11 +63,11 @@ describe('takeCostLine / takeCostLabel — a take sent through the SANO gateway'
     expect(takeCostLine(take({ provider: 'sano-gateway', status: 'queued' }))).toMatchObject({ note: SANO_UNAVAILABLE, struck: false })
     // what is (maybe) billed stays said: running with its job id (poll gets no news here either), an unknown earlier send
     expect(takeCostLine(take({ provider: 'sano-gateway', status: 'processing', remoteId: 'job_1' }))).toMatchObject({
-      note: `${SANO_UNAVAILABLE} · đã trả bằng credit SANO · chi phí do SANO quản lý`,
+      note: 'Nhà cung cấp SANO chỉ dùng được khi mở SanoVids bên trong app SANO · đã trả bằng credit SANO · chi phí do SANO quản lý',
       struck: false,
     })
     expect(takeCostLine({ ...take({ provider: 'sano-gateway', status: 'queued' }), submitUnknown: true }).note).toBe(
-      `${SANO_UNAVAILABLE} · credit SANO · lần gửi trước không rõ đã bị trừ chưa — SanoVids tìm job cũ trước khi gửi lại`,
+      'Nhà cung cấp SANO chỉ dùng được khi mở SanoVids bên trong app SANO · credit SANO · lần gửi trước không rõ đã bị trừ chưa — SanoVids tìm job cũ trước khi gửi lại',
     )
   })
 

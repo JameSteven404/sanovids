@@ -61,7 +61,7 @@ async function sanoAnswers(body: unknown) {
 }
 
 beforeEach(() => {
-  stubInsideSano()
+  stubInsideSano({ __SANO_GATEWAY__: { token: () => 'tok' } }) // signed in to SANO
   applyDevAccessState(bareState('locked')) // what initialDevAccess gives inside SANO
   useProject.setState({ project: { ...blank, id: 'sano', scenes: [scene], assets: [], folders: [] } })
 })
