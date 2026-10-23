@@ -352,7 +352,9 @@ export function requestInFlight(takeId: string): boolean {
 
 /** "Chạy lại" / retry() while requestInFlight(take): nothing new is sent before that request's outcome is known. */
 export const requestInFlightText = (pid: ProviderId): string =>
-  `Lần gửi trước của take này chưa xong — SanoVids đang chờ ${pid === 'dev' ? 'canvasapp giả lập' : pid === 'sano-gateway' ? 'máy chủ SANO' : 'canvasapp'} trả lời (có thể đã trừ ${pid === 'dev' ? 'credit dev' : 'credit'}). Đợi vài giây rồi bấm lại.`
+  pid === 'sano-gateway'
+    ? 'Lần gửi trước của take này chưa xong — SanoVids đang chờ máy chủ SANO trả lời. Đợi vài giây rồi bấm lại.'
+    : `Lần gửi trước của take này chưa xong — SanoVids đang chờ ${pid === 'dev' ? 'canvasapp giả lập' : 'canvasapp'} trả lời (có thể đã trừ ${pid === 'dev' ? 'credit dev' : 'credit'}). Đợi vài giây rồi bấm lại.`
 
 /**
  * What check() reads from the takes of `sceneIds` (the newest take of each: its "maybe billed" / paid-cancelled warning),
@@ -371,9 +373,15 @@ export function checkTakesKey(takes: readonly Take[], sceneIds: readonly string[
  * its earlier request can no longer be checked (`unverifiable`: then only the gateway's own history tells).
  */
 export function maybeBilledRunWarning(label: string, pid: ProviderId, unverifiable: boolean): string {
+  if (pid === 'sano-gateway') {
+    const recovery = unverifiable
+      ? 'SanoVids không kiểm tra được — xem lịch sử job trong app SANO trước'
+      : `“Chạy lại” trên ${label} tìm job cũ trước khi gửi`
+    return `${label}: chưa rõ kết quả lần gửi trước — ${recovery}; chạy ở đây là take MỚI, chi phí lượt chạy mới theo chế độ SANO xác nhận khi chạy.`
+  }
   const credit = pid === 'dev' ? 'credit dev' : 'credit'
   if (unverifiable) {
-    const where = pid === 'dev' ? 'Bảng phát triển › Job & đơn nạp' : pid === 'sano-gateway' ? 'lịch sử job trong app SANO' : 'lịch sử credit trên canvasapp.io.vn'
+    const where = pid === 'dev' ? 'Bảng phát triển › Job & đơn nạp' : 'lịch sử credit trên canvasapp.io.vn'
     return `${label}: lần gửi trước có thể đã bị trừ ${credit} (SanoVids không kiểm tra được) — xem ${where} trước; chạy ở đây là take MỚI, có thể trừ thêm.`
   }
   return `${label}: lần gửi trước không rõ đã bị trừ ${credit} chưa — “Chạy lại” trên ${label} tìm job cũ trước khi gửi; chạy ở đây là take MỚI, có thể trừ thêm.`
@@ -386,7 +394,7 @@ export function maybeBilledRunWarning(label: string, pid: ProviderId, unverifiab
  */
 export function paidCancelledRunWarning(label: string, pid: ProviderId): string {
   if (pid === 'sano-gateway') {
-    return `${label}: đã huỷ trong SanoVids nhưng job đã gửi sang máy chủ SANO (có thể đã tính phí) — video của job đó xem trong app SANO; chạy ở đây là take MỚI, tính phí thêm.`
+    return `${label}: đã huỷ trong SanoVids nhưng job đã gửi sang máy chủ SANO — video của job đó xem trong app SANO; chạy ở đây là take MỚI, chi phí lượt chạy mới theo chế độ SANO xác nhận khi chạy.`
   }
   return pid === 'dev'
     ? `${label}: đã huỷ trong SanoVids nhưng job đã gửi sang canvasapp giả lập (đã trừ credit dev) — job vẫn còn trong Bảng phát triển; chạy ở đây là take MỚI, trừ thêm credit dev.`
@@ -467,7 +475,7 @@ export function isUnverifiableSubmit(t: Pick<Take, 'provider' | 'remoteId' | 'st
 export const downloadFailedError = (detail: string, pid: ProviderId = 'canvasapp'): string => {
   const why = detail.trim().replace(/\.?$/, '.')
   if (pid === 'sano-gateway') {
-    return `Video đã tạo xong trên máy chủ SANO nhưng SanoVids không tải về được: ${why} Lấy video trực tiếp trong app SANO — chạy lại cảnh sẽ tính phí lần nữa.`
+    return `Video đã tạo xong trên máy chủ SANO nhưng SanoVids không tải về được: ${why} Lấy video trực tiếp trong app SANO — chi phí lượt chạy mới theo chế độ SANO xác nhận khi chạy.`
   }
   return pid === 'dev'
     ? `Video đã tạo xong trên canvasapp giả lập (đã trừ credit dev) nhưng SanoVids không tải về được: ${why} Xem job trong Bảng phát triển (tab “Job & đơn nạp”, “Nhật ký”) — chạy lại cảnh sẽ trừ credit dev lần nữa.`

@@ -255,4 +255,11 @@ describe('cancel wording (actions.cancelTake)', () => {
     expect(text).toContain('chi phí lượt chạy mới theo chế độ SANO xác nhận khi chạy')
     expect(text).not.toMatch(/đã trả|đã trừ|sẽ tính phí|sẽ trừ credit|canvasapp/)
   })
+
+  it('cancelling a SANO send with no reply reports unknown delivery rather than a charge (also valid for simulator takes)', () => {
+    const text = cancelToastText(facts({ provider: 'sano-gateway', sentAway: false })).text
+    expect(text).toContain('chưa rõ máy chủ đã nhận job chưa')
+    expect(text).toContain('kiểm tra trong app SANO')
+    expect(text).not.toMatch(/trừ credit|tính phí|canvasapp/)
+  })
 })

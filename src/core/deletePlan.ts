@@ -125,7 +125,7 @@ export function checkTakeDelete(
         : dev
           ? `${who}: không rõ canvasapp giả lập đã nhận (và trừ credit dev) chưa — “Chạy lại” trên take tìm job cũ trước khi gửi; xoá thì SanoVids không còn tìm lại job đó, chạy lại cảnh có thể trừ credit dev lần nữa.`
           : all(doubtful, 'sano-gateway')
-            ? `${who}: không rõ máy chủ SANO đã nhận (và tính phí) chưa — “Chạy lại” trên take tìm job cũ trước khi gửi; xoá thì SanoVids không còn tìm lại job đó, chạy lại cảnh có thể tính phí lần nữa.`
+            ? `${who}: chưa rõ máy chủ SANO đã nhận job chưa — xem trong app SANO; “Chạy lại” trên take tìm job cũ trước khi gửi. Xoá thì SanoVids không còn tìm lại job đó; chi phí lượt chạy mới theo chế độ SANO xác nhận khi chạy.`
             : `${who}: không rõ canvasapp đã nhận (và trừ credit) chưa — “Chạy lại” trên take tìm job cũ trước khi gửi; xoá thì SanoVids không còn tìm lại job đó, chạy lại cảnh có thể trừ credit lần nữa.`,
     )
   }
@@ -138,7 +138,7 @@ export function checkTakeDelete(
         : dev
           ? `${who} đang chạy trên canvasapp giả lập (job đã gửi hoặc đang gửi — có thể đã trừ credit dev): xoá chỉ bỏ theo dõi trong SanoVids, job vẫn chạy trong Bảng phát triển; chạy lại cảnh có thể trừ credit dev lần nữa.`
           : all(away, 'sano-gateway')
-            ? `${who} đang chạy trên máy chủ SANO (job đã gửi hoặc đang gửi — có thể đã tính phí): xoá chỉ bỏ theo dõi trong SanoVids, job vẫn chạy trên SANO (xem trong app SANO); chạy lại cảnh có thể tính phí lần nữa.`
+            ? `${who} có job đã gửi hoặc đang gửi sang máy chủ SANO: xoá chỉ bỏ theo dõi trong SanoVids, job vẫn chạy trên SANO (xem trong app SANO); chi phí lượt chạy mới theo chế độ SANO xác nhận khi chạy.`
             : `${who} đang chạy trên canvasapp (job đã gửi hoặc đang gửi — có thể đã trừ credit): xoá chỉ bỏ theo dõi trong SanoVids, job vẫn chạy trên canvasapp.io.vn (phiên “SanoVids bridge”); chạy lại cảnh có thể trừ credit lần nữa.`,
     )
   }

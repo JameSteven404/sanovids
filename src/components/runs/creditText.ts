@@ -234,6 +234,9 @@ export function cancelToastText(f: CancelFacts): { text: string; warning: boolea
   }
   if (f.sentAway && f.imported) return { text: `Đã ngừng theo dõi ${f.label} trong SanoVids — job tạo trên ${site} vẫn chạy ở đó.`, warning: true }
   if (f.sentAway) return { text: `Đã huỷ ${f.label} trong SanoVids — job đã gửi sang ${site} vẫn chạy ở đó.`, warning: true }
+  if (f.status === 'processing' && f.provider === 'sano-gateway') {
+    return { text: `Đã huỷ ${f.label} lúc đang gửi sang SANO — chưa rõ máy chủ đã nhận job chưa, kiểm tra trong app SANO.`, warning: true }
+  }
   // The request was on its way (no remote id yet): the provider may still accept — and bill — it (see takeCostLine).
   if (f.status === 'processing') return { text: `Đã huỷ ${f.label} lúc đang gửi sang ${site} — nếu job đã được nhận thì có thể đã trừ ${credit}.`, warning: true }
   return { text: `Đã huỷ ${f.label}.`, warning: false }

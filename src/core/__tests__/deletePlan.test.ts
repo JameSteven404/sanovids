@@ -9,9 +9,13 @@ describe('keyboardDeletePlan (core)', () => {
 })
 
 describe('checkTakeDelete', () => {
-  it('deleting a SANO download does not claim a fee for a simulator job or its future rerun', () => {
-    const text = checkTakeDelete(['s'], [{ id: 's', status: 'processing', videoReady: true, provider: 'sano-gateway' }]).question!
-    expect(text).toContain('vẫn lấy được trong app SANO')
+  it.each([
+    { status: 'processing' as const, videoReady: true },
+    { status: 'failed' as const, uncertain: true },
+    { status: 'processing' as const, sent: true },
+  ])('deleting a SANO take does not claim a fee for a simulator job or its future rerun: %j', (facts) => {
+    const text = checkTakeDelete(['s'], [{ ...facts, id: 's', provider: 'sano-gateway' }]).question!
+    expect(text).toContain('app SANO')
     expect(text).toContain('chi phí lượt chạy mới theo chế độ SANO xác nhận khi chạy')
     expect(text).not.toMatch(/đã trả|đã trừ|sẽ tính phí|sẽ trừ credit|canvasapp/)
   })
