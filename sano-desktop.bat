@@ -9,7 +9,7 @@ if not exist node_modules (
 )
 set "SANO_URL=%~1"
 if "%SANO_URL%"=="" set "SANO_URL=http://127.0.0.1:5173"
-echo Mo SANO tai %SANO_URL% ...
+echo Mo SANO tai "%SANO_URL%" ...
 call npm run desktop
 if errorlevel 1 goto :fail
 goto :eof

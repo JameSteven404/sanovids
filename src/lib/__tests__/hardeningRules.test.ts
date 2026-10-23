@@ -13,6 +13,7 @@ import preloadSource from '../../../electron/preload.cjs?raw'
 import devAccessSource from '../../../electron/devaccess.cjs?raw'
 import devAccessRulesSource from '../../../electron/devaccess-rules.cjs?raw'
 import pkgRaw from '../../../package.json?raw'
+import sanoBatSource from '../../../sano-desktop.bat?raw'
 
 type ProfileSource = 'env' | 'baked' | 'default'
 type SigStatus = 'signed' | 'unsigned' | 'other-signer' | 'tampered' | 'unknown'
@@ -391,6 +392,12 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     const direct = [...preloadSource.matchAll(/contextBridge\.exposeInMainWorld\('(\w+)'/g)].map((m) => m[1])
     expect(direct).toEqual(['sanoDesktop'])
     expect(preloadSource).toContain("if (sanoArg && location.origin === sanoArg.slice('--bdp-sano-origin='.length)) contextBridge.exposeInMainWorld('sanoDesktop', { sanovidsUrl: 'app://bdp/' })")
+  })
+
+  it('sano-desktop.bat: SANO_URL expands inside quotes only (cmd runs & | > of a query string as operators)', () => {
+    const lines = sanoBatSource.split('\n').filter((l) => l.includes('%SANO_URL%'))
+    expect(lines.length).toBeGreaterThan(0)
+    for (const l of lines) for (const m of l.matchAll(/%SANO_URL%/g)) expect(l.slice(0, m.index).split('"').length % 2, l).toBe(0)
   })
 })
 
@@ -892,6 +899,9 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(watch).toContain("wc.on('did-frame-navigate', (_event, url, _code, _status, isMainFrame) => {")
     expect(watch).toContain("if (!isMainFrame && url.startsWith(ORIGIN + '/')) closeAll()")
     expect(watch).not.toContain('did-start-navigation')
+    // SANO desktop: SANO removing SanoVids' frame (or sending it elsewhere) has no WebContents event: its pagehide ends them
+    expect(mainSource).toContain("ipcMain.handle('canvasapp:downloadCloseAll', guard((event) => (canvasappDownloads.closeAll(event.sender.id), { ok: true })))")
+    expect(preloadSource).toContain("if (location.origin === 'app://bdp') window.addEventListener('pagehide', () => void ipcRenderer.invoke('canvasapp:downloadCloseAll').catch(() => undefined))")
     // logout: no download may start from its first line (before anything awaits) until it is done; every download is
     // ended before the session is wiped and again after (properties, not line positions: the keep-login branch rewrites
     // this function)

@@ -31,6 +31,8 @@ Máy chủ SANO không giữ phiên hay cookie canvasapp nào.
 - Preload chạy ở mọi khung (`nodeIntegrationInSubFrames`), nhưng chỉ trang `app://bdp` nhận `window.bdpDesktop`. Mọi lời gọi
   cổng vẫn bị main kiểm khung gửi (`fromApp`: chỉ `app://bdp/…`). SANO và SanoVids khác origin: trang SANO không đọc hay
   điều khiển được trang SanoVids.
+- SANO gỡ khung Dựng phim (sang khu khác) hoặc đưa khung sang địa chỉ khác: lượt tải video đang dở của SanoVids dừng ngay
+  (lúc `pagehide`, trang báo main `canvasapp:downloadCloseAll`), không giữ kết nối tới canvasapp đến khi hết giờ chờ.
 - CSP của trang SanoVids đổi đúng một chỉ thị: `frame-ancestors <origin SANO>` thay `'none'`. Khung Dựng phim của SANO
   cho SanoVids dùng toàn màn hình và chép vào clipboard (`allow="fullscreen; clipboard-write"`).
 

@@ -2365,6 +2365,8 @@ function registerCanvasappGateway() {
   )
   ipcMain.handle('canvasapp:downloadRead', guard((event, args) => canvasappDownloads.read(event.sender.id, args)))
   ipcMain.handle('canvasapp:downloadClose', guard((event, args) => canvasappDownloads.close(event.sender.id, args)))
+  // the page's pagehide (preload.cjs): SanoVids' frame left SANO's page, which watchDownloadOwner sees no event for
+  ipcMain.handle('canvasapp:downloadCloseAll', guard((event) => (canvasappDownloads.closeAll(event.sender.id), { ok: true })))
   ipcMain.handle('canvasapp:checkout', guard((event, args) => canvasappCheckout(BrowserWindow.fromWebContents(event.sender), args)))
   ipcMain.handle('canvasapp:keepLogin', guard(() => canvasappKeepLoginState()))
   ipcMain.handle('canvasapp:setKeepLogin', guard((_event, on) => canvasappSetKeepLogin(on)))

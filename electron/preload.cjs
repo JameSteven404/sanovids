@@ -41,6 +41,8 @@ const trashItems = (items) =>
 const sanoArg = process.argv.find((a) => a.startsWith('--bdp-sano-origin='))
 if (sanoArg && location.origin === sanoArg.slice('--bdp-sano-origin='.length)) contextBridge.exposeInMainWorld('sanoDesktop', { sanovidsUrl: 'app://bdp/' })
 const expose = location.origin === 'app://bdp' ? (key, api) => contextBridge.exposeInMainWorld(key, api) : () => undefined
+// SANO removing SanoVids' frame (or sending it elsewhere) gives main no event of its own: the page ends its downloads as it goes.
+if (location.origin === 'app://bdp') window.addEventListener('pagehide', () => void ipcRenderer.invoke('canvasapp:downloadCloseAll').catch(() => undefined))
 
 expose('bdpDesktop', {
   version: arg ? arg.slice('--bdp-version='.length) : '',
