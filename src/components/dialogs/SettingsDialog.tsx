@@ -16,7 +16,7 @@ import { CLICK_TO_CUT_TRASH_NOTE, FOLDER_UNLINK_TRASH_ROW } from '../../core/fol
 import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE, PLACEMENT_KEYWORDS } from '../../lib/aboutModel'
 import { BIG_PROJECT_ROW, NODE_EDITOR_ROW, WHEEL_ROW } from '../../lib/canvasPrefs'
 import { PRODUCT_NAME } from '../../lib/updateTypes'
-import { canvasappHiddenInSano, useDevAllowed } from '../../providers'
+import { useDevAllowed } from '../../providers'
 import { oneOf, parsePref, useUI } from '../../store/ui'
 import { Modal } from '../common/Modal'
 import './dialogs.css'
@@ -76,18 +76,6 @@ interface Group extends SearchGroup<Row> {
   /** A section that renders itself (no rows; searched by title, description and keywords). */
   Block?: ComponentType
 }
-
-/** D226: inside SANO the texts never name canvasapp (the preload set this before any page script). */
-const HIDDEN = canvasappHiddenInSano()
-
-/** Title, description and search words of the gateway section ("Cổng canvasapp.io.vn"; neutral inside SANO). */
-export const GATEWAY_GROUP_TEXT = HIDDEN
-  ? { title: 'Nhà cung cấp video', desc: 'Tạo video thật trong SANO đang tạm dừng.', keywords: 'nhà cung cấp provider tạo video tạm dừng' }
-  : {
-      title: 'Cổng canvasapp.io.vn',
-      desc: 'Nhà cung cấp video cho take mới, đăng nhập canvasapp và credit thật.',
-      keywords: `canvasapp cổng nhà cung cấp provider đăng nhập đăng xuất credit thật nạp tiền ${KEEP_LOGIN_KEYWORDS}`,
-    }
 
 const GROUPS: Group[] = [
   // ------------------------------------------------ Cơ bản ------------------------------------------------
@@ -320,7 +308,7 @@ const GROUPS: Group[] = [
       {
         id: 'resetAll',
         label: 'Khôi phục cài đặt mặc định',
-        hint: `Đưa mọi cài đặt trên máy này về như lúc mới cài (có Hoàn tác).${HIDDEN ? '' : ' Đăng nhập canvasapp và “Giữ đăng nhập” giữ nguyên.'}`,
+        hint: 'Đưa mọi cài đặt trên máy này về như lúc mới cài (có Hoàn tác). Đăng nhập canvasapp và “Giữ đăng nhập” giữ nguyên.',
         keywords: 'reset mặc định đặt lại',
         C: ResetAllSetting,
       },
@@ -330,7 +318,9 @@ const GROUPS: Group[] = [
     id: 'gateway',
     level: 'advanced',
     col: 1,
-    ...GATEWAY_GROUP_TEXT,
+    title: 'Cổng canvasapp.io.vn',
+    desc: 'Nhà cung cấp video cho take mới, đăng nhập canvasapp và credit thật.',
+    keywords: `canvasapp cổng nhà cung cấp provider đăng nhập đăng xuất credit thật nạp tiền ${KEEP_LOGIN_KEYWORDS}`,
     Block: GatewaySection,
   },
   ...(['keys', 'keysScene', 'keysTake', 'keysCanvas'] as const).map((id): Group => ({

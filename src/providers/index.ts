@@ -12,8 +12,7 @@
 //   PROVIDER_LABEL[id]                      'dev' "Phát triển (giả lập)" | 'canvasapp' "canvasapp.io.vn" | 'mock' "Demo cũ"
 //                                          | 'sano-gateway' "SANO".
 //   selectableProviders()                   the Settings choices now: ['dev', 'canvasapp'] open, ['canvasapp'] locked
-//                                          (SELECTABLE_PROVIDERS: the open list, deprecated), + 'sano-gateway' in the SANO build
-//                                          — without 'canvasapp' inside SANO while providers/sano canvasappHiddenInSano() (D226).
+//                                          (SELECTABLE_PROVIDERS: the open list, deprecated), + 'sano-gateway' in the SANO build.
 //   useProviderPrefs                        { provider, active, setProvider } — `provider` = the saved Settings choice
 //                                          (persisted, never rewritten by locking / unlocking: unlocking again brings it
 //                                          back); `active` = activeProviderId() kept in the store so selectors re-render
@@ -65,13 +64,12 @@ import { browserStorage, createCanvasappProvider, JOBS_KEY, STATE_KEY, type Canv
 import { canvasappBridge, createDesktopTransport, hasCanvasappBridge, WEB_UNAVAILABLE, type CanvasappBridge } from './canvasapp/transport'
 import { DEV_JOB_LIST_CACHE_MS, devBridge, devResult, resetDevServer, withDevWording } from './dev'
 import { devAllowed, useDevAccess, type DevAccessKind } from './devAccess'
-import { canvasappHiddenInSano, createBrowserSanoGateway, SANO_LABEL, sanoBuild, type SanoGatewayProvider } from './sano'
+import { createBrowserSanoGateway, SANO_LABEL, sanoBuild, type SanoGatewayProvider } from './sano'
 import { NO_LIMITS, NO_LIMITS_INFO, type LimitsInfo, type ProviderId, type RefreshLimitsOptions, type RefreshLimitsResult, type SettingsLimits, type VideoProvider } from './types'
 
 export type { LimitsInfo, ProviderId, RefreshLimitsOptions, RefreshLimitsResult, SettingsLimits, VideoProvider } from './types'
 export { NO_LIMITS, NO_LIMITS_INFO, providerOf } from './types'
 export { devAllowed, useDevAllowed } from './devAccess'
-export { canvasappHiddenInSano } from './sano'
 
 const PREF_KEY = 'bdp:pref:provider'
 
@@ -81,10 +79,9 @@ export type SelectableProviderId = 'dev' | 'canvasapp' | 'sano-gateway'
 export const SELECTABLE_PROVIDERS: readonly SelectableProviderId[] = ['dev', 'canvasapp']
 const LOCKED_PROVIDERS: readonly SelectableProviderId[] = ['canvasapp']
 
-/** The Settings choices now: development mode only while it is open (devAllowed()), SANO only in the SANO build, canvasapp not inside SANO (D226). */
+/** The Settings choices now: development mode only while it is open (devAllowed()), SANO only in the SANO build. */
 export function selectableProviders(): readonly SelectableProviderId[] {
-  const all = devAllowed() ? SELECTABLE_PROVIDERS : LOCKED_PROVIDERS
-  const list = canvasappHiddenInSano() ? all.filter((p) => p !== 'canvasapp') : all
+  const list = devAllowed() ? SELECTABLE_PROVIDERS : LOCKED_PROVIDERS
   return sanoBuild() ? [...list, 'sano-gateway'] : list
 }
 
@@ -96,8 +93,6 @@ export const CANVASAPP_NEEDS_OPT_IN = true
 
 export const DEV_LOCKED_REASON = 'Take giả lập chỉ gửi được khi chế độ Phát triển đang mở.'
 export const CANVASAPP_OFF_REASON = 'Chưa bật cổng canvasapp.io.vn — mở Cài đặt → Nhà cung cấp video để bật.'
-/** D226: canvasapp hidden inside SANO — the reason never names it. */
-export const SANO_PAUSED_REASON = 'Tạo video trong SANO đang tạm dừng. Dự án, cảnh và video đã có vẫn giữ nguyên.'
 
 /**
  * Pure: the provider new takes use. In the SANO build (`sano`): 'sano-gateway' when chosen, and always while locked without
@@ -296,23 +291,16 @@ export function providerBlockedReason(id: ProviderId, account?: string): string 
   if (id === 'dev' && !devAllowed()) return DEV_LOCKED_REASON
   if (id === 'sano-gateway') return (getProvider(id) as SanoGatewayProvider).blockedReason(account)
   if (id === 'canvasapp') {
-    if (canvasappHiddenInSano()) return SANO_PAUSED_REASON
     if (!hasCanvasappBridge()) return WEB_UNAVAILABLE
     if (!canvasappEnabled()) return CANVASAPP_OFF_REASON
   }
   return null
 }
 
-/** The canvasapp gateway is turned off (locked build, not chosen; hidden inside SANO): nothing may be sent to canvasapp. */
+/** The canvasapp gateway is turned off (locked build, not chosen): nothing may be sent to canvasapp. */
 export function canvasappOff(): boolean {
-  return canvasappHiddenInSano() || (hasCanvasappBridge() && !canvasappEnabled())
+  return hasCanvasappBridge() && !canvasappEnabled()
 }
-
-/** D226: the queue leaves `id`'s takes alone here (canvasapp hidden in SANO): never sent, polled, looked up or failed. */
-export const providerPaused = (id: ProviderId): boolean => id === 'canvasapp' && canvasappHiddenInSano()
-
-/** D226: no provider runs new takes here (canvasapp hidden in SANO, development mode locked); follows the lock. */
-export const useVideoPausedInSano = (): boolean => useProviderPrefs((s) => providerPaused(s.active))
 
 export const PROVIDER_LABEL: Record<ProviderId, string> = { dev: DEV_PROVIDER_LABEL, canvasapp: 'canvasapp.io.vn', mock: 'Demo cũ', 'sano-gateway': SANO_LABEL }
 

@@ -96,11 +96,6 @@ if (SANO === false) {
   console.error('[SanoVids] SANO_URL must be https://… or http://localhost:<port>/')
   process.exit(2)
 }
-// D226: tạm ẩn canvasapp phía SANO; đặt true khi Minh mở lại
-// Bản sao của CANVASAPP_IN_SANO trong src/providers/sano/index.ts (main không đọc được src/ khi đóng gói); test hardeningRules giữ hai giá trị bằng nhau.
-const CANVASAPP_IN_SANO = false
-/** SanoVids inside SANO without canvasapp: its page gets no gateway bridge (preload.cjs) and main refuses canvasapp:*. */
-const SANO_CANVASAPP_OFF = !!SANO && !CANVASAPP_IN_SANO
 // D223: SanoVids inside SANO opens the same projects as SanoVids itself (same profile, same app://bdp storage), not a
 // copy Chromium would keep apart under SANO's page.
 if (SANO) app.commandLine.appendSwitch('disable-features', 'ThirdPartyStoragePartitioning')
@@ -390,7 +385,7 @@ function createWindow() {
       spellcheck: false,
       // Hover previews / the take viewer may start with sound before any click (the speaker switch decides).
       autoplayPolicy: 'no-user-gesture-required',
-      additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, `--bdp-product=${app.getName()}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`, `--bdp-sano-canvasapp=${SANO_CANVASAPP_OFF ? 'off' : 'on'}`] : [])],
+      additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, `--bdp-product=${app.getName()}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : [])],
     },
   })
 
@@ -2437,7 +2432,6 @@ function registerCanvasappGateway() {
   }
   const guard = (fn) => async (event, ...args) => {
     if (!fromApp(event)) return gatewayError('not-allowed', 'Nguồn gọi không hợp lệ.')
-    if (SANO_CANVASAPP_OFF) return gatewayError('sano-paused', 'Tạo video trong SANO đang tạm dừng.')
     try {
       return await fn(event, ...args)
     } catch (e) {

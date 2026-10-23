@@ -42,18 +42,6 @@ export function sanoBuild(): boolean {
   return import.meta.env.VITE_SANO_GATEWAY === '1' && !isElectron()
 }
 
-/** D226: tạm ẩn canvasapp phía SANO; đặt true khi Minh mở lại (electron/main.cjs giữ bản sao, test hardeningRules kiểm hai giá trị bằng nhau) */
-export const CANVASAPP_IN_SANO = false
-
-/**
- * D226: SanoVids inside SANO hides canvasapp (not offered, not named, its takes left as saved): the SANO web build
- * (the build flag, so also when that build is opened in Electron) or SANO's desktop frame (bdpDesktop.sano, set by
- * electron/preload.cjs before any page script). Standalone SanoVids is unaffected.
- */
-export function canvasappHiddenInSano(): boolean {
-  return !CANVASAPP_IN_SANO && (import.meta.env.VITE_SANO_GATEWAY === '1' || (typeof window !== 'undefined' && !!window.bdpDesktop?.sano))
-}
-
 /** Running inside SANO (see the top of the file). */
 export function sanoGatewayAvailable(): boolean {
   return sanoBuild() && framedBySameOrigin()

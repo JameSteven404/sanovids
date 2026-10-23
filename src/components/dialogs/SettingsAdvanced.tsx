@@ -17,7 +17,7 @@ import {
   settingsFileText,
   SETTINGS_FILE_NAME,
 } from '../../lib/settings'
-import { canvasappHiddenInSano, PROVIDER_LABEL, useDevAllowed } from '../../providers'
+import { PROVIDER_LABEL, useDevAllowed } from '../../providers'
 import { DEV_SPEED_LABEL, devServer, startDevSnapshotTicker, useDevServer, type DevSpeed } from '../../providers/dev'
 import { useProject } from '../../store/project'
 import { TOAST_BASE_MS, TOAST_SCALE, TOAST_TIME_LABEL, TOAST_TIMES, toast, useUI } from '../../store/ui'
@@ -343,18 +343,6 @@ export function BackupSetting({ label, hint }: RowProps) {
   )
 }
 
-/**
- * Pure: what "Khôi phục…" resets and keeps, after its question. `hidden` = inside SANO (D226, canvasappHiddenInSano):
- * the saved provider choice of SanoVids on this computer is still reset, but neither canvasapp nor its login is named.
- */
-export function resetAllConfirmText(devOpen: boolean, hidden: boolean): string {
-  const provider = devOpen ? `nhà cung cấp video về ${PROVIDER_LABEL.dev}` : hidden ? 'lựa chọn nhà cung cấp video của SanoVids trên máy này về mặc định' : 'cổng canvasapp.io.vn về Tắt'
-  return (
-    `Giao diện, tải video, âm thanh, dây nối, chuyển động, thông báo, tên file, tự động tải bản cập nhật; ${provider}; khung bên về như mới; các mẹo hiện lại. ` +
-    `Dự án, video, thư mục đã chọn${hidden ? '' : ' và đăng nhập canvasapp'} giữ nguyên.`
-  )
-}
-
 /** "Khôi phục cài đặt mặc định" with an inline confirmation (Huỷ has the focus) and Hoàn tác afterwards. */
 export function ResetAllSetting({ label, hint }: RowProps) {
   const { resync } = useSettingsCtx()
@@ -406,7 +394,9 @@ export function ResetAllSetting({ label, hint }: RowProps) {
         <div className="dg-callout warn dg-confirm" role="group" aria-label="Xác nhận khôi phục cài đặt mặc định">
           <TriangleAlert size={15} />
           <div>
-            <b>Đặt mọi cài đặt trên máy này về mặc định?</b> {resetAllConfirmText(devOpen, canvasappHiddenInSano())}
+            <b>Đặt mọi cài đặt trên máy này về mặc định?</b> Giao diện, tải video, âm thanh, dây nối, chuyển động, thông báo, tên file, tự động tải bản cập nhật;{' '}
+            {devOpen ? `nhà cung cấp video về ${PROVIDER_LABEL.dev}` : 'cổng canvasapp.io.vn về Tắt'}; khung bên về như mới; các mẹo hiện lại. Dự án, video, thư mục đã chọn và
+            đăng nhập canvasapp giữ nguyên.
           </div>
           <div className="dg-confirm-actions">
             <button ref={cancelRef} type="button" className="btn btn-sm" onClick={() => setConfirm(false)}>

@@ -3,15 +3,6 @@
 > **Trạng thái:** chạy từ mã nguồn (quyết định D218 của SANO: canvasapp.io.vn là nhà cung cấp video chính, Minh chọn
 > làm bản desktop SANO). Bản cài **Sano Agent** (D220/D223, mục 5–6): cấu hình, icon tạm và công cụ phát hành đã có,
 > chưa phát hành bản nào.
->
-> **D226 (2026-10-23): tạm ẩn canvasapp phía SANO.** Một hằng `CANVASAPP_IN_SANO = false` trong
-> `src/providers/sano/index.ts` (đặt `true` khi Minh mở lại) cho cả bản web SANO lẫn khung desktop SANO; `electron/main.cjs`
-> giữ bản sao cùng tên (test `hardeningRules` bắt hai giá trị bằng nhau). Ở chế độ SANO, main báo trang `app://bdp` qua
-> `--bdp-sano-canvasapp` → `window.bdpDesktop.sano`, trang không có cầu `canvasapp`, main từ chối mọi `canvasapp:*`
-> (`sano-paused`). Trong SANO không còn lựa chọn, đăng nhập, credit hay chữ nào nhắc canvasapp; chế độ Phát triển (chạy
-> từ mã nguồn) vẫn là giả lập, còn khi chế độ Phát triển khoá (bản cài) trang nói “Tạo video trong SANO đang tạm dừng”.
-> Take canvasapp đã có giữ nguyên dữ liệu: hàng đợi trong SANO không gửi, theo dõi hay đánh lỗi chúng — SanoVids chạy
-> riêng vẫn chạy tiếp như cũ. SanoVids chạy riêng (không `SANO_URL`) không đổi gì.
 
 ## 1. Mục đích
 
@@ -24,8 +15,8 @@ Máy chủ SANO không giữ phiên hay cookie canvasapp nào.
 1. Chạy SANO trước (repo SANO-AGENT: `npm run dev`, mặc định `http://127.0.0.1:5173`; hoặc docker compose ở `http://127.0.0.1:8080`).
 2. Đóng SanoVids nếu đang mở: hai chế độ dùng chung thư mục dữ liệu, chỉ mở được một cửa sổ.
 3. Chạy `sano-desktop.bat` (địa chỉ khác: `sano-desktop.bat https://sano.example.vn`). File bat dựng lại SanoVids rồi mở SANO.
-4. Trong SANO: **SẢN XUẤT → Dựng phim**. Take mới chạy ở *chế độ Phát triển* (giả lập, không tốn credit); tạo video
-   thật trong SANO đang tạm dừng (D226).
+4. Trong SANO: **SẢN XUẤT → Dựng phim**. Take mới vẫn chạy ở *chế độ Phát triển* (giả lập, không tốn credit). Muốn tạo
+   video thật: Cài đặt của SanoVids → cổng canvasapp → bật, rồi **Đăng nhập** trên trang thật canvasapp.io.vn.
 
 ## 3. Cách hoạt động
 
@@ -90,7 +81,7 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
   cập nhật được). Khác bản vá cùng major thì vẫn mở. Không ghi được file đó (bị khoá, chỉ đọc, phần mềm diệt virus) thì app
   cũng không mở. **Không bao giờ xoá `electron-version`**: app cũ bị từ chối thì cách an toàn duy nhất là cài bản mới nhất của nó.
 - **Chế độ Phát triển** của bản cài bị khoá như SanoVids, chỉ mở bằng khoá của chủ (`sanovids.devUnlockKeys`). Chưa mở
-  khoá thì trong SANO không còn nhà cung cấp nào: tạo video tạm dừng (D226).
+  khoá thì take đi qua cổng canvasapp và **tốn credit thật**.
 - **Máy chủ SANO** ở cổng 8080 phải có khung desktop (`window.sanoDesktop`): build image từ nhánh SANO
   `claude/sano-desktop-20261023` (hoặc sau khi nhánh đó vào main: `docker compose up -d --build` trong `E:\SANO AGENT`).
   Thiếu khung đó thì Dựng phim là `/sanovids/` bản web: dữ liệu riêng, không có cổng canvasapp. Đổi địa chỉ (ví dụ khi có

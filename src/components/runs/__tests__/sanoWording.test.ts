@@ -29,7 +29,6 @@ import {
   paidCancelledRunWarning,
   parkedCountText,
   parkedReasons,
-  requestInFlightText,
   SANO_UNKNOWN_SUBMIT_ERROR,
   UNKNOWN_SUBMIT_ERROR,
   unknownSubmitError,
@@ -41,8 +40,6 @@ import { GatewaySection } from '../../dialogs/GatewaySection'
 import { Inspector } from '../../inspector/Inspector'
 import { costTitle } from '../../sidebar/shared'
 import { RunConfirmDialog } from '../RunConfirmDialog'
-import { TakeViewer } from '../TakeViewer'
-import { WEB_UNAVAILABLE } from '../../../providers/canvasapp/transport'
 import { cancelQuestion, cancelToastText } from '../creditText'
 import { checkTakeDelete } from '../../../core/deletePlan'
 
@@ -135,46 +132,6 @@ describe('SANO wording', () => {
     expect(SANO_UNKNOWN_SUBMIT_ERROR).not.toMatch(/canvasapp/i)
     expect(hasUncertainSubmitText(SANO_UNKNOWN_SUBMIT_ERROR)).toBe(true)
     expect(unknownSubmitError('canvasapp')).toBe(UNKNOWN_SUBMIT_ERROR)
-    // "Chạy lại" while the earlier SANO request is still on its way
-    expect(requestInFlightText('sano-gateway')).toContain('đang chờ máy chủ SANO trả lời')
-  })
-
-  it('take viewer: "Huỷ" of a SANO take whose earlier submit is unknown points to the SANO app, never canvasapp', () => {
-    const take: Take = {
-      id: 'tk1',
-      sceneId: 's1',
-      number: 1,
-      status: 'queued',
-      progress: 0,
-      createdAt: 0,
-      startedAt: null,
-      finishedAt: null,
-      promptSnapshot: 'a cat walks',
-      rawPromptSnapshot: 'a cat walks',
-      refsSnapshot: [],
-      videoRefsSnapshot: [],
-      settings: scene.settings,
-      cost: 20,
-      starred: false,
-      posterId: null,
-      videoId: null,
-      error: null,
-      position: null,
-      provider: 'sano-gateway',
-      remoteId: null,
-      submitUnknown: true,
-    }
-    // a server render reads the store's initial state
-    const initial = useRuns.getInitialState()
-    const { takes } = initial
-    initial.takes = [take]
-    try {
-      const html = renderToStaticMarkup(createElement(TakeViewer, { takeId: 'tk1' }))
-      expect(html).toContain('kiểm tra lịch sử job trong app SANO')
-      expect(html.replace(/class="[^"]*"/g, '')).not.toMatch(/canvasapp/i) // texts and tooltips (a class name is not shown)
-    } finally {
-      initial.takes = takes
-    }
   })
 
   it('run toast, download failure and run warnings name SANO, never canvasapp', () => {
@@ -243,9 +200,6 @@ describe('SANO wording', () => {
       applyDevAccessState(bareState(access))
       const html = renderToStaticMarkup(createElement(GatewaySection))
       expect(html).toContain(SANO_UNAVAILABLE)
-      // D226: canvasapp is neither offered nor described in the SANO build
-      expect(html).not.toContain('canvasapp.io.vn')
-      expect(html).not.toContain(WEB_UNAVAILABLE)
       // development mode open: SANO is listed, but disabled here (like canvasapp outside the desktop app)
       if (access === 'build') expect(html.match(seg)?.[0]).toMatch(/disabled=""/)
     }

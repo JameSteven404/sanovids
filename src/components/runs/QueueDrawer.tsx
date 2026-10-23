@@ -8,7 +8,6 @@ import {
   CloudDownload,
   Download,
   Eye,
-  Info,
   ListVideo,
   LoaderCircle,
   LocateFixed,
@@ -26,7 +25,7 @@ import { sceneCode } from '../../core/compile'
 import { MODELS } from '../../core/models'
 import type { Scene, Take } from '../../core/types'
 import { CREDIT_MARK, formatCredits } from '../../lib/credits'
-import { PROVIDER_LABEL, SANO_PAUSED_REASON, sanoGatewayProvider, useProviderLimits, useVideoPausedInSano } from '../../providers'
+import { PROVIDER_LABEL, sanoGatewayProvider, useProviderLimits } from '../../providers'
 import { useDevAllowed } from '../../providers/devAccess'
 import { providerOf } from '../../providers/types'
 import { useDevServer, type DevSpeed } from '../../providers/dev'
@@ -202,13 +201,12 @@ interface Group {
   takes: Take[]
 }
 
-export function QueuePanel() {
+function QueuePanel() {
   const takes = useRuns((s) => s.takes)
   const issue = useRuns((s) => s.providerIssue)
   const elsewhere = useRuns((s) => s.engineElsewhere)
   const parked = useParked()
   const provider = useActiveProvider()
-  const paused = useVideoPausedInSano()
   const runKey = useShortcutLabel('scene.run')
   // 'Bảng phát triển' only while development mode is open (a DEV take may still finish while it is locked)
   const devOpen = useDevAllowed()
@@ -246,11 +244,7 @@ export function QueuePanel() {
   return (
     <div className="rq-panel">
       <div className="rq-panel-head">
-        {paused ? (
-          <span className="rq-demo-note">
-            <Info size={12} /> {SANO_PAUSED_REASON}
-          </span>
-        ) : provider === 'dev' ? (
+        {provider === 'dev' ? (
           <span className="rq-demo-note dev">
             <Bug size={12} /> Chế độ Phát triển: canvasapp giả lập trong máy — credit dev, không gọi mạng, không tốn tiền thật
           </span>
@@ -265,8 +259,8 @@ export function QueuePanel() {
           </span>
         )}
         <span className="rq-spacer" />
-        {/* SANO has no canvasapp bridge session to import from, nor a canvasapp gateway to open (nor while paused, D226). */}
-        {provider !== 'sano-gateway' && !paused && (
+        {/* SANO has no canvasapp bridge session to import from, nor a canvasapp gateway to open. */}
+        {provider !== 'sano-gateway' && (
           <>
             <button
               type="button"
