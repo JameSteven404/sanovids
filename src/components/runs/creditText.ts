@@ -120,6 +120,11 @@ export function takeCostLine(t: CostTake): TakeCostLine {
   if (t.expectSimulated && !t.remoteId) {
     return { kind, amount, note: why('giả lập — clip mẫu, không phát sinh phí'), struck: true }
   }
+  // SANO returns a job id, not a fee receipt. `charged` is the old local demo-wallet flag, and `cost` is
+  // a canvasapp-table estimate: neither proves a SANO charge (or a refund) for an unmarked job.
+  if (providerOf(t) === 'sano-gateway' && (t.remoteId || t.status === 'completed')) {
+    return { kind, amount: '—', note: why('chi phí chưa được SANO xác nhận — kiểm tra trong app SANO'), struck: false }
+  }
   if (t.remoteId) {
     return {
       kind,
@@ -198,12 +203,12 @@ export interface CancelFacts {
 
 /**
  * The question before "Huỷ" drops a video that is already made and paid (null = nothing to ask): cancelling only
- * stops SanoVids tracking the take — the video stays on the site, re-running the scene pays again.
+ * stops SanoVids tracking the take — the video stays on the site. SANO's next run may use a different mode.
  */
 export function cancelQuestion(f: CancelFacts): string | null {
   if (!f.videoReady || f.status !== 'processing' || f.provider === 'mock') return null
   if (f.provider === 'sano-gateway') {
-    return `${f.label}: video đã tạo xong trên máy chủ SANO — SanoVids chưa tải về xong.\nHuỷ sẽ bỏ video này trong SanoVids (vẫn lấy được trong app SANO); chạy lại cảnh sẽ tính phí lần nữa.\nVẫn huỷ?`
+    return `${f.label}: video đã tạo xong trên máy chủ SANO — SanoVids chưa tải về xong.\nHuỷ sẽ bỏ video này trong SanoVids (vẫn lấy được trong app SANO); chi phí lượt chạy mới theo chế độ SANO xác nhận khi chạy.\nVẫn huỷ?`
   }
   return f.provider === 'dev'
     ? `${f.label}: video đã tạo xong trên canvasapp giả lập và đã trừ credit dev — SanoVids chưa tải về xong.\nHuỷ sẽ bỏ video này trong SanoVids (job vẫn còn trong Bảng phát triển); chạy lại cảnh sẽ trừ credit dev lần nữa.\nVẫn huỷ?`

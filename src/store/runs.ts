@@ -688,7 +688,7 @@ export const useRuns = create<RunsState>()((set, get) => ({
         // gateway's sure refusal of the settings comes last.
         const settingsBlock = settingsRunBlock(limits, scene.settings, jobRefCount(scene, compiled))
         const reason = runBlockReason({ scene, assets: project.assets, compiled, settingsBlock, spec: MODELS[scene.settings.model] })
-        const warning = reason ? null : settingsRunWarning(limits, scene.settings, providerId)
+        const warning = reason ? null : settingsRunWarning(limits, scene.settings, providerId, jobRefCount(scene, compiled))
         const before = reason ? undefined : newest.get(scene.id)
         const label = before ? takeCode(scene.order, before.number) : ''
         const billed = !before

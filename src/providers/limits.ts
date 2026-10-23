@@ -30,10 +30,11 @@ export function settingsRunBlock(limits: SettingsLimits, s: VideoSettings, refs?
 /**
  * What the submit may still refuse in `s` when SanoVids is not sure (a guess or an older read): one line, else null.
  * `id` names the gateway's credits (development mode: "credit dev").
+ * `refs` counts the job's pictures, just as in settingsRunBlock — stale reference limits still warn.
  */
-export function settingsRunWarning(limits: SettingsLimits, s: VideoSettings, id: ProviderId = 'canvasapp'): string | null {
+export function settingsRunWarning(limits: SettingsLimits, s: VideoSettings, id: ProviderId = 'canvasapp', refs?: number): string | null {
   if (limits.source === 'none' || (limits.source === 'server' && limits.firm)) return null
-  const issues = limits.issues(s)
+  const issues = limits.issues(s, refs)
   if (!issues.length) return null
   const why =
     limits.source === 'fallback'

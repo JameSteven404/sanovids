@@ -9,6 +9,39 @@ describe('keyboardDeletePlan (core)', () => {
 })
 
 describe('checkTakeDelete', () => {
+  it('deleting a SANO download does not claim a fee for a simulator job or its future rerun', () => {
+    const text = checkTakeDelete(['s'], [{ id: 's', status: 'processing', videoReady: true, provider: 'sano-gateway' }]).question!
+    expect(text).toContain('vẫn lấy được trong app SANO')
+    expect(text).toContain('chi phí lượt chạy mới theo chế độ SANO xác nhận khi chạy')
+    expect(text).not.toMatch(/đã trả|đã trừ|sẽ tính phí|sẽ trừ credit|canvasapp/)
+  })
+
+  it.each([
+    { status: 'processing' as const, videoReady: true },
+    { status: 'failed' as const, uncertain: true },
+    { status: 'processing' as const, sent: true },
+  ])('mixed SANO and canvasapp deletion names both recovery systems: %j', (facts) => {
+    const check = checkTakeDelete(['s', 'c'], [
+      { ...facts, id: 's', provider: 'sano-gateway' },
+      { ...facts, id: 'c', provider: 'canvasapp' },
+    ])
+    expect(check.ids).toEqual(['s', 'c'])
+    expect(check.question).toContain('app SANO')
+    expect(check.question).toContain('canvasapp.io.vn')
+    expect(check.question).not.toContain('Bảng phát triển')
+    expect(check.question).not.toMatch(/2 video đã tạo xong trên canvasapp và đã trừ credit/)
+  })
+
+  it('mixed SANO and development deletion names the simulation rather than the live canvasapp site', () => {
+    const question = checkTakeDelete(['s', 'd'], [
+      { id: 's', status: 'processing', videoReady: true, provider: 'sano-gateway' },
+      { id: 'd', status: 'processing', videoReady: true, provider: 'dev' },
+    ]).question!
+    expect(question).toContain('app SANO')
+    expect(question).toContain('Bảng phát triển')
+    expect(question).not.toContain('canvasapp.io.vn')
+  })
+
   const takes = [
     { id: 't1', status: 'completed' as const },
     { id: 't2', status: 'failed' as const },
