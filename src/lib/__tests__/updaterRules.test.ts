@@ -368,6 +368,8 @@ describe('updater rules: data folder override (test isolation)', () => {
     expect(gate).toBeGreaterThan(mainSource.indexOf('requestSingleInstanceLock'))
     expect(gate).toBeLessThan(ready)
     expect(mainSource.slice(gate, ready)).toMatch(/if \(gate === 'refuse'\) \{\n\s+const name = app\.getName\(\)\n\s+dialog\.showErrorBox\([^\n]*\n\s+process\.exit\(4\)\n\s+\}/)
+    // the newer Electron that cannot record itself never opens (and migrates) the profile either
+    expect(mainSource.slice(gate, ready)).toMatch(/fs\.writeFileSync\(seenFile, process\.versions\.electron\)\n\s+\} catch \(e\) \{\n(\s+\/\/[^\n]*\n)?\s+dialog\.showErrorBox\([^\n]*\n\s+process\.exit\(4\)\n\s+\}/)
   })
 
   it('AppUserModelId stays com.sanovids.app for the real app only', () => {

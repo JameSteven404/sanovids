@@ -209,7 +209,9 @@ if (!app.requestSingleInstanceLock()) {
       fs.mkdirSync(profile.dir, { recursive: true })
       fs.writeFileSync(seenFile, process.versions.electron)
     } catch (e) {
-      console.error(`[SanoVids] could not record the profile's Electron version: ${e && e.message}`)
+      // Fail closed: opening anyway would migrate the profile with no record, and an older app would then open it.
+      dialog.showErrorBox(app.getName(), `Không ghi được ${seenFile} (${e && e.message}). ${app.getName()} không mở, vì thiếu số này thì bản SanoVids hoặc Sano Agent cũ hơn có thể mở nhầm dữ liệu rồi làm hỏng dự án. Hãy cho phép ghi file đó (bỏ chỉ đọc, đóng chương trình đang giữ nó) rồi mở lại.`)
+      process.exit(4)
     }
   }
   // A second launch brings THE SanoVids window forward (never a canvasapp login / checkout window).

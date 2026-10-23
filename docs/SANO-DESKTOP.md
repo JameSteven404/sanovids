@@ -78,7 +78,8 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
 - **Bản cũ không mở dữ liệu bản mới đã mở:** hai app tự cập nhật riêng, nên app kia có thể đã lên Electron mới trước. Mỗi
   lần mở, app ghi Electron của nó vào `%APPDATA%\SanoVids\electron-version` (giữ số mới nhất; chạy từ mã nguồn cũng ghi).
   Electron *major* của app cũ hơn số đó thì app không mở, báo cài bản mới nhất ở trang tải về của nó (chưa mở thì không tự
-  cập nhật được). Khác bản vá cùng major thì vẫn mở.
+  cập nhật được). Khác bản vá cùng major thì vẫn mở. Không ghi được file đó (bị khoá, chỉ đọc, phần mềm diệt virus) thì app
+  cũng không mở. **Không bao giờ xoá `electron-version`**: app cũ bị từ chối thì cách an toàn duy nhất là cài bản mới nhất của nó.
 - **Chế độ Phát triển** của bản cài bị khoá như SanoVids, chỉ mở bằng khoá của chủ (`sanovids.devUnlockKeys`). Chưa mở
   khoá thì take đi qua cổng canvasapp và **tốn credit thật**.
 - **Máy chủ SANO** ở cổng 8080 phải có khung desktop (`window.sanoDesktop`): build image từ nhánh SANO
