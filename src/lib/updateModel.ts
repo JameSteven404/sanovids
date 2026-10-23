@@ -22,6 +22,7 @@
 //   isSignatureError(error) / signatureToastKey(state)   an update refused / not verifiable for its code signature.
 import { ABOUT_AUTHOR, ABOUT_OFFICIAL_THUMBPRINT, formatThumbprint } from './aboutModel'
 import {
+  PRODUCT_NAME,
   UPDATE_NOTES_MAX,
   type UpdateError,
   type UpdateErrorCode,
@@ -340,14 +341,14 @@ export function pillView(state: UpdateState, ctx: { installWhenIdle: boolean; ac
   const v = state.version
   if (state.kind === 'dev' || !v) return null
   if (isCheckOnly(state.kind)) {
-    return state.status === 'available' ? { tone: 'available', long: 'Bản mới ', short: v, title: `Có bản SanoVids ${v} — bấm để xem cách tải`, version: v } : null
+    return state.status === 'available' ? { tone: 'available', long: 'Bản mới ', short: v, title: `Có bản ${PRODUCT_NAME} ${v} — bấm để xem cách tải`, version: v } : null
   }
   switch (state.status) {
     case 'available':
-      return { tone: 'available', long: 'Có bản ', short: v, title: `Có bản SanoVids ${v} — bấm để xem`, version: v }
+      return { tone: 'available', long: 'Có bản ', short: v, title: `Có bản ${PRODUCT_NAME} ${v} — bấm để xem`, version: v }
     case 'downloading': {
       const p = formatPercent(state.percent)
-      return { tone: 'downloading', long: 'Đang tải ', short: p, title: `Đang tải bản SanoVids ${v} (${p}). Bạn cứ làm việc bình thường.`, version: v }
+      return { tone: 'downloading', long: 'Đang tải ', short: p, title: `Đang tải bản ${PRODUCT_NAME} ${v} (${p}). Bạn cứ làm việc bình thường.`, version: v }
     }
     case 'ready':
       if (ctx.installWhenIdle) {
@@ -355,11 +356,11 @@ export function pillView(state: UpdateState, ctx: { installWhenIdle: boolean; ac
           tone: 'waiting',
           long: '',
           short: 'Chờ cập nhật',
-          title: `SanoVids sẽ khởi động lại để cập nhật lên ${v} khi xong ${waitWhat(ctx.activeJobs)}. Bấm để xem.`,
+          title: `${PRODUCT_NAME} sẽ khởi động lại để cập nhật lên ${v} khi xong ${waitWhat(ctx.activeJobs)}. Bấm để xem.`,
           version: v,
         }
       }
-      return { tone: 'ready', long: 'Cập nhật ', short: v, title: `Bản SanoVids ${v} đã tải xong — bấm để khởi động lại và cập nhật`, version: v }
+      return { tone: 'ready', long: 'Cập nhật ', short: v, title: `Bản ${PRODUCT_NAME} ${v} đã tải xong — bấm để khởi động lại và cập nhật`, version: v }
     default:
       return null
   }
@@ -673,6 +674,6 @@ export interface NoticeToast {
 
 /** The toast of this launch's notice (once per page load). */
 export function noticeToast(notice: UpdateNotice): NoticeToast {
-  if (notice.kind === 'updated') return { text: `Đã cập nhật SanoVids lên ${notice.version}.`, tone: 'success', ms: 8000 }
-  return { text: `Chưa cài được bản ${notice.version}. SanoVids sẽ thử lại khi bạn tắt app.`, tone: 'warning', action: 'openPage' }
+  if (notice.kind === 'updated') return { text: `Đã cập nhật ${PRODUCT_NAME} lên ${notice.version}.`, tone: 'success', ms: 8000 }
+  return { text: `Chưa cài được bản ${notice.version}. ${PRODUCT_NAME} sẽ thử lại khi bạn tắt app.`, tone: 'warning', action: 'openPage' }
 }

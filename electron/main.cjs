@@ -402,14 +402,20 @@ function createWindow() {
     }
   }
 
-  win.once('ready-to-show', () => {
+  // The window's first show, once: ready-to-show, or SANO desktop's failure dialog, which shows the window before any
+  // page painted (Electron then never fires ready-to-show for it).
+  let shownOnce = false
+  const firstShow = () => {
+    if (shownOnce) return
+    shownOnce = true
     if (mainWindow === win) mainWindowShown = true
     win.maximize()
     win.show()
     if (updater) updater.onWindowReady()
     // Self-check of the app's own code signature, once, a moment after the window shows (cached for 'app:signature').
     setTimeout(() => void appSignature(), 3000)
-  })
+  }
+  win.once('ready-to-show', firstShow)
 
   const { webContents } = win
 
@@ -453,8 +459,12 @@ function createWindow() {
   })
   // SANO desktop: SANO did not open. Say so in the window (a packaged app has no console), never a blank window or a
   // silent exit: Thử lại loads SANO again, Thoát quits. The open window keeps the app running meanwhile.
+  let sanoOpened = false
+  if (SANO) webContents.on('did-navigate', (_event, url) => {
+    if (url.startsWith(home)) sanoOpened = true
+  })
   const sanoFailed = (message, detail) => {
-    win.show()
+    firstShow()
     void dialog
       .showMessageBox(win, { type: 'error', title: 'Sano Agent', message, detail, buttons: ['Thử lại', 'Thoát'], defaultId: 0, cancelId: 1, noLink: true })
       .then(({ response }) => (response === 0 ? void win.loadURL(SANO.url) : app.quit()))
@@ -465,7 +475,8 @@ function createWindow() {
   webContents.on('will-redirect', (event, url) => {
     if (!event.isMainFrame || url.startsWith(home)) return
     event.preventDefault()
-    if (mainWindowShown) return
+    // SANO desktop: until SANO's page has opened once (first load, or a Thử lại), a refused redirect is explained.
+    if (SANO ? sanoOpened : mainWindowShown) return
     console.error(`[SanoVids] SANO_URL redirects to ${url}: set SANO_URL to the address it ends at`)
     if (SANO) sanoFailed(`SANO tại ${SANO.url} chuyển hướng sang ${url}`, 'Địa chỉ SANO nướng sẵn trong app (từ mã nguồn: SANO_URL) phải là địa chỉ cuối, không chuyển hướng. Sửa máy chủ SANO rồi bấm Thử lại.')
     else app.exit(2)

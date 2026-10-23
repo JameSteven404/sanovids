@@ -101,7 +101,8 @@ Chủ dự án làm theo đúng thứ tự (từ checkout `main` sạch, trên m
    (`release:check` của cả hai app chặn khi thiếu).
 3. **Merge** nhánh này vào `main` (trước đó sửa ngày ở mục `## [x.y.z] — yyyy-mm-dd — …` của
    `sano-agent/CHANGELOG.md` nếu cần; bản sau: tăng `version` trong `sano-agent/electron-builder.cjs` và thêm mục mới).
-   Nếu bản SanoVids công khai mới nhất không build từ commit này, phát hành SanoVids từ commit này trước.
+   Nếu bản SanoVids công khai mới nhất không build từ commit này, phát hành SanoVids (tăng version) từ chính commit này
+   trước; commit đó mang cả hai lần tăng version và cả hai mục CHANGELOG.
 4. **Đặt tag nguồn** trên đúng commit đó của `main`: `git tag -a sano-agent-v0.1.0 -m "Sano Agent 0.1.0"` rồi
    `git push origin sano-agent-v0.1.0`.
 5. **Tạo repo công khai** `JameSteven404/sano-agent-releases` có nhánh `main` với `README.md` (chép từ

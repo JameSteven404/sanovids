@@ -374,7 +374,7 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(mainSource).toContain('void win.loadURL(SANO ? SANO.url : `${ORIGIN}/index.html`)')
     // server redirects of SANO's page are held to the same home; the Google popup is guarded, its cookies dropped on close
     // refused on the first load: plain SanoVids prints and exits; SANO mode prints too (from source) and asks in the window
-    expect(mainSource).toMatch(/webContents\.on\('will-redirect', \(event, url\) => \{\s+if \(!event\.isMainFrame \|\| url\.startsWith\(home\)\) return\s+event\.preventDefault\(\)\s+if \(mainWindowShown\) return\s+console\.error\([^\n]*\)\s+if \(SANO\) sanoFailed\(`SANO tại \$\{SANO\.url\} chuyển hướng sang \$\{url\}`, '[^'\n]*địa chỉ cuối[^'\n]*'\)\s+else app\.exit\(2\)\s+\}\)/)
+    expect(mainSource).toMatch(/webContents\.on\('will-redirect', \(event, url\) => \{\s+if \(!event\.isMainFrame \|\| url\.startsWith\(home\)\) return\s+event\.preventDefault\(\)\s+\/\/[^\n]*\n\s+if \(SANO \? sanoOpened : mainWindowShown\) return\s+console\.error\([^\n]*\)\s+if \(SANO\) sanoFailed\(`SANO tại \$\{SANO\.url\} chuyển hướng sang \$\{url\}`, '[^'\n]*địa chỉ cuối[^'\n]*'\)\s+else app\.exit\(2\)\s+\}\)/)
     // a redirect is the server's, never opened in the browser (only will-navigate, the user's click, is)
     const redirect = mainSource.slice(at("webContents.on('will-redirect'"), at("webContents.on('will-redirect'") + 400)
     expect(redirect.slice(0, redirect.indexOf('\n  })'))).not.toContain('openExternal')
@@ -403,7 +403,11 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     const dialogAt = mainSource.indexOf('const sanoFailed = (message, detail) => {')
     expect(dialogAt).toBeGreaterThan(-1)
     const failed = mainSource.slice(dialogAt, mainSource.indexOf("webContents.on('will-redirect'"))
-    expect(failed).toContain('win.show()')
+    // shown through the window's one first-show path (ready-to-show never fires once the dialog showed it)
+    expect(failed).toContain('firstShow()')
+    expect(failed).not.toContain('win.show()')
+    expect(mainSource).toContain("win.once('ready-to-show', firstShow)")
+    expect(mainSource).toMatch(/if \(SANO\) webContents\.on\('did-navigate', \(_event, url\) => \{\s+if \(url\.startsWith\(home\)\) sanoOpened = true/)
     expect(failed).toContain("title: 'Sano Agent', message, detail, buttons: ['Thử lại', 'Thoát']")
     expect(failed).toContain('(response === 0 ? void win.loadURL(SANO.url) : app.quit())')
     expect(failed).not.toContain('app.exit')

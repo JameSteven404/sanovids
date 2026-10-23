@@ -112,7 +112,8 @@ renderer: lib/updates.ts ⇄ src/updateActions.ts ⇄ UpdatePill · UpdateDialog
 7. Mở trang tải về xem lại bằng mắt. Máy đã cài bản Setup sẽ nhận bản mới trong vòng vài giờ.
 8. **Bản này đổi Electron** (hoặc định dạng dữ liệu): phát hành luôn **Sano Agent** từ đúng commit này (tăng `version` trong
    `sano-agent/electron-builder.cjs` ngay ở bước 1; [SANO-DESKTOP.md](SANO-DESKTOP.md) mục 6). Hai app dùng chung
-   `%APPDATA%\SanoVids`: Sano Agent còn Electron cũ sẽ mở thư mục mà Electron mới đã nâng cấp.
+   `%APPDATA%\SanoVids`: Sano Agent còn Electron cũ sẽ mở thư mục mà Electron mới đã nâng cấp. Commit phát hành mang cả hai
+   lần tăng version và cả hai mục CHANGELOG (`CHANGELOG.md` và `sano-agent/CHANGELOG.md`).
 
 **`release:check` kiểm tra gì**:
 - (a) mục CHANGELOG (thiếu dòng liên kết chỉ ⚠);
