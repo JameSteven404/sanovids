@@ -97,32 +97,39 @@ export function checkTakeDelete(
   const one = ids.length === 1
   const what = one && opts.label ? opts.label : `${ids.length} video${finished && finished < ids.length ? ` (${finished} video đã tạo xong)` : ''}`
   const lines = [`Xoá vĩnh viễn ${what}? Video đã xoá không hoàn tác được.`]
+  // development mode: "credit dev", the job stays in the Bảng phát triển; SANO: the job is in the SANO app (never canvasapp.io.vn)
+  const all = (list: typeof found, provider: string) => list.every((t) => t.provider === provider)
   if (paidPending) {
-    // development mode: "credit dev", the job stays in the Bảng phát triển (never canvasapp.io.vn)
-    const dev = pending.every((t) => t.provider === 'dev')
+    const dev = all(pending, 'dev')
     const who = one && opts.label ? opts.label : `${paidPending} video`
     lines.push(
       dev
         ? `${who} đã tạo xong trên canvasapp giả lập và đã trừ credit dev — SanoVids chưa tải về xong: xoá sẽ bỏ video đó trong SanoVids (job vẫn còn trong Bảng phát triển); chạy lại cảnh sẽ trừ credit dev lần nữa.`
-        : `${who} đã tạo xong trên canvasapp và đã trừ credit — SanoVids chưa tải về xong: xoá sẽ bỏ video đó trong SanoVids (vẫn tải được trên canvasapp.io.vn, phiên “SanoVids bridge”); chạy lại cảnh sẽ trừ credit lần nữa.`,
+        : all(pending, 'sano-gateway')
+          ? `${who} đã tạo xong trên máy chủ SANO — SanoVids chưa tải về xong: xoá sẽ bỏ video đó trong SanoVids (vẫn lấy được trong app SANO); chạy lại cảnh sẽ tính phí lần nữa.`
+          : `${who} đã tạo xong trên canvasapp và đã trừ credit — SanoVids chưa tải về xong: xoá sẽ bỏ video đó trong SanoVids (vẫn tải được trên canvasapp.io.vn, phiên “SanoVids bridge”); chạy lại cảnh sẽ trừ credit lần nữa.`,
     )
   }
   if (maybeBilled) {
-    const dev = doubtful.every((t) => t.provider === 'dev')
+    const dev = all(doubtful, 'dev')
     const who = one && opts.label ? opts.label : `${maybeBilled} video`
     lines.push(
       dev
         ? `${who}: không rõ canvasapp giả lập đã nhận (và trừ credit dev) chưa — “Chạy lại” trên take tìm job cũ trước khi gửi; xoá thì SanoVids không còn tìm lại job đó, chạy lại cảnh có thể trừ credit dev lần nữa.`
-        : `${who}: không rõ canvasapp đã nhận (và trừ credit) chưa — “Chạy lại” trên take tìm job cũ trước khi gửi; xoá thì SanoVids không còn tìm lại job đó, chạy lại cảnh có thể trừ credit lần nữa.`,
+        : all(doubtful, 'sano-gateway')
+          ? `${who}: không rõ máy chủ SANO đã nhận (và tính phí) chưa — “Chạy lại” trên take tìm job cũ trước khi gửi; xoá thì SanoVids không còn tìm lại job đó, chạy lại cảnh có thể tính phí lần nữa.`
+          : `${who}: không rõ canvasapp đã nhận (và trừ credit) chưa — “Chạy lại” trên take tìm job cũ trước khi gửi; xoá thì SanoVids không còn tìm lại job đó, chạy lại cảnh có thể trừ credit lần nữa.`,
     )
   }
   if (sentAway) {
-    const dev = away.every((t) => t.provider === 'dev')
+    const dev = all(away, 'dev')
     const who = one && opts.label ? opts.label : `${sentAway} video`
     lines.push(
       dev
         ? `${who} đang chạy trên canvasapp giả lập (job đã gửi hoặc đang gửi — có thể đã trừ credit dev): xoá chỉ bỏ theo dõi trong SanoVids, job vẫn chạy trong Bảng phát triển; chạy lại cảnh có thể trừ credit dev lần nữa.`
-        : `${who} đang chạy trên canvasapp (job đã gửi hoặc đang gửi — có thể đã trừ credit): xoá chỉ bỏ theo dõi trong SanoVids, job vẫn chạy trên canvasapp.io.vn (phiên “SanoVids bridge”); chạy lại cảnh có thể trừ credit lần nữa.`,
+        : all(away, 'sano-gateway')
+          ? `${who} đang chạy trên máy chủ SANO (job đã gửi hoặc đang gửi — có thể đã tính phí): xoá chỉ bỏ theo dõi trong SanoVids, job vẫn chạy trên SANO (xem trong app SANO); chạy lại cảnh có thể tính phí lần nữa.`
+          : `${who} đang chạy trên canvasapp (job đã gửi hoặc đang gửi — có thể đã trừ credit): xoá chỉ bỏ theo dõi trong SanoVids, job vẫn chạy trên canvasapp.io.vn (phiên “SanoVids bridge”); chạy lại cảnh có thể trừ credit lần nữa.`,
     )
   }
   if (parked) {

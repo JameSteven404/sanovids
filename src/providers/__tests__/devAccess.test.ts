@@ -21,6 +21,7 @@ import {
   useProviderPrefs,
 } from '..'
 import { WEB_UNAVAILABLE } from '../canvasapp/transport'
+import { stubInsideSano } from './insideSano'
 import {
   applyDevAccessState,
   bareState,
@@ -39,6 +40,7 @@ afterEach(() => {
   applyDevAccessState(bareState('build'))
   useProviderPrefs.getState().setProvider('dev')
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
   useUI.setState({ toasts: [] })
   useUI.getState().closeDialog()
 })
@@ -61,6 +63,14 @@ describe('initial access (computed once at import)', () => {
     // the simulation flag can only lock: it never opens a locked host
     expect(initialDevAccess(env({ electron: true, desktopInitial: 'locked', simLocked: false }))).toBe('locked')
     expect(isLoopbackHost('localhost.evil.com')).toBe(false)
+  })
+
+  it('inside the SANO app: locked even on loopback / npm run dev / perf (Electron unchanged)', () => {
+    expect(initialDevAccess(env({ sano: true, viteDev: true, hostname: 'localhost' }))).toBe('locked')
+    expect(initialDevAccess(env({ sano: true, hostname: '127.0.0.1' }))).toBe('locked')
+    expect(initialDevAccess(env({ sano: true, perfBuild: true, hostname: '[::1]' }))).toBe('locked')
+    expect(initialDevAccess(env({ sano: true, hostname: 'sano.example.com' }))).toBe('locked')
+    expect(initialDevAccess(env({ sano: true, electron: true, desktopInitial: 'build' }))).toBe('build')
   })
 
   it('in tests (no window at import) development mode is open', () => {
@@ -256,6 +266,13 @@ describe('browser simulation (loopback only, never in Electron)', () => {
     vi.stubGlobal('window', { bdpDesktop: { canvasapp: {} } })
     installDevAccessSim('localhost')
     expect(devAccessBridge()).toBeNull() // Electron page without the desktop lock bridge: never the simulation
+  })
+
+  it('installDevAccessSim: never inside the SANO app, even on a loopback SANO dev server', async () => {
+    const { installDevAccessSim } = await import('../dev/devAccess')
+    stubInsideSano()
+    expect(installDevAccessSim('localhost')).toBe(false)
+    expect(installDevAccessSim('127.0.0.1')).toBe(false)
   })
 })
 

@@ -17,6 +17,7 @@ vi.mock('../../lib/imageStore', () => {
 
 import type { Project, Scene, Take } from '../../core/types'
 import { capabilitiesFromModels } from '../../providers/capabilities'
+import { stubInsideSano } from '../../providers/__tests__/insideSano'
 import { getProvider, registerProvider, useProviderPrefs } from '../../providers'
 import type { JobRequest, RemoteStatus, VideoProvider } from '../../providers/types'
 import { useProject } from '../project'
@@ -185,6 +186,24 @@ describe('restartWork', () => {
     expect(currentRestartWork()).toEqual({ queued: 1, processing: 3, sending: 1 })
     useRuns.setState({ takes: [] })
     expect(currentRestartWork()).toEqual({ queued: 0, processing: 0, sending: 0 })
+  })
+
+  it('never waits for a SANO take that cannot run here (outside SANO, or inside before sign-in): it waits, untouched', async () => {
+    const t = (id: string, status: Take['status'], remoteId: string | null) => ({ id, sceneId: 's1', status, provider: 'sano-gateway', remoteId }) as Take
+    const takes = [t('q', 'queued', null), t('p', 'processing', 'job_p'), t('s', 'processing', null)]
+    setEngineHooks({ mayRun: () => false }) // counted only: no engine sends them here
+    useRuns.setState({ takes })
+    expect(restartWork(takes, new Set(['s1']))).toEqual({ queued: 0, processing: 0, sending: 0 })
+    expect(sendingCount()).toBe(0) // "Cập nhật ngay" never waits 15 s for it
+    stubInsideSano() // not signed in to SANO (once the token was read): nothing runs either
+    await vi.waitFor(() => expect(restartWork(takes, new Set(['s1']))).toEqual({ queued: 0, processing: 0, sending: 0 }))
+    stubInsideSano({ __SANO_GATEWAY__: { token: () => 'tok' } }) // signed in: the queue sends, polls and looks them up
+    getProvider('sano-gateway').reset?.() // forgets the unsigned look (its next look reads the token)
+    await vi.waitFor(() => expect(restartWork(takes, new Set(['s1']))).toEqual({ queued: 1, processing: 2, sending: 1 }))
+    expect(sendingCount()).toBe(1)
+    getProvider('sano-gateway').reset?.()
+    vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
   })
 
   it('never waits for a take of a newer SanoVids build (it may still be running there, never here)', () => {

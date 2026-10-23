@@ -8,6 +8,7 @@ import {
   CloudDownload,
   Download,
   Eye,
+  Info,
   ListVideo,
   LoaderCircle,
   LocateFixed,
@@ -25,19 +26,19 @@ import { sceneCode } from '../../core/compile'
 import { MODELS } from '../../core/models'
 import type { Scene, Take } from '../../core/types'
 import { CREDIT_MARK, formatCredits } from '../../lib/credits'
-import { PROVIDER_LABEL } from '../../providers'
+import { PROVIDER_LABEL, SANO_PAUSED_REASON, sanoGatewayProvider, useProviderLimits, useVideoPausedInSano } from '../../providers'
 import { useDevAllowed } from '../../providers/devAccess'
 import { providerOf } from '../../providers/types'
 import { useDevServer, type DevSpeed } from '../../providers/dev'
 import { useProject } from '../../store/project'
-import { clearableTakes, isParkedTake, useRuns } from '../../store/runs'
+import { clearableTakes, isParkedTake, parkedCountText, parkedReasons, useRuns } from '../../store/runs'
 import { transferPercent, useTakeTransfers } from '../../store/takeTransfers'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
 import { sceneMapOf } from '../canvas/canvasModel'
 import { activeFaultCount } from '../dev/devModel'
 import { CreditPill } from '../topbar/CreditPill'
-import { takeCostLine } from './creditText'
+import { sanoModeNote, takeCostLine } from './creditText'
 import { importedChipTitle, takeCostKnown, takeSettingsText } from './importedTake'
 import { openImportJobs } from '../../siteJobActions'
 import { formatClock, formatDuration, isActive, ProviderBadge, StatusBadge, takeElapsed, useActiveProvider, useNow } from './shared'
@@ -47,6 +48,16 @@ const DEV_SPEED_SHORT: Record<DevSpeed, string> = { fast: 'nhanh', realistic: 't
 const DONE_PAGE = 40
 
 const openSettings = () => useUI.getState().openDialog({ kind: 'settings' })
+
+/**
+ * Why queued / running takes wait here (store/runs parkedReasons: SANO signed out, another SANO account, outside SANO),
+ * re-read when SANO's token state changes (not in the runs store). One reason at a time: the gateway's state decides it
+ * (only another account's takes differ from the rest, and they all say the same).
+ */
+function useParked(): string[] {
+  useProviderLimits((s) => s.rev['sano-gateway'])
+  return useRuns(useShallow((s) => parkedReasons(s.takes)))
+}
 
 /** Queue docked at the bottom of the center area: a 36px material bar that expands into the job list. */
 export function QueueDrawer() {
@@ -84,6 +95,7 @@ function QueueBar({ open }: { open: boolean }) {
   )
   const issue = useRuns((s) => s.providerIssue)
   const elsewhere = useRuns((s) => s.engineElsewhere)
+  const parked = useParked()
   const toggle = () => useUI.getState().setQueueOpen(!open)
 
   return (
@@ -122,6 +134,12 @@ function QueueBar({ open }: { open: boolean }) {
         <span className="rq-chip warn" title={`${PROVIDER_LABEL[issue.provider]}: ${issue.message}`}>
           <TriangleAlert size={12} />
           <span className="rq-chip-text">{PROVIDER_LABEL[issue.provider]} đang gặp sự cố</span>
+        </span>
+      )}
+      {parked.length > 0 && (
+        <span className="rq-chip warn" title={parked[0]}>
+          <TriangleAlert size={12} />
+          <span className="rq-chip-text">{parkedCountText(parked)}</span>
         </span>
       )}
       {elsewhere && (
@@ -184,11 +202,13 @@ interface Group {
   takes: Take[]
 }
 
-function QueuePanel() {
+export function QueuePanel() {
   const takes = useRuns((s) => s.takes)
   const issue = useRuns((s) => s.providerIssue)
   const elsewhere = useRuns((s) => s.engineElsewhere)
+  const parked = useParked()
   const provider = useActiveProvider()
+  const paused = useVideoPausedInSano()
   const runKey = useShortcutLabel('scene.run')
   // 'Bảng phát triển' only while development mode is open (a DEV take may still finish while it is locked)
   const devOpen = useDevAllowed()
@@ -226,9 +246,18 @@ function QueuePanel() {
   return (
     <div className="rq-panel">
       <div className="rq-panel-head">
-        {provider === 'dev' ? (
+        {paused ? (
+          <span className="rq-demo-note">
+            <Info size={12} /> {SANO_PAUSED_REASON}
+          </span>
+        ) : provider === 'dev' ? (
           <span className="rq-demo-note dev">
             <Bug size={12} /> Chế độ Phát triển: canvasapp giả lập trong máy — credit dev, không gọi mạng, không tốn tiền thật
+          </span>
+        ) : provider === 'sano-gateway' ? (
+          <span className="rq-demo-note real">
+            {/* re-rendered on SANO's revision (useParked) */}
+            <Cloud size={12} /> Take mới gửi qua máy chủ SANO — {sanoModeNote(sanoGatewayProvider().mode())}
           </span>
         ) : (
           <span className="rq-demo-note real">
@@ -236,22 +265,27 @@ function QueuePanel() {
           </span>
         )}
         <span className="rq-spacer" />
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm"
-          onClick={() => openImportJobs()}
-          title={`Tìm video đã tạo trực tiếp trên ${provider === 'dev' ? 'canvasapp giả lập' : 'canvasapp.io.vn'} (phiên “SanoVids bridge”) và đưa vào dự án thành take — chỉ đọc, không trừ ${provider === 'dev' ? 'credit dev' : 'credit'}`}
-        >
-          <CloudDownload size={13} />
-          <span className="rq-btn-label">Nhập job</span>
-        </button>
-        {provider === 'dev' ? (
-          <DevPanelButton />
-        ) : (
-          <button type="button" className="btn btn-ghost btn-sm" onClick={openSettings} title="Đăng nhập, số credit và nhà cung cấp video (Cài đặt)">
-            <Settings2 size={13} />
-            <span className="rq-btn-label">Cổng canvasapp</span>
-          </button>
+        {/* SANO has no canvasapp bridge session to import from, nor a canvasapp gateway to open (nor while paused, D226). */}
+        {provider !== 'sano-gateway' && !paused && (
+          <>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => openImportJobs()}
+              title={`Tìm video đã tạo trực tiếp trên ${provider === 'dev' ? 'canvasapp giả lập' : 'canvasapp.io.vn'} (phiên “SanoVids bridge”) và đưa vào dự án thành take — chỉ đọc, không trừ ${provider === 'dev' ? 'credit dev' : 'credit'}`}
+            >
+              <CloudDownload size={13} />
+              <span className="rq-btn-label">Nhập job</span>
+            </button>
+            {provider === 'dev' ? (
+              <DevPanelButton />
+            ) : (
+              <button type="button" className="btn btn-ghost btn-sm" onClick={openSettings} title="Đăng nhập, số credit và nhà cung cấp video (Cài đặt)">
+                <Settings2 size={13} />
+                <span className="rq-btn-label">Cổng canvasapp</span>
+              </button>
+            )}
+          </>
         )}
         <button type="button" className="btn btn-ghost btn-sm" disabled={!clearable.length} onClick={clearFailed} title="Xoá các job lỗi/đã huỷ khỏi danh sách — take “không rõ đã bị trừ credit chưa” được giữ lại (xoá riêng từng take nếu muốn)">
           <Trash size={13} />
@@ -279,6 +313,15 @@ function QueuePanel() {
                 Mở Cài đặt
               </button>
             )}
+          </div>
+        )}
+        {parked.length > 0 && (
+          <div className="rq-banner warn" role="status">
+            <TriangleAlert size={15} />
+            <div className="rq-banner-text">
+              <b>{parked[0]}</b>
+              <small>{parkedCountText(parked)} — giữ nguyên tiến độ, SanoVids không gửi hay tải gì cho tới khi chạy tiếp được.</small>
+            </div>
           </div>
         )}
         {elsewhere && (

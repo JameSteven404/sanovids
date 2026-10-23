@@ -3,6 +3,7 @@ import { Ban, Bug, CircleAlert, CircleArrowUp, CircleCheck, Cloud, Clock, Loader
 import { useEffect, useMemo, useState } from 'react'
 import { promptParts } from '../../core/compile'
 import { sceneRunBlock } from '../../core/runGate'
+import { compiledOf } from '../../core/runRules'
 import { sceneMapOf } from '../../core/sceneIndex'
 import type { JobStatus, Scene, Take, VideoSettings } from '../../core/types'
 import { getBlob } from '../../lib/imageStore'
@@ -20,7 +21,7 @@ import {
   type ProviderId,
   type SettingsLimits,
 } from '../../providers'
-import { settingsRunBlock } from '../../providers/limits'
+import { jobRefCount, settingsRunBlock } from '../../providers/limits'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 
@@ -63,13 +64,14 @@ export function useActiveLimits(): { provider: ProviderId; limits: SettingsLimit
 
 /**
  * The gateway's sure refusal of these settings (providers/limits settingsRunBlock: a firm 'server' read), or null —
- * as a string selected from the revision store, so a card per scene re-renders only when ITS answer changes.
+ * as a string selected from the revision store, so a card per scene re-renders only when ITS answer changes. `refs`: the
+ * pictures the job sends (providers/limits jobRefCount), for a gateway that caps them.
  */
-export function useSettingsRunBlock(settings: VideoSettings | undefined): string | null {
+export function useSettingsRunBlock(settings: VideoSettings | undefined, refs?: number): string | null {
   const provider = useActiveProvider()
   return useProviderLimits((s) => {
     void s.rev[provider]
-    return settings ? settingsRunBlock(providerLimits(provider), settings) : null
+    return settings ? settingsRunBlock(providerLimits(provider), settings, refs) : null
   })
 }
 
@@ -92,19 +94,21 @@ export function useSceneRunBlock(target: Scene | string | undefined): string | n
     const scene = pick(s.project.scenes)
     if (!scene) return null
     const assets = s.project.assets
-    const settingsBlock = settingsRunBlock(providerLimits(provider), scene.settings)
+    const settingsBlock = settingsRunBlock(providerLimits(provider), scene.settings, jobRefCount(scene, compiledOf(assets, scene)))
     return sceneRunBlock(scene, assets, settingsBlock)
   })
 }
 
 // Credit amounts: lib/credits formatCredits / formatVnd and ./creditText (which wallet paid a take).
 
-const PROVIDER_SHORT: Record<ProviderId, string> = { mock: 'Demo cũ', dev: 'DEV', canvasapp: 'canvasapp' }
+const PROVIDER_SHORT: Record<ProviderId, string> = { mock: 'Demo cũ', dev: 'DEV', canvasapp: 'canvasapp', 'sano-gateway': 'SANO' }
 
 const PROVIDER_TITLE: Record<ProviderId, string> = {
   mock: 'Demo cũ — video giả, trả bằng credit demo (không phải tiền thật)',
   dev: 'Phát triển (giả lập) — canvasapp giả lập trong máy, trả bằng credit dev (không phải tiền thật)',
   canvasapp: 'canvasapp.io.vn — video thật, trả bằng credit canvasapp của tài khoản bạn',
+  // no cost words: a SANO take may come from its simulator (Take.simulated, the Run dialog says which)
+  'sano-gateway': 'Máy chủ SANO — tạo video qua app SANO',
 }
 
 /** Chip of a take made by a newer SanoVids build's provider (Take.foreignProvider) instead of "Demo cũ". */

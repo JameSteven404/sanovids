@@ -56,8 +56,11 @@ export interface SettingsLimits {
    * certain. False for 'none', 'fallback' and an older read (a submit reads again before deciding).
    */
   firm: boolean
-  /** Refusals of `s`, each tagged with its field, in the submit's order. [] for 'none'. Never throws. */
-  issues(s: VideoSettings): SettingsIssue[]
+  /**
+   * Refusals of `s`, each tagged with its field, in the submit's order. [] for 'none'. Never throws. `refs` = the
+   * pictures the job sends (images + frames) when the caller knows them, for a gateway that caps them (SANO).
+   */
+  issues(s: VideoSettings, refs?: number): SettingsIssue[]
 }
 
 export const NO_LIMITS: SettingsLimits = Object.freeze({ source: 'none' as const, firm: false, issues: () => [] })
@@ -146,6 +149,8 @@ export interface JobRequest {
   lastFrame: JobFrame | null
   /** Local time the take started processing (the mock uses it for wall-clock progress). */
   startedAt: number
+  /** Take.expectSimulated: queued under SANO's simulator (no fee promised) — sent only while SANO still says so. */
+  expectSimulated?: boolean
 }
 
 export type RemoteState = 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled'
@@ -208,13 +213,23 @@ export interface VideoProvider {
    * Create the job (req.key = idempotency key). Errors: code 'cancelled' (see SubmitOptions, nothing was created);
    * `uncertain: true` (see isSubmitUncertain) when the job may exist at the provider although no id came back;
    * also `unverifiable: true` (isSubmitUnverifiable) when an earlier request of that key can no longer be checked.
+   * `simulated`: the provider made a sample clip, nothing billed (SANO's simulator) — kept on the take.
    */
-  submit(req: JobRequest, opts?: SubmitOptions): Promise<{ remoteId: string }>
+  submit(req: JobRequest, opts?: SubmitOptions): Promise<{ remoteId: string; simulated?: boolean }>
   /**
    * Find the job an earlier submit of `req.key` created (the page closed / reloaded before its id was saved)
-   * WITHOUT ever creating one. Null = none known. Optional: without it such takes fail as "unknown".
+   * WITHOUT ever creating one. Null = none known. Optional: without it such takes fail as "unknown". Code 'deferred'
+   * = cannot ask from this page now (SANO: outside the SANO app, no usable token, another account): no news, the take
+   * stays as it is.
    */
-  recover?(req: JobRequest): Promise<{ remoteId: string } | null>
+  recover?(req: JobRequest): Promise<{ remoteId: string; simulated?: boolean } | null>
+  /**
+   * Synchronous: the account (a key, a hint) its requests go under now; null = not known. Optional (SANO only): a take
+   * it sends or looks up is bound to it (Take.account) and only followed — or sent again — under that account.
+   */
+  account?(): string | null
+  /** account() from a read started now (SANO: account() may be 3 s old) — what a take queued now is bound to. */
+  freshAccount?(): Promise<string | null>
   /**
    * Synchronous, never a request, never throws: may a request of `key` have reached the provider — the request that
    * creates (bills) its job sent or about to be sent in the same synchronous step, its answer pending or lost, a job

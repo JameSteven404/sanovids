@@ -4,16 +4,26 @@
 //   'server' + firm   → a sure refusal: the scene cannot run (settingsRunBlock), skipped by the queue, no credit spent.
 //   'fallback' / older → a warning only (settingsRunWarning): the submit reads again first and decides then.
 //   'none'            → nothing (not read yet: the submit reads and decides).
-import type { VideoSettings } from '../core/types'
+import type { CompiledPrompt, Scene, VideoSettings } from '../core/types'
 import type { ProviderId, SettingsLimits } from './types'
+
+/**
+ * The pictures a scene's job sends — its images + the frames of 'transform' — as settingsRunBlock's `refs` (SANO's
+ * maxRefs): the Run dialog / queue (store/runs check()) and every one-scene Run button count them alike.
+ */
+export const jobRefCount = (scene: Pick<Scene, 'settings' | 'firstFrame' | 'lastFrame'>, compiled: Pick<CompiledPrompt, 'images'>): number =>
+  compiled.images.length + (scene.settings.mode === 'transform' ? Number(!!scene.firstFrame) + Number(!!scene.lastFrame) : 0)
 
 /** A refusal text as a short reason (the run gate's reasons carry no final period). */
 const bare = (text: string) => text.replace(/\.\s*$/, '')
 
-/** The gateway's sure refusal of `s` (the first reason of a firm 'server' read, without its final '.'), else null. */
-export function settingsRunBlock(limits: SettingsLimits, s: VideoSettings): string | null {
+/**
+ * The gateway's sure refusal of `s` (the first reason of a firm 'server' read, without its final '.'), else null.
+ * `refs`: the pictures the job sends, when the caller knows them (SettingsLimits.issues).
+ */
+export function settingsRunBlock(limits: SettingsLimits, s: VideoSettings, refs?: number): string | null {
   if (limits.source !== 'server' || !limits.firm) return null
-  const issue = limits.issues(s)[0]
+  const issue = limits.issues(s, refs)[0]
   return issue ? bare(issue.reason) : null
 }
 
@@ -37,6 +47,7 @@ export function settingsRunWarning(limits: SettingsLimits, s: VideoSettings, id:
  * its credits ("credit dev" in development mode, CLAUDE.md).
  */
 export function limitsSite(id: ProviderId): { short: string; full: string; credit: string } {
+  if (id === 'sano-gateway') return { short: 'SANO', full: 'máy chủ SANO', credit: 'credit' }
   return id === 'dev'
     ? { short: 'canvasapp giả lập', full: 'canvasapp giả lập (chế độ Phát triển)', credit: 'credit dev' }
     : { short: 'canvasapp', full: 'canvasapp.io.vn', credit: 'credit' }

@@ -14,7 +14,7 @@
 //                            answer. Main checks every one of them; nothing here decides an unlock.
 import { openSettings } from './actions'
 import { closesOnLock, DEV_HIDDEN_NOTICE, DEV_HIDDEN_NOTICE_KEY, DEV_TRACE_KEYS, lockToastText, shouldNoticeHidden } from './components/dev/devUnlockModel'
-import { effectiveProvider, useProviderPrefs } from './providers'
+import { canvasappHiddenInSano, effectiveProvider, useProviderPrefs } from './providers'
 import { hasCanvasappBridge } from './providers/canvasapp/transport'
 import { installDevAccessSim } from './providers/dev/devAccess'
 import { closeDevPrompts } from './providers/dev/prompts'
@@ -59,7 +59,7 @@ function readStorage(key: string): string | null {
 function maybeNoticeHidden() {
   const access = useDevAccess.getState().state.access
   const hasDevTraces = DEV_TRACE_KEYS.some((k) => readStorage(k) !== null)
-  if (!shouldNoticeHidden({ access, hasDevTraces, noticed: readStorage(DEV_HIDDEN_NOTICE_KEY) !== null })) return
+  if (!shouldNoticeHidden({ access, hasDevTraces, noticed: readStorage(DEV_HIDDEN_NOTICE_KEY) !== null, inSano: canvasappHiddenInSano() })) return
   try {
     localStorage.setItem(DEV_HIDDEN_NOTICE_KEY, String(Date.now()))
   } catch {
