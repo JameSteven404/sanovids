@@ -90,7 +90,7 @@ interface Rules {
   resolveProfileDir(o: { env?: string; baked?: string; appData: string; appName: string; platform?: string; pathMod: PathMod; fsMod?: FsMod }): ProfileResult
   appUserModelId(appName: string): string
   updaterStem(appName: string): string
-  profileElectronGate(seen: string | undefined, running: string): 'refuse' | 'write' | 'ok'
+  profileElectronGate(seen: string | undefined, running: string): 'refuse' | 'invalid' | 'write' | 'ok'
   releasesUrl(appName: string): string
   detectKind(o: {
     platform: string
@@ -361,7 +361,8 @@ describe('updater rules: data folder override (test isolation)', () => {
     expect(rules.profileElectronGate('45.0.0\r\n', '44.2.1')).toBe('refuse')
     // same Chromium milestone: the older app still starts (it could not update itself otherwise)
     for (const seen of ['44.3.0', '44.2.1']) expect(rules.profileElectronGate(seen, '44.2.1'), seen).toBe('ok')
-    for (const seen of [undefined, '', 'garbage', '43.9.9', '44.2.0']) expect(rules.profileElectronGate(seen, '44.2.1'), String(seen)).toBe('write')
+    for (const seen of [undefined, '43.9.9', '44.2.0']) expect(rules.profileElectronGate(seen, '44.2.1'), String(seen)).toBe('write')
+    for (const seen of ['', ' \r\n', 'garbage', '45.0', '45.0.0\n44.2.1']) expect(rules.profileElectronGate(seen, '44.2.1'), seen).toBe('invalid')
     // after the lock, before ready (before Chromium opens the profile): refused = an error box and exit, no window
     const gate = mainSource.indexOf('updaterRules.profileElectronGate(seen, process.versions.electron)')
     const ready = mainSource.indexOf('app.whenReady()')

@@ -324,8 +324,10 @@ màn hình đó, mất những gì chưa kịp tự lưu.
   từ `app://bdp/` như trước).
 - **Tải về**: chỉ nhận `blob:app://bdp/…` với đuôi `mp4 webm mov m4v jpg jpeg png webp svg txt zip json`; còn lại huỷ
   (log chỉ ghi đuôi file, không ghi tên).
-- **Quyền** của phiên mặc định: chỉ `clipboard-sanitized-write`, `fileSystem`, `fullscreen`, `persistent-storage`; thiết bị
-  (USB / HID / serial) luôn từ chối. Không `<webview>`, không chọn thiết bị Bluetooth.
+- **Quyền** của phiên mặc định: chỉ trang `app://bdp` được cấp `clipboard-sanitized-write`, `fileSystem`, `fullscreen`,
+  `persistent-storage`, kể cả khi là khung trong đúng địa chỉ SANO đã cấu hình. Cả bước kiểm tra và xin quyền đều kiểm
+  trang/nguồn yêu cầu; trang SANO bên ngoài, popup Google và khung khác không nhận các quyền này. Thiết bị (USB / HID /
+  serial) luôn từ chối. Không `<webview>`, không chọn thiết bị Bluetooth.
 - Cửa sổ đăng nhập canvasapp và mọi popup con của nó chỉ mở `https:`, cùng cấu hình bảo mật.
 - **CSP** trên mọi trang HTML của `app://bdp/`: `script-src 'self'` + mã băm SHA-256 của đoạn script chọn giao diện
   trong `index.html` (tính từ chính file đó), không `eval`, `object-src 'none'`, không khung, không form.

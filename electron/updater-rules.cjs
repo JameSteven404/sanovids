@@ -230,10 +230,14 @@ function updaterStem(appName) {
  * other moved the profile to a newer Chromium (it cannot open that safely). `seen` = userData/electron-version, the
  * newest Electron that opened the profile. Only a newer major (= Chromium milestone) migrates the profile; refusing a
  * newer patch would strand the older app, which cannot update itself without starting.
- * → 'refuse' | 'write' (record this Electron) | 'ok'
+ * A missing marker (undefined after ENOENT) can be initialized. An existing invalid marker cannot establish the
+ * profile's version, so preserve it and refuse startup instead of replacing evidence with this app's version.
+ * → 'refuse' | 'invalid' | 'write' (record this Electron) | 'ok'
  */
 function profileElectronGate(seen, running) {
+  if (seen === undefined) return 'write'
   const s = typeof seen === 'string' ? seen.trim() : ''
+  if (!isVersion(s)) return 'invalid'
   const c = compareVersions(s, running)
   return c > 0 && parseInt(s, 10) > parseInt(running, 10) ? 'refuse' : c < 0 ? 'write' : 'ok'
 }

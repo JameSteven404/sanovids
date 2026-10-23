@@ -165,6 +165,37 @@ function permissionAllowed(permission) {
   return typeof permission === 'string' && DEFAULT_SESSION_PERMISSIONS.includes(permission)
 }
 
+/**
+ * The local app document may use the four permissions above, standalone or framed by the configured SANO origin.
+ * The remote SANO page and its Google popups do not inherit the app's permissions. Do not use isMainFrame as a gate:
+ * SANO embeds the app, and Chromium also reports false for a top-level fileSystem check. Require document metadata
+ * instead (workers / missing URLs fail closed), checking both identities when Electron supplies an origin as well.
+ */
+function defaultPermissionAllowed(permission, { requestingUrl, requestingOrigin, topUrl, embeddingOrigin, sanoOrigin } = {}) {
+  if (!permissionAllowed(permission)) return false
+  const parse = (value) => {
+    if (typeof value !== 'string' || !value || value !== value.trim()) return null
+    try {
+      const url = new URL(value)
+      return url.username || url.password ? null : url
+    } catch {
+      return null
+    }
+  }
+  const isApp = (value) => {
+    const url = parse(value)
+    return !!url && url.protocol === 'app:' && url.host === 'bdp'
+  }
+  const isContainer = (value) => {
+    if (isApp(value)) return true
+    const url = parse(value)
+    const sano = parse(sanoOrigin)
+    return !!url && !!sano && ['http:', 'https:'].includes(sano.protocol) && url.origin === sano.origin
+  }
+  return isApp(requestingUrl) && (requestingOrigin === undefined || isApp(requestingOrigin)) && isContainer(topUrl)
+    && (embeddingOrigin === undefined || isContainer(embeddingOrigin))
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Content-Security-Policy of the app's HTML (app://bdp)
 // ---------------------------------------------------------------------------------------------------------------
@@ -642,6 +673,7 @@ module.exports = {
   downloadLogLabel,
   DEFAULT_SESSION_PERMISSIONS,
   permissionAllowed,
+  defaultPermissionAllowed,
   sha256Base64,
   inlineScriptHashes,
   contentSecurityPolicy,

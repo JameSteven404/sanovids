@@ -206,6 +206,10 @@ if (!app.requestSingleInstanceLock()) {
     }
   }
   const gate = updaterRules.profileElectronGate(seen, process.versions.electron)
+  if (gate === 'invalid') {
+    dialog.showErrorBox(app.getName(), `Số phiên bản trong ${seenFile} trống hoặc không hợp lệ. ${app.getName()} không mở và giữ nguyên dữ liệu vì chưa xác định được phiên bản đã mở thư mục này. Giữ nguyên file đó và liên hệ người quản lý bản cài để kiểm tra bản sao lưu; không xoá hoặc tự sửa số phiên bản.`)
+    process.exit(4)
+  }
   if (gate === 'refuse') {
     const name = app.getName()
     dialog.showErrorBox(name, `Dữ liệu ở ${profile.dir} đã được mở bằng một bản SanoVids hoặc Sano Agent mới hơn (Electron ${seen.trim()}). Bản ${name} này (Electron ${process.versions.electron}) cũ hơn nên không mở, để không làm hỏng dự án. Hãy cài bản ${name} mới nhất: ${updaterRules.releasesUrl(name)}`)
@@ -350,13 +354,27 @@ function htmlCsp() {
 
 /**
  * Web permissions of the default session (the SanoVids window): Electron grants every permission by default; the page
- * only needs clipboard writes (copy buttons), the web folder picker API and full-screen video. No device is ever handed out.
+ * only needs clipboard writes (copy buttons), the web folder picker API, full-screen video and persistent storage.
+ * Only the requesting app://bdp document gets these rights, not its remote SANO parent or Google login popups.
  * The canvasapp partition has its own rules (restrictCanvasappPermissions).
  */
 function restrictDefaultSessionPermissions() {
   const ses = session.defaultSession
-  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(hardening.permissionAllowed(permission)))
-  ses.setPermissionCheckHandler((_wc, permission) => hardening.permissionAllowed(permission))
+  const allowed = (wc, permission, details, requestingOrigin, embeddingOrigin) => {
+    try {
+      if (!wc || wc.isDestroyed()) return false
+      return hardening.defaultPermissionAllowed(permission, {
+        requestingUrl: details && details.requestingUrl, requestingOrigin, embeddingOrigin,
+        topUrl: wc.getURL(), sanoOrigin: SANO ? SANO.origin : undefined,
+      })
+    } catch {
+      return false
+    }
+  }
+  ses.setPermissionRequestHandler((wc, permission, callback, details) =>
+    callback(allowed(wc, permission, details, undefined, details && details.embeddingOrigin)))
+  ses.setPermissionCheckHandler((wc, permission, requestingOrigin, details) =>
+    typeof requestingOrigin === 'string' && allowed(wc, permission, details, requestingOrigin, details && details.embeddingOrigin))
   ses.setDevicePermissionHandler(() => false)
 }
 

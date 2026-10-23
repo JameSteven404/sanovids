@@ -897,8 +897,10 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(idx('hardening.downloadAllowed(')).toBeLessThan(idx('item.setSavePath('))
     expect(mainSource).toContain('item.cancel()')
     // default session permissions
-    expect(mainSource).toContain('ses.setPermissionRequestHandler((_wc, permission, callback) => callback(hardening.permissionAllowed(permission)))')
-    expect(mainSource).toContain('ses.setPermissionCheckHandler((_wc, permission) => hardening.permissionAllowed(permission))')
+    // Origin/frame decisions of these registered handlers are exercised with fake WebContents in desktopPermissions.
+    expect(mainSource).toContain('ses.setPermissionRequestHandler((wc, permission, callback, details)')
+    expect(mainSource).toContain('ses.setPermissionCheckHandler((wc, permission, requestingOrigin, details)')
+    expect(mainSource).toContain('hardening.defaultPermissionAllowed(permission, {')
     expect(count('setDevicePermissionHandler(() => false)')).toBe(2) // default session + canvasapp partition
     // exactly one bluetooth handler per webContents (app-wide)
     expect(count("'select-bluetooth-device'")).toBe(1)
