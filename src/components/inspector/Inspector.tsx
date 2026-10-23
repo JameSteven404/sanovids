@@ -3,9 +3,10 @@
 // · several assets → short summary · take (video) nodes → TakeSummary · nothing → tips.
 // Library cards vs canvas nodes: the selection the user changed last wins (see selection.ts).
 import { shortcutText } from '../../lib/platformText'
-import { Bug, Cloud, Eye, FileText, Film, Keyboard, Link2, MousePointerClick, Plus, Sparkles } from 'lucide-react'
+import { Bug, Cloud, Eye, FileText, Film, Info, Keyboard, Link2, MousePointerClick, Plus, Sparkles } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { newScene } from '../../actions'
+import { SANO_PAUSED_REASON, useVideoPausedInSano } from '../../providers'
 import { useCreditKind } from '../../store/credits'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
@@ -126,6 +127,7 @@ function EmptyInspector() {
   const openDialog = useUI((s) => s.openDialog)
   // Which provider the next run uses (docs/SPEC-v2.md §9, §11): "no cost" is only true for simulated credits.
   const creditKind = useCreditKind()
+  const paused = useVideoPausedInSano()
   return (
     <div className="in-empty">
       <div className="in-empty-icon">
@@ -187,7 +189,11 @@ function EmptyInspector() {
           <FileText size={14} /> Nhập prompt cũ
         </button>
       </div>
-      {creditKind === 'dev' ? (
+      {paused ? (
+        <p className="in-empty-foot faint">
+          <Info size={12} /> {SANO_PAUSED_REASON}
+        </p>
+      ) : creditKind === 'dev' ? (
         <p className="in-empty-foot faint">
           <Bug size={12} /> Chế độ Phát triển: canvasapp giả lập trong máy, video giả, credit dev — không tốn tiền thật.
         </p>

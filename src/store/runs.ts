@@ -57,7 +57,7 @@ import type { Asset, ModelId, Scene, Size, Take, XY } from '../core/types'
 import { chargedDemo, DEMO_CREDITS_DEFAULT, formatCreditNumber } from '../lib/credits'
 import { useDownloadPrefs } from '../lib/downloads'
 import { putBlob } from '../lib/imageStore'
-import { activeProviderId, getProvider, providerBlockedReason, providerLimits, registerProvider } from '../providers'
+import { activeProviderId, getProvider, providerBlockedReason, providerLimits, providerPaused, registerProvider } from '../providers'
 import { decodeRemoteId } from '../providers/canvasapp/mapping'
 import type { SiteJobClaim, SiteTakeDraft } from '../providers/canvasapp/siteJobs'
 import { settingsRunBlock, settingsRunWarning } from '../providers/limits'
@@ -1053,7 +1053,7 @@ function adoptOrphans() {
   const failed: Take[] = []
   const lookUp: string[] = []
   const takes = useRuns.getState().takes.map((t): Take => {
-    if (t.status !== 'processing' || ownedHere.has(t.id) || submitting.has(t.id) || fetching.has(t.id)) return t
+    if (t.status !== 'processing' || providerPaused(providerOf(t)) || ownedHere.has(t.id) || submitting.has(t.id) || fetching.has(t.id)) return t
     if (providerOf(t) === 'mock') {
       changed = true
       return { ...t, status: 'queued', progress: 0, startedAt: null, remoteId: null }
@@ -1181,7 +1181,8 @@ function tick() {
     return
   }
   parkForeignTakes()
-  const { takes } = useRuns.getState()
+  // D226: takes of a provider paused here (canvasapp inside SANO) stay exactly as saved — SanoVids itself runs them.
+  const takes = useRuns.getState().takes.filter((t) => !providerPaused(providerOf(t)))
   const active = takes.filter((t) => t.status === 'processing')
   const queued = takes.filter((t) => t.status === 'queued').sort((a, b) => a.createdAt - b.createdAt)
   if (!active.length && !queued.length) {
