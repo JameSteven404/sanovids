@@ -2,8 +2,8 @@
 // signed and checked exactly like SanoVids. npm run dist:sano-agent passes it as --config, so electron-builder reads
 // only this file. Spreads, not -c.x=y overrides: those would union the arrays (win.target, files, signExts) with the
 // originals. appId, productName and name are permanent once released (NSIS GUID, install entry, update feed and cache).
-// docs/SANO-DESKTOP.md "Phát hành Sano Agent".
-const { build } = require('../package.json')
+// docs/SANO-DESKTOP.md "Phát hành Sano Agent". One version for both apps (D235): package.json's.
+const { build, version } = require('../package.json')
 
 const { mac: _mac, dmg: _dmg, ...base } = build // Windows only
 const ART = 'sano-agent/brand/build'
@@ -21,7 +21,7 @@ module.exports = {
     ...base.extraMetadata,
     name: 'sano-agent',
     productName: NAME,
-    version: '0.1.0',
+    version,
     description: 'Sano Agent — app SANO trên máy tính, khu Dựng phim là SanoVids',
     homepage: 'https://github.com/JameSteven404/sano-agent-releases',
     // The SANO web app the window opens (electron/hardening-rules sanoShell): inside the integrity-checked app.asar.

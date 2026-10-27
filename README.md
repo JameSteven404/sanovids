@@ -1,10 +1,14 @@
-# 🎬 SanoVids
+# 🎬 Sano Agent (khu Canvas — SanoVids)
+
+Repo này build **Sano Agent**: app SANO trên máy tính Windows. Khu **Canvas** trong app chính là **SanoVids**.
+
+> 🔀 **SanoVids đã gộp vào Sano Agent (D235).** Từ 1.0.0 chỉ phát hành Sano Agent. SanoVids 1.0.0 là bản cuối của SanoVids: nó báo người dùng tải Sano Agent. Dự án giữ nguyên vì hai app dùng chung `%APPDATA%\SanoVids`. Build và phát hành: [docs/SANO-DESKTOP.md](docs/SANO-DESKTOP.md).
 
 **SanoVids** là ứng dụng dạng *canvas node* để làm phim AI theo từng cảnh: quản lý nhân vật, nối ảnh tham chiếu vào cảnh, viết prompt với `@image_1`, `@image_2`… ngay trên thẻ cảnh, chạy tạo video hàng loạt, rồi tạo cảnh tiếp theo từ video vừa làm.
 
 👤 Tác giả: **Nguyễn Giang Minh (Jame Steven)** · Đồng hành: Sano Group
 
-📥 **[Tải bản mới nhất (.exe)](https://github.com/JameSteven404/sanovids-releases/releases/latest)** · 📜 **[Lịch sử phiên bản](CHANGELOG.md)** · 🔄 Bản cài **tự cập nhật** từ 0.5.0 · 🔐 **Ký số** bởi tác giả
+📥 **[Tải Sano Agent](https://github.com/JameSteven404/sano-agent-releases/releases/latest)** · 📜 Lịch sử phiên bản: **[Sano Agent](sano-agent/CHANGELOG.md)**, **[SanoVids](CHANGELOG.md)** · 🔄 Bản cài **tự cập nhật** · 🔐 **Ký số** bởi tác giả
 
 Ứng dụng được thiết kế lại từ trải nghiệm thực tế với các công cụ canvas tạo video (Seedance 2.5, MiniMax-H3), để **nối node nhanh hơn, ít rối dây hơn và không lệch số tham chiếu**. SanoVids là **ứng dụng desktop cho Windows** (file `.exe`).
 

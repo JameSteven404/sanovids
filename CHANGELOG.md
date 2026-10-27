@@ -6,9 +6,16 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 
 ---
 
-## [Chưa phát hành]
+## [1.0.0] — 2026-10-27 — Bản cuối: SanoVids gộp vào Sano Agent
 
-🐞 **Cửa sổ hẹp (Dựng phim trong SANO, cửa sổ nhỏ)**
+⚠️ **SanoVids gộp vào Sano Agent**
+- Đây là bản SanoVids cuối cùng. Từ nay chỉ phát hành **Sano Agent**: app SANO trên máy tính, có khu **Canvas** chính là SanoVids.
+- Mở app, bạn thấy thông báo **SanoVids đã gộp vào Sano Agent**, kèm nút tải Sano Agent.
+- Dự án, video và đăng nhập canvasapp vẫn còn: Sano Agent mở cùng thư mục dữ liệu `%APPDATA%\SanoVids`.
+- Trước khi mở Sano Agent lần đầu: đóng SanoVids, chép thư mục `%APPDATA%\SanoVids` ra chỗ khác để sao lưu. Không mở cùng lúc hai app.
+- Cài Sano Agent vào thư mục mặc định của nó, không chọn thư mục cài của SanoVids.
+
+🐞 **Cửa sổ hẹp (Canvas trong Sano Agent, cửa sổ nhỏ)**
 - Dự án có cột cảnh dài mở ở đầu bảng, vừa bề ngang canvas (tối đa 80%), thay vì thu cả bảng xuống 19% không đọc được. **Vừa màn hình** (F) vẫn hiện toàn bộ.
 - Mở ứng dụng khi cửa sổ đang thu nhỏ rồi khôi phục: canvas vừa lại theo kích thước thật, miễn là chưa kéo hay thu phóng.
 - Canvas hẹp (dưới 600 px) tạm ẩn bản đồ thu nhỏ để không che thẻ cảnh; **Shift+M** hoặc **Hiển thị** bật lại bản nhỏ.
@@ -17,6 +24,8 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 ✨ **Gọn hơn khi mở trong SANO, có nút Trợ lý**
 - Ẩn logo, nút Nhập prompt và Phím tắt (vẫn có trong menu **+** và phím **?**), ô credit thứ hai ở thanh Hàng đợi; khung **Chưa chọn gì** thu mẹo thành nút **Cách nối và phím tắt**, không phải cuộn. Mở SanoVids riêng vẫn như cũ.
 - Nút **Trợ lý** ở góc phải trên cùng mở trợ lý dự án của SANO.
+
+---
 
 ## [0.6.0] — 2026-10-27 — Sửa cảnh ngay trên canvas, canvas mượt hơn, giữ đúng ảnh tham chiếu
 
@@ -359,6 +368,8 @@ Bản `.exe` đầu tiên. Gồm toàn bộ quá trình làm từ bản demo đ�
 - 🐞 Rà soát lỗi toàn app, kiểm chứng từng lỗi.
 - 🛠️ Nền tảng cổng canvasapp (tắt mặc định).
 
+[1.0.0]: https://github.com/JameSteven404/sanovids-releases/releases/tag/v1.0.0
+[0.6.0]: https://github.com/JameSteven404/sanovids-releases/releases/tag/v0.6.0
 [0.5.0]: https://github.com/JameSteven404/sanovids-releases/releases/tag/v0.5.0
 [0.4.2]: https://github.com/JameSteven404/sanovids/releases/tag/v0.4.2
 [0.4.1]: https://github.com/JameSteven404/sanovids/releases/tag/v0.4.1
