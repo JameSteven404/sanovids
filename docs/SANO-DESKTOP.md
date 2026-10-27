@@ -100,7 +100,7 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
   thư mục đó.
 - **Sao lưu** `%APPDATA%\SanoVids` (đóng cả hai app) trước lần mở Sano Agent đầu tiên. **Không mở cùng lúc** hai app.
 - **Cùng commit, cùng Electron:** bản Sano Agent build từ commit của bản SanoVids công khai mới nhất, hoặc từ commit của
-  tag SanoVids cùng số phiên bản đã push nhưng chưa đăng (Sano Agent đăng trước, SanoVids ngay sau, mục 6);
+  tag SanoVids cùng số phiên bản đã push nhưng chưa đăng (Sano Agent đăng trước, SanoVids sau, mục 6 bước 10);
   `release:check:sano-agent` báo ✗ khi không tag nào như vậy trỏ vào HEAD, hoặc Electron trong `package-lock.json` khác
   Electron của bản SanoVids công khai mới nhất. Đổi Electron hoặc định dạng dữ liệu thì phát hành **cả hai**, theo cả hai chiều: SanoVids lên Electron
   mới thì cũng phát hành Sano Agent từ commit đó ([UPDATES.md](UPDATES.md) mục 3, bước 8).
@@ -127,7 +127,8 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
     lucide-react 0.577…). Bộ cài Sano Agent chép file này thành `THIRD-PARTY-NOTICES.txt`.
   - Cần git, npm và mạng. Chạy riêng: `npm run build:sano`.
 - Mã SANO đã biên dịch nằm trong bộ cài: ai tải bộ cài cũng giải nén đọc được (không có source map, không có khoá; có
-  giao diện và dữ liệu mẫu nội bộ). Mỗi lần sửa SANO là một bản Sano Agent ký số mới.
+  giao diện và dữ liệu mẫu nội bộ; trước khi đăng công khai, dữ liệu mẫu phải là dữ liệu trung tính, D242). Mỗi lần sửa
+  SANO là một bản Sano Agent ký số mới.
 - **Từ mã nguồn hoặc máy chủ team:** `SANO_URL` vẫn nhận `https://…` và `http://localhost`. Không mở được SANO ở địa chỉ
   đó (máy chủ tắt, sai cổng): cửa sổ báo "Không mở được SANO tại …" với **Thử lại / Mở Canvas / Thoát** (Enter là Thử lại,
   Esc là Thoát). **Mở Canvas** (D237) mở SanoVids chạy riêng ngay trong cửa sổ đó. Khi đó cửa sổ chỉ ở trong
@@ -148,9 +149,15 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
 
 Chủ dự án làm theo đúng thứ tự (từ checkout `main` sạch, trên máy có khoá ký):
 
-1. **Duyệt định danh vĩnh viễn:** appId `com.sanoagent.app`, tên app và tên exe `Sano Agent`, name `sano-agent`, repo
-   `JameSteven404/sano-agent-releases`, địa chỉ `app://sano/`. Đổi sau bản đầu = GUID mới, mục cài mới, gãy
-   kênh cập nhật. Đổi địa chỉ SANO sau bản đầu = mất dữ liệu SANO của người dùng (bộ nhớ trang gắn với địa chỉ).
+1. ~~Duyệt định danh vĩnh viễn~~ **Đã duyệt 2026-10-27 (D243):** appId `com.sanoagent.app`, tên app và tên exe
+   `Sano Agent`, name `sano-agent`, repo `JameSteven404/sano-agent-releases`, địa chỉ `app://sano/`. Không đổi nữa: đổi
+   sau bản đầu = GUID mới, mục cài mới, gãy kênh cập nhật; đổi địa chỉ SANO = mất dữ liệu SANO của người dùng (bộ nhớ
+   trang gắn với địa chỉ). **Điều kiện:**
+   - Trước bước 3 (merge): bộ cài dựng ra có dữ liệu mẫu trung tính thay cho dữ liệu mẫu nội bộ (D242). Nếu làm bằng
+     cách sửa thẳng SANO thì commit SANO ghim trong `sano-agent/sano.json` có dữ liệu đó và nằm trên SANO main.
+   - Trước bước 9 (đăng): SANO đã xác nhận vector gốc và quyền dùng dấu S/phát (D244); có bản sao lưu ngoại tuyến của `.pfx` ngoài máy
+     chính (D245). Nếu D244 không xác nhận được và Minh chọn icon tạm (cần D mới thay D232) thì đó là một commit mới: quay lại bước 3; nếu đã
+     qua bước 6 thì tag đã push trỏ sai commit: dời tag hoặc tăng số phiên bản.
 2. ~~Ghim khoá mở khoá chế độ Phát triển~~ **Đã xong:** `sanovids.devUnlockKeys` đã ghim trên `main` từ 0.6.0
    (`release:check` của cả hai app vẫn chặn khi thiếu).
 3. **Merge** nhánh này vào `main` (trước đó sửa ngày ở mục `## [1.0.0] — yyyy-mm-dd — …` của `CHANGELOG.md` và
@@ -176,7 +183,10 @@ Chủ dự án làm theo đúng thứ tự (từ checkout `main` sạch, trên m
 9. **Đăng Sano Agent:** `npm run release:publish:sano-agent` (chỉ repo công khai; repo nguồn chỉ có tag `sano-agent-v…`,
    không có release). Repo công khai dùng tag `v1.0.0`, như electron-updater cần. Mở
    `https://github.com/JameSteven404/sano-agent-releases/releases/latest`: phải thấy bộ cài 1.0.0.
-10. **Đăng SanoVids 1.0.0 ngay sau đó:** `npm run release:publish` ([UPDATES.md](UPDATES.md) mục 3, bước 6–7). Đẩy tay
+10. **Đăng SanoVids 1.0.0 khi Minh và 1–2 người trong team đã dùng Sano Agent ổn định** (ước lượng 1–2 ngày sau bước
+    9, D247; bản này đẩy người dùng SanoVids sang Sano Agent). Nếu trong khoảng chờ đã phát hành bản vá Sano Agent, xem
+    mục 8 bước 4 trước: bản SanoVids cuối có thể là 1.0.1. Nếu `main` đã có commit mới từ bước 6: `git checkout v1.0.0`
+    (cảnh báo "không phải main" là bình thường) và dùng bộ cài SanoVids đã build ở bước 4 trong `release\`. Rồi `npm run release:publish` ([UPDATES.md](UPDATES.md) mục 3, bước 6–7). Đẩy tay
     `scripts/releases-repo/README.md` mới (báo đã gộp, có liên kết tải Sano Agent) lên `main` của `sanovids-releases`.
 
 ## 7. Kiểm thử bản cài 1.0
@@ -193,7 +203,9 @@ Minh tự làm trên máy của mình. Agent không chạy bộ cài hay bản �
 7. **Icon:** thanh tác vụ và khay hệ thống hiện đúng icon đó khi app chạy.
 8. **Phiên bản:** Cài đặt → Giới thiệu hiện **1.0.0**, chữ ký số hợp lệ, đúng dấu vân tay ở bước 2.
 9. **SANO mở được, không cần Docker:** mở app (không bật Docker, không chạy máy chủ nào). SANO hiện ngay ở cửa sổ riêng,
-   không có hộp thoại lỗi. Tab **Máy chủ** ghi "Chưa kết nối được API": đúng, bản 1.0 không có API.
+   không có hộp thoại lỗi. Tab **Máy chủ** ghi "Chưa kết nối được API": đúng, bản 1.0 không có API. Dữ liệu mẫu là dữ
+   liệu trung tính, không có WUFOTV, SANO Lab hay liên kết nội bộ (D242). Chỉ kiểm được trên hồ sơ chưa từng mở `app://sano`: lần sửa
+   đầu tiên trong SANO lưu toàn bộ dữ liệu mẫu vào máy, các bản sau đọc bản đã lưu.
 10. **Canvas và Trợ lý:** vào Canvas: SanoVids hiện toàn màn hình, gọn; nút **Trợ lý** ở góc phải trên mở trợ lý dự án.
 11. **Dữ liệu SANO còn sau khi mở lại:** trong SANO sửa một mục của bảng sản xuất và đổi giao diện sáng/tối. Thoát app,
     mở lại: thay đổi vẫn còn. Trên một máy không cài Docker, mở app: SANO và Canvas vẫn chạy như bước 9–10.
@@ -219,6 +231,10 @@ Khi bản mới hỏng. Không bao giờ xoá release (máy đã cài cần nó 
 4. Lưu ý công cụ: `release:check:sano-agent` hiện đòi bản SanoVids công khai mới nhất (hoặc tag SanoVids cùng phiên bản)
    build từ cùng commit, và cùng Electron. SanoVids đã ngừng sau 1.0.0, nên trước khi phát hành 1.0.1 phải sửa luật này (mục 5 "Cùng commit, cùng
    Electron").
+   **Trong khoảng chờ của D247** (Sano Agent 1.0.0 đã đăng, SanoVids 1.0.0 chưa đăng): bản công khai mới nhất của
+   SanoVids vẫn là 0.6.x, nên bản vá Sano Agent 1.0.1 chỉ qua `release:check:sano-agent` khi tag SanoVids `v1.0.1` nằm
+   trên HEAD (cả GitHub). Khi đó bản SanoVids cuối nên là 1.0.1 từ commit vá (thêm mục `[1.0.1]` vào `CHANGELOG.md`),
+   không phải 1.0.0 cũ. Minh chọn lúc đó.
 
 **Web SANO (D240):** nằm trong bộ cài, nên rút lui đúng như app ở trên: bản vá 1.0.1 ghim commit SANO tốt cuối cùng
 trong `sano-agent/sano.json`. Người dùng không có Docker hay máy chủ SANO nào để quay về. Giữ nguyên địa chỉ `app://sano/`
