@@ -61,6 +61,12 @@ export interface SettingsLimits {
    * pictures the job sends (images + frames) when the caller knows them, for a gateway that caps them (SANO).
    */
   issues(s: VideoSettings, refs?: number): SettingsIssue[]
+  /**
+   * The gateway's own price of `s` in credits from the same read (canvasapp: the profile's options.pricing, what its
+   * Run button shows), or null when the read holds none for `s` — SanoVids' table (core/models costOf) applies then.
+   * Missing = no prices. Never throws.
+   */
+  price?(s: VideoSettings): number | null
 }
 
 export const NO_LIMITS: SettingsLimits = Object.freeze({ source: 'none' as const, firm: false, issues: () => [] })
@@ -169,6 +175,10 @@ export interface JobResult {
   video: Blob | null
   /** Poster frame. When missing, the engine extracts one from the video. */
   poster?: Blob | null
+  /** Release a provider's memory slot after the engine persists/discards this result, including errors/cancel.
+   * Optional and idempotent. Call in finally around the whole poster/blob persistence phase, not on HTTP completion.
+   */
+  release?: () => void
 }
 
 /** How much of a finished video has been downloaded (total null = the provider did not say). */

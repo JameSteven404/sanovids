@@ -14,6 +14,7 @@ import { limitsSite } from '../../providers/limits'
 import { useCreditKind } from '../../store/credits'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
+import { useActiveProvider, useLimitsOf } from '../runs/shared'
 import { appliedPresetId, costTitle, creditTone, totalCost } from '../sidebar/shared'
 import { reportMediaChange } from '../../placeholderActions'
 import { RefThumb, useImagePreview } from './ImagePreview'
@@ -59,7 +60,7 @@ export function MultiSceneInspector({ sceneIds }: { sceneIds: string[] }) {
 
 const MultiHeader = memo(function MultiHeader({ scenes }: { scenes: Scene[] }) {
   const creditKind = useCreditKind()
-  const total = totalCost(scenes)
+  const total = totalCost(scenes, useLimitsOf(useActiveProvider()).limits)
   const seconds = scenes.reduce((t, s) => t + s.settings.duration, 0)
   const shown = scenes.slice(0, 18)
   return (
@@ -241,7 +242,7 @@ const MultiRetired = memo(function MultiRetired({ scenes }: { scenes: Scene[] })
 
 const MultiActions = memo(function MultiActions({ scenes, ids }: { scenes: Scene[]; ids: string[] }) {
   const creditKind = useCreditKind()
-  const total = totalCost(scenes)
+  const total = totalCost(scenes, useLimitsOf(useActiveProvider()).limits)
   const duplicateKey = useShortcutLabel('selection.duplicate')
   const onDuplicate = () => {
     const created = useProject.getState().duplicateScenes(ids)

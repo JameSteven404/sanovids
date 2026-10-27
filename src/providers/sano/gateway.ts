@@ -161,13 +161,24 @@ async function base64(blob: Blob): Promise<string> {
 
 const base64Size = (bytes: number) => 4 * Math.ceil(bytes / 3)
 
-async function bodyOf(res: Response): Promise<Record<string, unknown> | null> {
+async function bodyOf(res: Response, strict = false): Promise<Record<string, unknown> | null> {
   try {
     const b: unknown = await res.json()
     return b && typeof b === 'object' ? (b as Record<string, unknown>) : null
-  } catch {
+  } catch (e) {
+    if (strict) throw e // an unreadable body is not an empty server answer
     return null
   }
+}
+
+/** A host callback need not honor AbortSignal. Stop waiting, and ignore its late answer, at the request deadline. */
+function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason)
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason)
+    signal.addEventListener('abort', abort, { once: true })
+    work.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
+  })
 }
 
 /** The server's own words when it gave some, else "HTTP <status>". */
@@ -218,7 +229,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
   let reads = 0
   let taken = 0
   let watching = false
-  /** Videos being downloaded (each held whole in memory until its Blob is made). */
+  /** Whole videos being downloaded or still held by the engine while it persists their blobs/posters. */
   let downloading = 0
   /** The state + account the app was last told of (onLimitsChange: the run gates, Settings, the engine re-read them). */
   let told = ''
@@ -252,13 +263,22 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
     deps.onLimitsChange?.()
   }
 
-  async function readToken(): Promise<string | null> {
+  async function readToken(signal?: AbortSignal): Promise<string | null> {
     const n = ++reads
+    // The watcher and freshAccount also have a bound; a stalled host must not prevent all future token reads.
+    const timeout = new AbortController()
+    const timer = setTimeout(() => timeout.abort(loginDeferred()), REQUEST_MS)
+    ;(timer as { unref?: () => void }).unref?.()
+    const bounded = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal
     let token: string | null = null
     try {
-      token = (await deps.token()) ?? null
+      bounded.throwIfAborted()
+      token = (await abortable(deps.token(), bounded)) ?? null
     } catch {
+      if (bounded.aborted) throw bounded.reason // no answer, not proof of logout; never publish a late answer
       // the host failing = an ended read with no token: takes wait for the sign-in, never fail on the host's error
+    } finally {
+      clearTimeout(timer)
     }
     // an older read answering after a newer one (a slow host during a sign-in / switch): the newer answer stands
     if (n < taken) return host
@@ -277,10 +297,6 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
    * engine chose its take for — the token now names another one → deferred, nothing sent (404 or a second job there).
    */
   async function call(path: string, init: RequestInit = {}, beforeSend?: () => void, want?: string | null, ms = REQUEST_MS): Promise<Response> {
-    const token = await readToken()
-    if (tokenState() !== 'ok' || !token) throw loginDeferred()
-    if (want !== undefined && (hostAccount ?? null) !== want) throw new ProviderError('deferred', SANO_OTHER_ACCOUNT)
-    const headers: Record<string, string> = { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` }
     // a half-open connection never answers: cut, so one stalled job never holds the poll of every SANO job (or a
     // download slot) for good; a plain Error = a lost connection (no news / an uncertain submit / a retried download)
     const timeout = new AbortController()
@@ -291,15 +307,30 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
     const timer = setTimeout(() => timeout.abort(cut()), ms)
     ;(timer as { unref?: () => void }).unref?.()
     const signal = init.signal ? AbortSignal.any([init.signal, timeout.signal]) : timeout.signal
-    beforeSend?.() // same synchronous step as the request itself (mayHaveSent)
-    // no cookies: the token alone says whose job it is (an ambient SANO session of another account never rides along)
-    const res = await deps.fetch(SANO_API + path, { ...init, headers, credentials: 'omit', signal })
-    if (res.status === 401) {
-      refusedToken = token
-      tell()
-      throw loginDeferred()
+    try {
+      const token = await readToken(signal).catch((e: unknown) => {
+        // The deadline elapsed before any HTTP request: park the take, never turn an unavailable login into failure.
+        if (timeout.signal.aborted && !init.signal?.aborted) throw loginDeferred()
+        throw e
+      })
+      signal.throwIfAborted()
+      if (tokenState() !== 'ok' || !token || token !== host) throw loginDeferred()
+      // Check the exact bearer about to be sent, not a shared account overwritten by another callback meanwhile.
+      if (want !== undefined && (tokenAccount(token) ?? null) !== want) throw new ProviderError('deferred', SANO_OTHER_ACCOUNT)
+      const headers: Record<string, string> = { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` }
+      beforeSend?.() // same synchronous step as the request itself (mayHaveSent)
+      // no cookies: the token alone says whose job it is (an ambient SANO session of another account never rides along)
+      const res = await abortable(deps.fetch(SANO_API + path, { ...init, headers, credentials: 'omit', signal }), signal)
+      if (res.status === 401) {
+        refusedToken = token
+        tell()
+        throw loginDeferred()
+      }
+      return res // timer stays active while the response body is read
+    } catch (e) {
+      clearTimeout(timer)
+      throw e
     }
-    return res
   }
 
   /** The account a job operation starting now is for (taken before any await: what the engine just chose by). */
@@ -314,7 +345,8 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
       try {
         const res = await call('/capabilities')
         if (!res.ok) throw new ProviderError('server', `Không đọc được danh sách model của máy chủ SANO (${await serverText(res)}).`)
-        const body = await bodyOf(res)
+        const body = await bodyOf(res, true)
+        if (!Array.isArray(body?.models)) throw new ProviderError('server', 'Máy chủ SANO trả về danh sách model không đọc được.')
         const models = parseCapabilities(body)
         mode = modeOf(body)
         const at = now()
@@ -335,6 +367,26 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
   }
 
   const job = (id: string, b: Record<string, unknown> | null) => (modeOf(b) === 'simulator' ? { remoteId: id, simulated: true } : { remoteId: id })
+
+  /** Recovery needs the old key and account only; current upload data and model limits cannot disprove an old job. */
+  async function recover(req: JobRequest, want = wanted()) {
+    if (!deps.available()) throw new ProviderError('deferred', SANO_UNAVAILABLE)
+    const later = (why: string) => new ProviderError('deferred', `Chưa hỏi được máy chủ SANO về take này (${why}) — SanoVids hỏi lại sau.`)
+    try {
+      const res = await call(`/jobs?idempotencyKey=${encodeURIComponent(req.key)}`, {}, undefined, want)
+      if (res.status === 404) return null
+      if (res.status >= 500) throw later(await serverText(res))
+      if (!res.ok) throw new ProviderError('server', `Không hỏi được máy chủ SANO về take này (${await serverText(res)}).`)
+      const b = await bodyOf(res, true)
+      if (typeof b?.id !== 'string' || !b.id) throw new ProviderError('server', 'Máy chủ SANO trả về job không có mã.')
+      sent.add(req.key)
+      const state = STATES[String(b.status)]
+      if (state) states.set(b.id, state)
+      return job(b.id, b)
+    } catch (e) {
+      throw e instanceof ProviderError ? e : later((e as Error)?.message || 'mất kết nối')
+    }
+  }
 
   const freshCaps = () => (caps && now() - caps.at < CAPS_TTL_MS ? caps.models : null)
 
@@ -380,11 +432,16 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
       if (!deps.available()) throw new ProviderError('deferred', SANO_UNAVAILABLE)
       const want = wanted()
       stopIfCancelled()
+      if (opts.retryOfUnknown) {
+        const existing = await recover(req, want)
+        if (existing) return existing
+        stopIfCancelled()
+      }
       const refs = await refsOf(req)
       const models = freshCaps() ?? (await readCaps())
       const refused = sanoIssues(models, req, refs.length)[0]
       if (refused) throw new ProviderError('refused', refused.reason)
-      // opts.retryOfUnknown needs nothing more: the same idempotency key never makes a second job.
+      // Only a confirmed recovery 404 reaches this point on an unknown retry; preserve the same idempotency key.
       const body = JSON.stringify({
         idempotencyKey: req.key,
         model: req.model,
@@ -435,24 +492,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
       throw new ProviderError('refused', `Máy chủ SANO từ chối tạo video: ${await serverText(res)}.`)
     },
 
-    async recover(req) {
-      // outside SANO a 404 of this origin is no answer: no news, the take waits to be opened inside SANO
-      if (!deps.available()) throw new ProviderError('deferred', SANO_UNAVAILABLE)
-      // a lost connection / a 5xx is no answer: asked again later (store/runs), only a 404 says "no such job"
-      const later = (why: string) => new ProviderError('deferred', `Chưa hỏi được máy chủ SANO về take này (${why}) — SanoVids hỏi lại sau.`)
-      const res = await call(`/jobs?idempotencyKey=${encodeURIComponent(req.key)}`, {}, undefined, wanted()).catch((e: unknown) => {
-        throw e instanceof ProviderError ? e : later((e as Error)?.message || 'mất kết nối')
-      })
-      if (res.status === 404) return null
-      if (res.status >= 500) throw later(await serverText(res))
-      if (!res.ok) throw new ProviderError('server', `Không hỏi được máy chủ SANO về take này (${await serverText(res)}).`)
-      const b = await bodyOf(res)
-      if (typeof b?.id !== 'string' || !b.id) throw new ProviderError('server', 'Máy chủ SANO trả về job không có mã.')
-      sent.add(req.key)
-      const state = STATES[String(b.status)]
-      if (state) states.set(b.id, state)
-      return job(b.id, b)
-    },
+    recover,
 
     mayHaveSent: (key) => sent.has(key),
 
@@ -463,7 +503,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
     account: () => hostAccount ?? null,
 
     async freshAccount() {
-      const token = deps.available() ? await readToken() : null
+      const token = deps.available() ? await readToken().catch(() => null) : null
       return token ? (tokenAccount(token) ?? null) : null
     },
 
@@ -512,6 +552,13 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
       // the engine starts one per finished job of a poll (up to 10): whole videos in memory at once could crash the tab
       if (downloading >= MAX_DOWNLOADS) throw new ProviderError('deferred', 'Đang tải video khác từ máy chủ SANO — SanoVids tải video này sau.')
       downloading++
+      let handedOff = false
+      let released = false
+      const release = () => {
+        if (released) return
+        released = true
+        downloading--
+      }
       try {
         const res = await call(`${jobPath(remoteId)}/result`, opts.signal ? { signal: opts.signal } : {}, undefined, wanted(), DOWNLOAD_MS)
         if (!res.ok) throw new ProviderError('download', `Không tải được video từ máy chủ SANO (${await serverText(res)}).`)
@@ -541,15 +588,19 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
         // a 200 with no bytes (Content-Length: 0, an empty stream) is a failed download, retried — never an empty video
         if (!received) throw new ProviderError('download', 'Máy chủ SANO trả về video rỗng.')
         opts.onProgress?.({ received, total })
-        return { video: new Blob(chunks as BlobPart[], { type: res.headers.get('Content-Type') || 'video/mp4' }) }
+        const video = new Blob(chunks as BlobPart[], { type: res.headers.get('Content-Type') || 'video/mp4' })
+        handedOff = true
+        return { video, release }
       } finally {
-        downloading--
+        if (!handedOff) release()
       }
     },
 
     async cancel(remoteId) {
-      // SANO stops a job only while it is queued; not known (a reload, reset()) = not asked
-      if (states.get(remoteId) !== 'queued') return
+      if (!deps.available()) return
+      // After reload the cache knows nothing. The server still enforces queued-only cancellation atomically.
+      const known = states.get(remoteId)
+      if (known && known !== 'queued') return
       try {
         const res = await call(`${jobPath(remoteId)}/cancel`, { method: 'POST' }, undefined, wanted())
         const b = res.ok ? await bodyOf(res) : null
@@ -569,6 +620,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
       host = refusedToken = null
       hostAccount = undefined
       read = false
+      taken = ++reads // a token callback from the previous project/session cannot publish after reset
       told = ''
       deps.onLimitsChange?.()
     },

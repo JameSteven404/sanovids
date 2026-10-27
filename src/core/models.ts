@@ -31,7 +31,7 @@ export const MODELS: Record<ModelId, ModelSpec> = {
     maxRefImages: 30,
     promptLimit: () => 20000,
     pricing: {
-      '480p': { 5: 4, 10: 5, 15: 10, 30: 15 },
+      '480p': { 5: 5, 10: 8, 15: 12, 30: 25 }, // canvasapp 2026-10-27: Seedance 2.5 chỉ còn 480p
       '720p': { 5: 5, 10: 10, 15: 15, 30: 20 },
       '1080p': { 5: 10, 10: 15, 15: 20, 30: 25 },
     },
