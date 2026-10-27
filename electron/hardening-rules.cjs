@@ -343,6 +343,33 @@ function sanoShell(o) {
 }
 
 /**
+ * Where the main window may go (main.cjs will-navigate, will-redirect). Plain SanoVids: app://bdp/ only. SANO desktop:
+ * SANO's address (`sanoUrl`) only, until "Mở Canvas" in its failure dialog opened SanoVids on its own there (D237,
+ * `canvas`): then app://bdp/ only, never SANO's page again (restarting the app goes back to SANO).
+ */
+function mainWindowAllows(url, o) {
+  const { sanoUrl, canvas } = o && typeof o === 'object' ? o : {}
+  const home = typeof sanoUrl === 'string' && sanoUrl !== '' && canvas !== true ? sanoUrl : 'app://bdp/'
+  return typeof url === 'string' && url.startsWith(home)
+}
+
+/** SANO desktop: the failure dialog's last sentence, the way back from Canvas in 1.0 (D237). */
+const SANO_FAILED_RESTART = 'Từ Canvas, mở lại app để quay về SANO.'
+
+/**
+ * SANO desktop: options of the dialog shown when SANO does not open (main.cjs sanoFailed → dialog.showMessageBox).
+ * Enter → Thử lại; Esc or closing it → Thoát, never "Mở Canvas" (D237: SanoVids on its own, no SANO server needed).
+ */
+function sanoFailedDialog(message, detail) {
+  return { type: 'error', title: 'Sano Agent', message, detail: `${detail} ${SANO_FAILED_RESTART}`, buttons: ['Thử lại', 'Mở Canvas', 'Thoát'], defaultId: 0, cancelId: 2, noLink: true }
+}
+
+/** That dialog's answer (button index) → 'retry' | 'canvas' | 'quit'; anything else quits, as Thoát. */
+function sanoFailedAction(response) {
+  return response === 0 ? 'retry' : response === 1 ? 'canvas' : 'quit'
+}
+
+/**
  * The SanoVids page(s) of a window's WebContents: its live app://bdp/ frames — the main frame in plain SanoVids, the
  * Dựng phim frame inside SANO's page. Main → page pushes (updates:state, devAccess:state) go to these only, never to
  * SANO's own page. Never throws ([] when the window is going away).
@@ -678,6 +705,10 @@ module.exports = {
   inlineScriptHashes,
   contentSecurityPolicy,
   sanoShell,
+  mainWindowAllows,
+  SANO_FAILED_RESTART,
+  sanoFailedDialog,
+  sanoFailedAction,
   appFrames,
   GOOGLE_SIGN_IN,
   APP_SIGNATURE_STATUSES,

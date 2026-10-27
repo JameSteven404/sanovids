@@ -55,7 +55,8 @@ Máy chủ SANO không giữ phiên hay cookie canvasapp nào.
 - Google có thể từ chối đăng nhập trong cửa sổ app. Khi đó SANO ở chế độ demo; Dựng phim với canvasapp vẫn chạy vì không cần
   đăng nhập SANO. Tài khoản Google Workspace đăng nhập qua nhà cung cấp riêng (SSO) bị chặn ở bước chuyển hướng đó.
 - Địa chỉ SANO (`SANO_URL`, hoặc địa chỉ nướng sẵn của Sano Agent) phải là địa chỉ cuối: máy chủ chuyển hướng ngay lần mở
-  đầu thì cửa sổ báo "SANO tại … chuyển hướng sang …" với **Thử lại / Thoát** (từ mã nguồn: in cả lỗi ra console).
+  đầu thì cửa sổ báo "SANO tại … chuyển hướng sang …" với **Thử lại / Mở Canvas / Thoát** (từ mã nguồn: in cả lỗi ra
+  console).
 - Trong khung, SanoVids không có nút “Chọn thư mục tải về” (trình duyệt không cho khung khác origin mở hộp chọn thư mục).
   “Lưu video” và nút Thư mục trên canvas vẫn dùng hộp thoại của app.
 - Tải tệp từ trang SANO bị chặn (chỉ cho tải `blob:app://bdp/…`).
@@ -94,8 +95,9 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
   `claude/sano-desktop-20261023` (hoặc sau khi nhánh đó vào main: `docker compose up -d --build` trong `E:\SANO AGENT`).
   Thiếu khung đó thì Dựng phim là `/sanovids/` bản web: dữ liệu riêng, không có cổng canvasapp. Đổi địa chỉ (ví dụ khi có
   HTTPS): sửa `sanoAgent.url` trong `sano-agent/electron-builder.cjs` rồi phát hành bản mới.
-- Không mở được SANO (máy chủ tắt, sai cổng): cửa sổ báo "Không mở được SANO tại …" với **Thử lại / Thoát**. D237 thêm
-  nút thứ ba **Mở Canvas**: mở SanoVids chạy riêng như trước, không cần Docker.
+- Không mở được SANO (máy chủ tắt, sai cổng): cửa sổ báo "Không mở được SANO tại …" với **Thử lại / Mở Canvas / Thoát**
+  (Enter là Thử lại, Esc là Thoát). **Mở Canvas** (D237) mở SanoVids chạy riêng ngay trong cửa sổ đó, như trước, không cần
+  Docker. Khi đó cửa sổ chỉ ở trong `app://bdp`, không về SANO nữa: muốn quay về SANO thì mở lại app.
 - **Icon**: dấu S/phát SANO trên ô đỏ `#E60000`, phương án A của bộ nhận diện TH-35 do Codex làm, Minh chọn ngày
   2026-10-27 (D232). Nguồn `sano-agent/icon-source/*.svg` là 8 SVG của SANO-AGENT `design/sano-agent/integration/icon-source/`
   (cùng tên, cùng khung với `build/icon-source`; 16/20/24 px là icon micro riêng). Đổi SVG thì chạy

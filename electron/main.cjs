@@ -492,8 +492,10 @@ function createWindow() {
     })
   }
 
-  // External links open in the default browser; the window itself never leaves the app origin (SANO desktop: SANO's).
-  const home = SANO ? SANO.url : ORIGIN + '/'
+  // External links open in the default browser; the window itself never leaves the app origin (SANO desktop: SANO's,
+  // or app://bdp once "Mở Canvas" opened SanoVids on its own: hardening-rules mainWindowAllows).
+  let canvas = false
+  const stays = (url) => hardening.mainWindowAllows(url, { sanoUrl: SANO ? SANO.url : undefined, canvas })
   webContents.setWindowOpenHandler(({ url }) => {
     // SANO desktop: "Đăng nhập bằng Google" (Google Identity Services) needs its popup as a child window.
     if (SANO && url.startsWith('https://accounts.google.com/')) return { action: 'allow', overrideBrowserWindowOptions: { parent: win, autoHideMenuBar: true } }
@@ -502,22 +504,28 @@ function createWindow() {
   })
   if (SANO) webContents.on('did-create-window', (child) => guardGooglePopup(child))
   webContents.on('will-navigate', (event, url) => {
-    if (url.startsWith(home)) return
+    if (stays(url)) return
     event.preventDefault()
     if (isExternal(url)) void shell.openExternal(url)
   })
   // SANO desktop: SANO did not open. Say so in the window (a packaged app has no console), never a blank window or a
-  // silent exit: Thử lại loads SANO again, Thoát quits. The open window keeps the app running meanwhile.
+  // silent exit: Thử lại loads SANO again, Mở Canvas opens SanoVids on its own in this window (D237: its own top bar,
+  // no SANO server needed; the app's next start tries SANO again), Thoát quits. The open window keeps the app running.
   let sanoOpened = false
   if (SANO) webContents.on('did-navigate', (_event, url) => {
-    if (url.startsWith(home)) sanoOpened = true
+    if (url.startsWith(SANO.url)) sanoOpened = true
   })
   const sanoFailed = (message, detail) => {
     firstShow()
     void dialog
-      .showMessageBox(win, { type: 'error', title: 'Sano Agent', message, detail, buttons: ['Thử lại', 'Thoát'], defaultId: 0, cancelId: 1, noLink: true })
+      .showMessageBox(win, hardening.sanoFailedDialog(message, detail))
       .then(({ response }) => {
-        if (response !== 0) return app.quit()
+        const action = hardening.sanoFailedAction(response)
+        if (action === 'quit') return app.quit()
+        if (action === 'canvas') {
+          canvas = true // before the load: from now on the window may only stay on app://bdp
+          return void win.loadURL(`${ORIGIN}/index.html`)
+        }
         sanoOpened = false // a retry is a new first load: a redirect of it is explained too, whatever loaded before
         void win.loadURL(SANO.url)
       })
@@ -526,20 +534,21 @@ function createWindow() {
   // A redirect is the server's, not the user's click: never opened in the browser. Refused on the very first load, the
   // window would never show: say why.
   webContents.on('will-redirect', (event, url) => {
-    if (!event.isMainFrame || url.startsWith(home)) return
+    if (!event.isMainFrame || stays(url)) return
     event.preventDefault()
     // SANO desktop: until SANO's page has opened once (first load, or a Thử lại), a refused redirect is explained.
-    if (SANO ? sanoOpened : mainWindowShown) return
+    // Never in Canvas: SANO is not what it tried to open.
+    if (canvas || (SANO ? sanoOpened : mainWindowShown)) return
     console.error(`[SanoVids] SANO_URL redirects to ${url}: set SANO_URL to the address it ends at`)
     if (SANO) sanoFailed(`SANO tại ${SANO.url} chuyển hướng sang ${url}`, 'Địa chỉ SANO nướng sẵn trong app (từ mã nguồn: SANO_URL) phải là địa chỉ cuối, không chuyển hướng. Sửa máy chủ SANO rồi bấm Thử lại.')
     else app.exit(2)
   })
 
   // SANO desktop: SANO's server is not up (or not on that port). -3 = a navigation replaced or refused (will-redirect),
-  // not a failure.
+  // not a failure. In Canvas the window shows SanoVids alone, as plain SanoVids does: no SANO dialog.
   if (SANO) {
     webContents.on('did-fail-load', (_event, errorCode, _description, _url, isMainFrame) => {
-      if (!isMainFrame || errorCode === -3) return
+      if (canvas || !isMainFrame || errorCode === -3) return
       sanoFailed(`Không mở được SANO tại ${SANO.url}`, 'Kiểm tra máy chủ SANO đã chạy chưa, rồi bấm Thử lại.')
     })
   }
