@@ -1,8 +1,8 @@
 # SANO desktop — SanoVids làm khu “Dựng phim” trong app SANO
 
 > **Trạng thái:** chạy từ mã nguồn (quyết định D218 của SANO: canvasapp.io.vn là nhà cung cấp video chính, Minh chọn
-> làm bản desktop SANO). Bản cài **Sano Agent** (D220/D223, mục 5–6): cấu hình, icon tạm và công cụ phát hành đã có,
-> chưa phát hành bản nào.
+> làm bản desktop SANO). Bản cài **Sano Agent** (D220/D223, mục 5–6): cấu hình, icon theo nhận diện đã chọn (D232) và
+> công cụ phát hành đã có, chưa phát hành bản nào.
 
 ## 1. Mục đích
 
@@ -89,8 +89,9 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
   Thiếu khung đó thì Dựng phim là `/sanovids/` bản web: dữ liệu riêng, không có cổng canvasapp. Đổi địa chỉ (ví dụ khi có
   HTTPS): sửa `sanoAgent.url` trong `sano-agent/electron-builder.cjs` rồi phát hành bản mới.
 - Không mở được SANO (máy chủ tắt, sai cổng): cửa sổ báo "Không mở được SANO tại …" với **Thử lại / Thoát**.
-- **Icon tạm** (xám xanh `#475569`): nguồn `sano-agent/icon-source/*.svg` (8 file cùng tên, cùng khung với
-  `build/icon-source`). Bộ nhận diện thật do Codex làm; có SVG mới thì chạy
+- **Icon**: dấu S/phát SANO trên ô đỏ `#E60000`, phương án A của bộ nhận diện TH-35 do Codex làm, Minh chọn ngày
+  2026-10-27 (D232). Nguồn `sano-agent/icon-source/*.svg` là 8 SVG của SANO-AGENT `design/sano-agent/integration/icon-source/`
+  (cùng tên, cùng khung với `build/icon-source`; 16/20/24 px là icon micro riêng). Đổi SVG thì chạy
   `node scripts/make-icons.mjs --src sano-agent/icon-source --out <thư mục tạm>` rồi chép `build/icon.ico`, `icon.png`,
   `installerSidebar.bmp`, `uninstallerSidebar.bmp`, `installerHeader.bmp` vào `sano-agent/brand/build/`.
 - Giấy phép trong bộ cài tạm là `build/license_vi.txt` của SanoVids; Minh duyệt bản riêng.

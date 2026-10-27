@@ -1,8 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="150" height="57" viewBox="0 0 150 57">
-  <!-- NSIS header image, 150 x 57, drawn at the right of the white installer header (electron-builder sets
-       MUI_HEADERIMAGE_RIGHT). make-icons.mjs renders it to build/installerHeader.bmp; href="icon:40" becomes the
-       40 px app icon from its pixel-hinted cut. -->
-  <rect width="150" height="57" fill="#ffffff"/>
-  <text x="96" y="34" text-anchor="end" font-family="Segoe UI" font-weight="600" font-size="15" fill="#1d1d1f">Sano Agent</text>
-  <image x="102" y="8" width="40" height="40" href="icon:40"/>
+<svg width="150" height="57" viewBox="0 0 150 57" xmlns="http://www.w3.org/2000/svg"><title>Sano Agent — hình đầu trang bộ cài Windows</title>
+    <defs>
+        <clipPath id="clipPath1">
+            <path fill="#000000" stroke="none" d="M 94 4 L 146 4 L 146 53.688904 L 94 53.688904 Z"/>
+        </clipPath>
+    </defs>
+    <path fill="#ffffff" stroke="none" d="M 0 0 L 150 0 L 150 57 L 0 57 Z"/>
+    <g clip-path="url(#clipPath1)">
+        <g transform="matrix(0.33125934 0 0 0.33125934 94 4.000002)">
+            <g transform="matrix(0.5814 0 0 0.5814 25 25)">
+                <path fill="#e60000" stroke="none" d="M 29 113 L 29 26 C 29 7 48 -5 65 4 L 122 37 L 170 45 L 79 45 C 65 45 54 56 54 69 C 54 83 65 93 79 93 L 103 93 C 109 93 114 97 114 103 C 114 109 109 113 103 113 Z"/>
+                <path fill="#e60000" stroke="none" d="M 0 128 L 104 128 C 117 128 128 117 128 104 C 128 90 117 79 103 79 L 79 79 C 73 79 69 75 69 69 C 69 63 73 59 79 59 L 156 59 C 169 59 180 68 183 80 C 186 93 181 103 171 110 L 67 168 C 49 178 29 165 29 146 L 29 134 Z"/>
+            </g>
+        </g>
+    </g>
 </svg>

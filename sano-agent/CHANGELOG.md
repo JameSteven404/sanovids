@@ -15,6 +15,9 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 ✨ **Dùng chung dự án với SanoVids**
 - Cùng thư mục dữ liệu với SanoVids trên máy: cùng dự án, cùng đăng nhập canvasapp.
 
+✨ **Nhận diện Sano Agent**
+- Biểu tượng dấu S/phát của SANO trên ô đỏ, cho app, thanh tác vụ, khay và trình cài (bộ nhận diện do Codex thiết kế, Minh chọn).
+
 ✨ **Ký số và tự cập nhật như SanoVids**
 - Bộ cài được ký bằng cùng chứng chỉ của tác giả; bản Setup tự cập nhật từ trang tải về riêng của Sano Agent.
 

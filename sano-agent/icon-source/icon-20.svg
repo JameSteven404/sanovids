@@ -1,6 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
-  <title>Sano Agent (tạm)</title>
-  <defs><linearGradient id="sv-plate" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#475569"/><stop offset="1" stop-color="#475569"/></linearGradient><mask id="sv-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512"><rect width="512" height="512" fill="white"/><path d="M370 181H228C173 181 173 251 228 251H269C325 251 325 323 269 323H93" fill="none" stroke="black" stroke-width="44" stroke-linecap="round"/></mask></defs>
-  <rect width="20" height="20" rx="4.4" fill="url(#sv-plate)"/>
-  <g fill="#FFFFFF" transform="scale(0.0390625)"><path d="M119 107Q119 62 165 86L423 226Q469 252 423 281L165 427Q119 454 119 400Z" mask="url(#sv-cut)"/><circle cx="94" cy="323" r="25"/></g>
+<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20" role="img" aria-labelledby="title desc">
+<title id="title">Sano Agent — icon-20.svg</title><desc id="desc">TH-35 / TH-37 proposed asset handoff, user_approved=false. Same two canonical symbol paths and glyph-to-tile ratio as logos/app-icon.svg. Reframed for make-icons.mjs at c34bd9309a776a5dbcbfaf61f83955c1c9968e57. Source app-icon SHA-256 57b086653aa8b273c6b9e537ba09ac50cc250d438b1f2e76a273243961b9c979.</desc>
+<defs><linearGradient id="sv-plate"><stop stop-color="#E60000"/><stop offset="1" stop-color="#E60000"/></linearGradient></defs>
+<rect x="0" y="0" width="20" height="20" rx="4.7000000000" fill="url(#sv-plate)"/>
+<!-- glyph:start -->
+<g fill="#FFFFFF" transform="translate(3.3035714286 3.7402950310) scale(0.0727872672)"><path d="M29 113V26C29 7 48 -5 65 4L122 37 170 45H79C65 45 54 56 54 69C54 83 65 93 79 93H103C109 93 114 97 114 103C114 109 109 113 103 113Z"/><path d="M0 128H104C117 128 128 117 128 104C128 90 117 79 103 79H79C73 79 69 75 69 69C69 63 73 59 79 59H156C169 59 180 68 183 80C186 93 181 103 171 110L67 168C49 178 29 165 29 146V134Z"/></g>
+<!-- glyph:end -->
 </svg>
