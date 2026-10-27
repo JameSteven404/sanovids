@@ -33,9 +33,15 @@ export function Toasts() {
                 {t.action.label}
               </button>
             )}
-            <button type="button" className="toast-close" onClick={() => dismiss(t.id)} aria-label="Đóng thông báo" title="Đóng">
-              <X size={14} />
-            </button>
+            {t.closeLabel ? (
+              <button type="button" className="toast-close labelled" onClick={() => dismiss(t.id)}>
+                {t.closeLabel}
+              </button>
+            ) : (
+              <button type="button" className="toast-close" onClick={() => dismiss(t.id)} aria-label="Đóng thông báo" title="Đóng">
+                <X size={14} />
+              </button>
+            )}
           </div>
         )
       })}

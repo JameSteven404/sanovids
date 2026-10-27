@@ -9,7 +9,7 @@ const rules = createRequire(import.meta.url)('../../../electron/updater-rules.cj
 const start = mainSource.indexOf('  // D223: before Chromium opens the profile')
 const end = mainSource.indexOf('  // A second launch brings THE SanoVids window', start)
 
-function startup({ marker, readError, writeError, renameError }: { marker?: string; readError?: string; writeError?: string; renameError?: string } = {}) {
+function startup({ marker, readError, writeError, renameError, name = 'Sano Agent' }: { marker?: string; readError?: string; writeError?: string; renameError?: string; name?: string } = {}) {
   expect(start).toBeGreaterThan(0)
   expect(end).toBeGreaterThan(start)
   const state = { marker, writes: [] as string[], dialogs: [] as string[], exit: null as number | null, continued: false }
@@ -41,7 +41,7 @@ function startup({ marker, readError, writeError, renameError }: { marker?: stri
         },
       },
       process: { versions: { electron: '44.5.1' }, exit: (code: number) => { state.exit = code; throw fakeExit } },
-      app: { getName: () => 'Sano Agent' },
+      app: { getName: () => name },
       dialog: { showErrorBox: (_title: string, text: string) => { state.dialogs.push(text) } },
     }, { timeout: 1000 })
     state.continued = true
@@ -71,6 +71,17 @@ describe('shared profile startup: injected filesystem regression', () => {
     const state = startup({ marker: '45.0.0' })
     expect(state).toMatchObject({ marker: '45.0.0', writes: [], exit: 4, continued: false })
     expect(state.dialogs).toHaveLength(1)
+  })
+  it('D236: the refusal sends SanoVids users to Sano Agent too; Sano Agent keeps its own page', () => {
+    const agent = 'https://github.com/JameSteven404/sano-agent-releases/releases/latest'
+    for (const name of ['SanoVids', 'SanoVidsUpdTest']) {
+      const [text] = startup({ marker: '45.0.0', name }).dialogs
+      expect(text, name).toContain(`SanoVids đã gộp vào Sano Agent, dự án vẫn còn nguyên. Hãy cài bản Sano Agent mới nhất: ${agent}`)
+      expect(text, name).not.toContain('sanovids-releases')
+    }
+    const [own] = startup({ marker: '45.0.0', name: 'Sano Agent' }).dialogs
+    expect(own).toContain(`không làm hỏng dự án. Hãy cài bản Sano Agent mới nhất: ${agent}`)
+    expect(own).not.toContain('gộp')
   })
   it.each([{ writeError: 'EACCES' }, { writeError: 'ENOSPC' }, { renameError: 'EPERM' }])('refuses startup if recording the version fails, keeping the old record: %j', (failure) => {
     const state = startup({ marker: '43.9.9', ...failure })

@@ -210,9 +210,10 @@ if (!app.requestSingleInstanceLock()) {
     dialog.showErrorBox(app.getName(), `Số phiên bản trong ${seenFile} trống hoặc không hợp lệ. ${app.getName()} không mở và giữ nguyên dữ liệu vì chưa xác định được phiên bản đã mở thư mục này. Giữ nguyên file đó và liên hệ người quản lý bản cài để kiểm tra bản sao lưu; không xoá hoặc tự sửa số phiên bản.`)
     process.exit(4)
   }
+  // D236: SanoVids releases stopped, so SanoVids sends its users to Sano Agent (the same projects) too.
   if (gate === 'refuse') {
     const name = app.getName()
-    dialog.showErrorBox(name, `Dữ liệu ở ${profile.dir} đã được mở bằng một bản SanoVids hoặc Sano Agent mới hơn (Electron ${seen.trim()}). Bản ${name} này (Electron ${process.versions.electron}) cũ hơn nên không mở, để không làm hỏng dự án. Hãy cài bản ${name} mới nhất: ${updaterRules.releasesUrl(name)}`)
+    dialog.showErrorBox(name, `Dữ liệu ở ${profile.dir} đã được mở bằng một bản SanoVids hoặc Sano Agent mới hơn (Electron ${seen.trim()}). Bản ${name} này (Electron ${process.versions.electron}) cũ hơn nên không mở, để không làm hỏng dự án. ${name === 'Sano Agent' ? '' : 'SanoVids đã gộp vào Sano Agent, dự án vẫn còn nguyên. '}Hãy cài bản Sano Agent mới nhất: ${updaterRules.releasesUrl('Sano Agent')}`)
     process.exit(4)
   }
   if (gate === 'write') {

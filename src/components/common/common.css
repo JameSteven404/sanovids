@@ -231,6 +231,15 @@
   background: var(--hover);
   color: var(--text);
 }
+/* A worded close ("Để sau"): a quiet text button next to the action. */
+.toast .toast-close.labelled {
+  width: auto;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-weight: 600;
+  white-space: nowrap;
+}
 .toast .toast-action:focus-visible,
 .toast .toast-close:focus-visible {
   outline: none;
