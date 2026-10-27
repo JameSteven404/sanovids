@@ -7,7 +7,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { downloadTake, filesToSceneRefs, focusNodes, linkAssets, nextScene, requestRun, revealNodes } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { sceneMapOf } from '../../core/sceneIndex'
-import { costOf, foreignModelBadge, modeLabel, MODELS, usesRefs } from '../../core/models'
+import { foreignModelBadge, modeLabel, MODELS, usesRefs } from '../../core/models'
 import { foreignModelReason } from '../../core/runRules'
 import type { Asset, Scene } from '../../core/types'
 import { formatCredits, isSimulatedCredit } from '../../lib/credits'
@@ -23,7 +23,7 @@ import { toast, useUI } from '../../store/ui'
 import { typeOnNode } from '../canvas/SceneNodeEditor'
 import { AssetAvatar } from '../common/Media'
 import { appliedPresetId, costTitle, creditTone } from '../sidebar/shared'
-import { useSceneRunBlock } from '../runs/shared'
+import { useSceneRunBlock, useTakeCost } from '../runs/shared'
 import { TakeStrip } from '../runs/TakeStrip'
 import { FinalPromptPreview } from './FinalPromptPreview'
 import { RefThumb, useImagePreview } from './ImagePreview'
@@ -214,9 +214,9 @@ const SettingsSection = memo(function SettingsSection({ sceneId }: { sceneId: st
   const presetId = settings ? appliedPresetId(storedPresetId, settings, presets) : null
   const presetIds = useMemo(() => [presetId], [presetId])
   const creditKind = useCreditKind()
+  const cost = useTakeCost(settings)
   if (!settings) return null
   const preset = presets.find((p) => p.id === presetId)
-  const cost = costOf(settings)
   return (
     <Section
       id="settings"

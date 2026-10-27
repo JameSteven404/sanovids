@@ -403,7 +403,11 @@ describe('sano-gateway provider', () => {
     expect([a.status, b.status]).toEqual(['fulfilled', 'fulfilled'])
     expect(c).toMatchObject({ status: 'rejected', reason: { code: 'deferred' } }) // the engine asks again later
     expect(s.calls('GET', /\/result$/)).toHaveLength(2)
-    expect((await p.fetchResult(ids[2])).video?.size).toBe(s.video.length) // a slot is free again
+    if (a.status === 'fulfilled') a.value.release?.() // persistence finished, not just the HTTP read
+    const third = await p.fetchResult(ids[2])
+    expect(third.video?.size).toBe(s.video.length)
+    third.release?.()
+    if (b.status === 'fulfilled') b.value.release?.()
   })
 
   it("a token's account comes from its base64url payload (Google's: '-' / '_', a Vietnamese name in UTF-8)", () => {
@@ -467,7 +471,7 @@ describe('sano-gateway provider', () => {
     expect(s.fetch).not.toHaveBeenCalled()
   })
 
-  it('cancel asks SANO only while the job is queued, and never throws', async () => {
+  it('cancel asks SANO for queued or uncached jobs, skips known running jobs, and never throws', async () => {
     const s = fakeSano()
     const p = make(s)
     const queued = await p.submit(req())
@@ -478,11 +482,11 @@ describe('sano-gateway provider', () => {
     await p.poll([running.remoteId])
     await p.cancel(running.remoteId)
     expect(s.calls('POST', /\/cancel$/)).toHaveLength(1)
-    // state not known (reset / a reload before the first poll): not asked either
+    // state not known (reset / a reload before the first poll): let the server enforce queued-only cancellation
     const later = await p.submit(req({ key: 'take_3', takeId: 'take_3' }))
     p.reset()
     await p.cancel(later.remoteId)
-    expect(s.calls('POST', /\/cancel$/)).toHaveLength(1)
+    expect(s.calls('POST', /\/cancel$/)).toHaveLength(2)
     const broken = make({ ...s, fetch: vi.fn(async () => Promise.reject(new TypeError('offline'))) })
     await expect(broken.cancel('job_x')).resolves.toBeUndefined()
   })

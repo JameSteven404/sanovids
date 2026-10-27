@@ -83,6 +83,22 @@ afterEach(() => {
 })
 
 describe('SANO wording', () => {
+  it.each([
+    ['download failed', () => downloadFailedError('HTTP 500', 'sano-gateway')],
+    ['cancelled job', () => paidCancelledRunWarning('S01·T1', 'sano-gateway')],
+    ['unknown submit', () => maybeBilledRunWarning('S01·T1', 'sano-gateway', false)],
+    ['unverifiable submit', () => maybeBilledRunWarning('S01·T1', 'sano-gateway', true)],
+  ] as const)('%s: a new SANO run may be simulated, so its fee follows the mode at that run', (_name, text) => {
+    expect(text()).toContain('chi phí lượt chạy mới theo chế độ SANO xác nhận khi chạy')
+    expect(text()).not.toMatch(/đã bị trừ|đã tính phí|tính phí thêm|sẽ tính phí|có thể trừ thêm|canvasapp/)
+  })
+
+  it('a SANO reply still in flight warns about delivery, not an unverified charge', () => {
+    const text = requestInFlightText('sano-gateway')
+    expect(text).toContain('máy chủ SANO trả lời')
+    expect(text).not.toMatch(/trừ credit|tính phí|canvasapp/)
+  })
+
   it('new takes go to the SANO server', () => {
     expect(activeProviderId()).toBe('sano-gateway')
   })

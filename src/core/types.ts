@@ -225,6 +225,8 @@ export interface Take {
    * jobs are per account, so under another one the take waits (store/runs cannotRunHere), never failed or sent again.
    */
   account?: string
+  /** Enqueue-time identity is not verified yet: persisted so another tab cannot submit the cached account. */
+  accountBindingPending?: true
   /** Cost was taken from the local (demo) credit counter → refunded on failure/cancel. Missing = true. */
   charged?: boolean
   /**
