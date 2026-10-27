@@ -1,6 +1,6 @@
 // Regression fixture: actual persist/runs/gateway with fake IndexedDB, media and host tokens.
 import { afterAll, beforeAll, expect, it, vi } from 'vitest'
-const db = vi.hoisted(() => ({ values: new Map<string, any>(), writes: [] as string[], reads: [] as string[] }))
+const db = vi.hoisted(() => ({ values: new Map<string, any>(), writes: [] as string[], reads: [] as string[], abort: false }))
 vi.mock('idb-keyval', () => ({
   get: async (key: string) => { db.reads.push(key); return db.values.get(key) },
   set: async (key: string, value: unknown) => { db.values.set(key, structuredClone(value)) },
@@ -17,6 +17,7 @@ vi.mock('idb-keyval', () => ({
         queueMicrotask(() => {
           request.onsuccess()
           if (--pending === 0) queueMicrotask(() => {
+            if(db.abort){transaction.onabort();return}
             for (const [k, v] of writes) { db.values.set(k, v); db.writes.push(k) }
             transaction.oncomplete()
           })
@@ -136,4 +137,141 @@ it('cold initial account is refused without creating an ownerless take; retry af
  const t=useRuns.getState().takes[0];expect(t.account).toBe(accountKey('fixture-A'))
  useRuns.getState().cancel(t.id);await vi.advanceTimersByTimeAsync(600)
  expect(useRuns.getState().takes[0].status).toBe('cancelled')
+})
+
+it('a save containing an older pending snapshot retains the committed binding and cancellation', async()=>{
+ p?.reset();useRuns.getState().loadRuns({takes:[],credits:100,spent:0});await flush()
+ if(useProject.getState().project.id!==project.id)await switchProject(project.id)
+ let slow=false
+ p=createSanoGatewayProvider({available:()=>true,getBlob:async()=>null,token:()=>slow?new Promise(resolve=>setTimeout(()=>resolve(tokens.B),500)):Promise.resolve(tokens.A),fetch:async(url)=>{
+  if(url.endsWith('/capabilities'))return Response.json({mode:'simulator',models})
+  throw new Error(`Unexpected job request ${url}`)
+ }})
+ await p.refreshLimits({force:true});registerProvider(p);useProviderPrefs.setState({provider:'sano-gateway'})
+ slow=true;useRuns.getState().enqueue(['s1']);useRuns.getState().cancel(useRuns.getState().takes[0].id)
+ const captured=structuredClone({takes:useRuns.getState().takes,credits:100,spent:0})
+ await flush();await vi.advanceTimersByTimeAsync(600)
+ expect(db.values.get(`runs:${project.id}`).takes[0].account).toBe(accountKey('fixture-B'))
+ // A delayed writer captured this snapshot before the binding transaction committed.
+ useRuns.getState().loadRuns(captured);await flush()
+ const saved=db.values.get(`runs:${project.id}`).takes[0]
+ expect(saved).toMatchObject({status:'cancelled',account:accountKey('fixture-B'),remoteId:null})
+ expect(saved.accountBindingPending).toBeUndefined()
+})
+
+it('deleting one pending take does not discard the surviving takes committed binding', async()=>{
+ p?.reset();useRuns.getState().loadRuns({takes:[],credits:100,spent:0});await flush()
+ if(useProject.getState().project.id!==project.id)await switchProject(project.id)
+ useProject.setState(s=>({project:{...s.project,scenes:[...project.scenes,{...project.scenes[0],id:'s2',order:2}]}}))
+ let slow=false
+ p=createSanoGatewayProvider({available:()=>true,getBlob:async()=>null,token:()=>slow?new Promise(resolve=>setTimeout(()=>resolve(tokens.B),500)):Promise.resolve(tokens.A),fetch:async(url,init)=>{
+  if(url.endsWith('/capabilities'))return Response.json({mode:'simulator',models})
+  expect((init.headers as Record<string,string>).Authorization).toBe(`Bearer ${tokens.B}`)
+  return Response.json({id:'B_survivor',status:'running',mode:'simulator'},{status:202})
+ }})
+ await p.refreshLimits({force:true});registerProvider(p);useProviderPrefs.setState({provider:'sano-gateway'})
+ slow=true;expect(useRuns.getState().enqueue(['s1','s2']).queued).toBe(2)
+ const [removed,survivor]=useRuns.getState().takes.slice(-2)
+ useRuns.getState().removeTakes([removed.id])
+ await vi.advanceTimersByTimeAsync(600)
+ const remaining=useRuns.getState().takes.find(t=>t.id===survivor.id)!
+ expect(remaining.account).toBe(accountKey('fixture-B'))
+ expect(remaining.accountBindingPending).toBeUndefined()
+ useRuns.getState().cancel(survivor.id);await flush()
+ await switchProject(other.id);await switchProject(project.id)
+ expect(useRuns.getState().takes.some(t=>t.id===removed.id)).toBe(false)
+ expect(useRuns.getState().takes.find(t=>t.id===survivor.id)?.account).toBe(accountKey('fixture-B'))
+ useProject.setState(s=>({project:{...s.project,scenes:project.scenes}}))
+})
+
+it.each(['null','reject','storage-abort'] as const)('unverified identity stays parked after reopen (%s)', async(failure)=>{
+ p?.reset();useRuns.getState().loadRuns({takes:[],credits:100,spent:0});await flush()
+ if(useProject.getState().project.id!==project.id)await switchProject(project.id)
+ let slow=false;const calls:string[]=[]
+ p=createSanoGatewayProvider({available:()=>true,getBlob:async()=>null,token:()=>slow?new Promise((resolve,reject)=>setTimeout(()=>failure==='reject'?reject(new Error('fixture host failure')):resolve(failure==='null'?null:tokens.B),500)):Promise.resolve(tokens.A),fetch:async(url)=>{
+  if(url.endsWith('/capabilities'))return Response.json({mode:'simulator',models})
+  calls.push(url);throw new Error(`Unexpected job request ${url}`)
+ }})
+ await p.refreshLimits({force:true});registerProvider(p);useProviderPrefs.setState({provider:'sano-gateway'})
+ slow=true;expect(useRuns.getState().enqueue(['s1']).queued).toBe(1)
+ const id=useRuns.getState().takes[0].id
+ await switchProject(other.id)
+ try {
+  db.abort=failure==='storage-abort';await vi.advanceTimersByTimeAsync(600)
+ } finally {db.abort=false}
+ slow=false;await p.refreshLimits({force:true})
+ await switchProject(project.id);await vi.advanceTimersByTimeAsync(1_000)
+ expect(useRuns.getState().takes[0]).toMatchObject({id,status:'queued',account:accountKey('fixture-A'),accountBindingPending:true,remoteId:null})
+ expect(calls).toEqual([])
+ useRuns.getState().cancel(id);await flush()
+})
+
+it('a late identity never replaces the owner of a job already submitted by another build', async()=>{
+ p?.reset();useRuns.getState().loadRuns({takes:[],credits:100,spent:0});await flush()
+ if(useProject.getState().project.id!==project.id)await switchProject(project.id)
+ let slow=false
+ p=createSanoGatewayProvider({available:()=>true,getBlob:async()=>null,token:()=>slow?new Promise(resolve=>setTimeout(()=>resolve(tokens.B),500)):Promise.resolve(tokens.A),fetch:async(url)=>{
+  if(url.endsWith('/capabilities'))return Response.json({mode:'simulator',models})
+  throw new Error(`Unexpected job request ${url}`)
+ }})
+ await p.refreshLimits({force:true});registerProvider(p);useProviderPrefs.setState({provider:'sano-gateway'})
+ slow=true;useRuns.getState().enqueue(['s1']);await switchProject(other.id)
+ const key=`runs:${project.id}`,saved=structuredClone(db.values.get(key)),take=saved.takes[0]
+ Object.assign(take,{status:'processing',remoteId:'A_existing',startedAt:1,accountBindingPending:undefined})
+ db.values.set(key,saved)
+ const rev=db.values.get(`rev:${project.id}`);db.values.set(`rev:${project.id}`,{rev:(rev?.rev??0)+1,tab:'fixture-other-tab',at:0})
+ await vi.advanceTimersByTimeAsync(600)
+ expect(db.values.get(key).takes[0]).toMatchObject({account:accountKey('fixture-A'),remoteId:'A_existing',status:'processing'})
+})
+
+it.each([false,true])('a second tab cannot submit the cached owner while identity is pending (cancel=%s)', async(cancel)=>{
+ p?.reset();useRuns.getState().loadRuns({takes:[],credits:100,spent:0});await flush()
+ if(useProject.getState().project.id!==project.id)await switchProject(project.id)
+ useRuns.getState().loadRuns({takes:[],credits:100,spent:0});await flush()
+ let slow=false
+ p=createSanoGatewayProvider({available:()=>true,getBlob:async()=>null,token:()=>slow?new Promise(resolve=>setTimeout(()=>resolve(tokens.B),5_000)):Promise.resolve(tokens.A),fetch:async(url)=>{
+  if(url.endsWith('/capabilities'))return Response.json({mode:'simulator',models})
+  throw new Error(`Origin tab must not send a job: ${url}`)
+ }})
+ await p.refreshLimits({force:true});registerProvider(p);useProviderPrefs.setState({provider:'sano-gateway'})
+ slow=true;expect(useRuns.getState().enqueue(['s1']).queued).toBe(1)
+ const id=useRuns.getState().takes[0].id
+ await switchProject(other.id)
+
+ // Fresh modules emulate another tab: the DB is shared, the binding Set / stores / provider are not.
+ vi.resetModules()
+ const tabRuns=await import('../runs'),tabPersist=await import('../persist'),tabProviders=await import('../../providers')
+ const {createSanoGatewayProvider:createGateway}=await import('../../providers/sano/gateway')
+ const calls:string[]=[]
+ let secondToken=tokens.A
+ const second=createGateway({available:()=>true,getBlob:async()=>null,token:async()=>secondToken,fetch:async(url,init)=>{
+  if(url.endsWith('/capabilities'))return Response.json({mode:'simulator',models})
+  calls.push(`${init.method??'GET'} ${url}`)
+  if(init.method==='POST')return Response.json({id:`A_${id}`,status:'running',mode:'simulator'},{status:202})
+  return Response.json({status:'running',progress:20,mode:'simulator'})
+ }})
+ try {
+  await second.refreshLimits({force:true});tabProviders.registerProvider(second)
+  tabProviders.useProviderPrefs.setState({provider:'sano-gateway'});tabRuns.setEngineLockManager(null)
+  localStorage.setItem('bdp:active',project.id);await tabPersist.bootstrap()
+  expect(tabRuns.useRuns.getState().takes[0]).toMatchObject({id,status:'queued',account:accountKey('fixture-A')})
+  await vi.advanceTimersByTimeAsync(1_000)
+  expect(calls).toEqual([])
+  expect(tabRuns.parkedReason(tabRuns.useRuns.getState().takes[0])).toContain('xác minh')
+  if(cancel)tabRuns.useRuns.getState().cancel(id)
+  await tabPersist.flush()
+  await vi.advanceTimersByTimeAsync(4_100)
+  expect(db.values.get(`runs:${project.id}`).takes[0]).toMatchObject({id,account:accountKey('fixture-B'),remoteId:null})
+  expect(db.values.get(`runs:${project.id}`).takes[0].accountBindingPending).toBeUndefined()
+  expect(calls).toEqual([])
+  secondToken=tokens.B;await second.refreshLimits({force:true})
+  await tabPersist.switchProject(other.id);await tabPersist.switchProject(project.id)
+  await vi.advanceTimersByTimeAsync(1_000)
+  expect(calls.filter(c=>c.startsWith('POST'))).toHaveLength(cancel?0:1)
+  if(cancel)expect(tabRuns.useRuns.getState().takes[0].status).toBe('cancelled')
+ } finally {
+  tabRuns.useRuns.getState().loadRuns({takes:[],credits:100,spent:0});second.reset()
+  tabRuns.setEngineHooks({});tabRuns.setEngineLockManager(undefined)
+  await vi.advanceTimersByTimeAsync(5_100)
+ }
 })

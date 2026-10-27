@@ -503,8 +503,8 @@ export interface EngineHooks {
    * storage (another tab may have run jobs meanwhile). Resolve false to give the lock back without running.
    */
   beforeTakeover?: (projectId: string) => Promise<boolean>
-  /** Persist only these takes' enqueue-time account, even after their project was closed. */
-  accountBound?: (projectId: string, takeIds: readonly string[], account: string) => Promise<void>
+  /** Persist the enqueue-time account even after project close; return the IDs whose binding committed. */
+  accountBound?: (projectId: string, takeIds: readonly string[], account: string) => Promise<readonly string[] | void>
 }
 let hooks: EngineHooks = {}
 
@@ -540,12 +540,13 @@ export function holdNewSubmits(on: boolean): void {
  * keeps its state and goes on by itself once it can (the engine wakes on the gateway's signal: useProviderLimits.subscribe
  * below). In the words of a take that waits (the queue's banner), not of the Run refusal.
  */
-export const parkedReason = (t: Pick<Take, 'provider' | 'account'>): string | null => {
+export const parkedReason = (t: Pick<Take, 'provider' | 'account' | 'accountBindingPending'>): string | null => {
+  if (providerOf(t) === 'sano-gateway' && t.accountBindingPending) return 'Chờ xác minh tài khoản lúc bấm Chạy; nếu không thể xác minh, hãy huỷ take rồi chạy lại.'
   const why = providerOf(t) === 'sano-gateway' ? providerBlockedReason('sano-gateway', t.account) : null
   return why === SANO_LOGIN_TEXT ? SANO_LOGIN_WAIT : why === SANO_OTHER_ACCOUNT ? SANO_OTHER_ACCOUNT_WAIT : why
 }
 
-export const cannotRunHere = (t: Pick<Take, 'provider' | 'account'>): boolean => !!parkedReason(t)
+export const cannotRunHere = (t: Pick<Take, 'provider' | 'account' | 'accountBindingPending'>): boolean => !!parkedReason(t)
 
 /** Parked with no request of its own on its way: one whose POST / download is still out keeps the engine (and the lock). */
 const noWorkHere = (t: Take): boolean => cannotRunHere(t) && !submitting.has(t.id) && !fetching.has(t.id)
@@ -775,6 +776,7 @@ export const useRuns = create<RunsState>()((set, get) => ({
         charged: chargeLocal,
         framesSnapshot: { first: frameSnapshotKey(project.assets, scene.firstFrame), last: frameSnapshotKey(project.assets, scene.lastFrame) },
         ...(account ? { account } : {}),
+        ...(providerId === 'sano-gateway' && provider.freshAccount ? { accountBindingPending: true as const } : {}),
         ...(expectSimulated ? { expectSimulated } : {}),
       }
     })
@@ -788,10 +790,10 @@ export const useRuns = create<RunsState>()((set, get) => ({
         .freshAccount()
         .then(async (fresh) => {
           if (!fresh) return
+          const boundIds = new Set(await hooks.accountBound?.(project.id, [...ids], fresh) ?? ids)
           if (useProject.getState().project.id === project.id) {
-            set((s) => ({ takes: s.takes.map((t) => (ids.has(t.id) ? { ...t, account: fresh } : t)) }))
+            set((s) => ({ takes: s.takes.map((t) => (boundIds.has(t.id) && !t.remoteId && !t.submitUnknown ? { ...t, account: fresh, accountBindingPending: undefined } : t)) }))
           }
-          await hooks.accountBound?.(project.id, [...ids], fresh)
         })
         .catch(() => undefined)
         .finally(() => {
@@ -1415,7 +1417,7 @@ function buildRequest(t: Take): JobRequest {
 async function submitTake(id: string) {
   const gen = generation
   const t = findTake(id)
-  if (!t || submitting.has(id)) return
+  if (!t || t.accountBindingPending || submitting.has(id)) return
   // A remote job is submitted once per take (a second submit could be paid twice) — except an explicit retry().
   if (providerOf(t) !== 'mock' && (ownedHere.has(id) || remoteIdOf(t))) return
   // A legacy unknown request has no proven owner: lookup only, never bind the current login and POST a new job.
@@ -1512,7 +1514,7 @@ async function submitTake(id: string) {
 async function recoverTake(id: string) {
   const gen = generation
   const t = findTake(id)
-  if (!t || submitting.has(id) || ownedHere.has(id)) return
+  if (!t || t.accountBindingPending || submitting.has(id) || ownedHere.has(id)) return
   // A take of a model this build does not know is never looked up (its jobs cannot be matched): it may be running in
   // the build that knows it — parked, never failed over it.
   if (!isModelId(t.settings?.model)) {
