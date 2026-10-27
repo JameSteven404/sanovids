@@ -155,7 +155,10 @@ Minh tự làm trên máy của mình. Agent không chạy bộ cài hay bản �
 6. **Lối tắt:** Start menu và Desktop có **Sano Agent** với icon dấu S/phát trên ô đỏ.
 7. **Icon:** thanh tác vụ và khay hệ thống hiện đúng icon đó khi app chạy.
 8. **Phiên bản:** Cài đặt → Giới thiệu hiện **1.0.0**, chữ ký số hợp lệ, đúng dấu vân tay ở bước 2.
-9. **SANO mở được:** bật Docker (`docker compose up -d` trong `E:\SANO AGENT`) rồi mở app: SANO hiện ở cửa sổ riêng.
+9. **SANO mở được:** bật máy chủ SANO bằng Docker rồi mở app: SANO hiện ở cửa sổ riêng. Trước khi các PR SANO
+   (#50 → #53 → #65 → #67 → #68) vào main, `main` chưa có Canvas: dựng từ checkout của nhánh #68
+   (`docker compose up -d --build` trong `E:\SANO-AGENT-wt-docker`). Sau khi merge: `docker compose up -d --build` trong
+   `E:\SANO AGENT`.
 10. **Canvas và Trợ lý:** vào Canvas: SanoVids hiện toàn màn hình, gọn; nút **Trợ lý** ở góc phải trên mở trợ lý dự án.
 11. **Không có SANO:** tắt Docker (`docker compose stop`), mở lại app: hộp thoại "Không mở được SANO tại …" có
     **Thử lại / Mở Canvas / Thoát**. Bật lại Docker rồi bấm **Thử lại**: vào được SANO. Tắt Docker lần nữa, mở lại app,
