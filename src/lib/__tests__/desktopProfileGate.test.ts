@@ -9,13 +9,14 @@ const rules = createRequire(import.meta.url)('../../../electron/updater-rules.cj
 const start = mainSource.indexOf('  // D223: before Chromium opens the profile')
 const end = mainSource.indexOf('  // A second launch brings THE SanoVids window', start)
 
-function startup({ marker, readError, writeError }: { marker?: string; readError?: string; writeError?: string } = {}) {
+function startup({ marker, readError, writeError, renameError }: { marker?: string; readError?: string; writeError?: string; renameError?: string } = {}) {
   expect(start).toBeGreaterThan(0)
   expect(end).toBeGreaterThan(start)
   const state = { marker, writes: [] as string[], dialogs: [] as string[], exit: null as number | null, continued: false }
   const fakeExit = new Error('fake process exit')
   const dir = 'X:\\fake-profile-test-only'
   const file = path.win32.join(dir, 'electron-version')
+  let temp: string | undefined
   try {
     vm.runInNewContext(mainSource.slice(start, end), {
       updaterRules: rules, path: path.win32, profile: { dir },
@@ -26,11 +27,17 @@ function startup({ marker, readError, writeError }: { marker?: string; readError
           return state.marker
         },
         mkdirSync: (target: string, opts: { recursive: boolean }) => { expect([target, opts.recursive]).toEqual([dir, true]) },
-        writeFileSync: (target: string, value: string) => {
-          expect(target).toBe(file)
+        // The marker itself changes only by the rename: a failed or torn temp write leaves it as it was.
+        writeFileSync: (target: string, value: string, opts: { flush: boolean }) => {
+          expect([target, opts.flush]).toEqual([`${file}.tmp`, true])
           if (writeError) throw Object.assign(new Error('injected write failure'), { code: writeError })
-          state.marker = value
-          state.writes.push(value)
+          temp = value
+        },
+        renameSync: (from: string, to: string) => {
+          expect([from, to, temp]).toEqual([`${file}.tmp`, file, expect.any(String)])
+          if (renameError) throw Object.assign(new Error('injected rename failure'), { code: renameError })
+          state.marker = temp
+          state.writes.push(temp!)
         },
       },
       process: { versions: { electron: '44.5.1' }, exit: (code: number) => { state.exit = code; throw fakeExit } },
@@ -65,8 +72,8 @@ describe('shared profile startup: injected filesystem regression', () => {
     expect(state).toMatchObject({ marker: '45.0.0', writes: [], exit: 4, continued: false })
     expect(state.dialogs).toHaveLength(1)
   })
-  it.each(['EACCES', 'ENOSPC'])('refuses startup if recording the version fails: %s', (writeError) => {
-    const state = startup({ marker: '43.9.9', writeError })
+  it.each([{ writeError: 'EACCES' }, { writeError: 'ENOSPC' }, { renameError: 'EPERM' }])('refuses startup if recording the version fails, keeping the old record: %j', (failure) => {
+    const state = startup({ marker: '43.9.9', ...failure })
     expect(state).toMatchObject({ marker: '43.9.9', writes: [], exit: 4, continued: false })
     expect(state.dialogs).toHaveLength(1)
     expect(state.dialogs[0]).toContain('Không ghi được')

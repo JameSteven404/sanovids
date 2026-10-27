@@ -218,7 +218,9 @@ if (!app.requestSingleInstanceLock()) {
   if (gate === 'write') {
     try {
       fs.mkdirSync(profile.dir, { recursive: true })
-      fs.writeFileSync(seenFile, process.versions.electron)
+      // Replaced in one step: a crash mid-write leaves the old record (or none), never a torn one 'invalid' refuses for good.
+      fs.writeFileSync(`${seenFile}.tmp`, process.versions.electron, { flush: true })
+      fs.renameSync(`${seenFile}.tmp`, seenFile)
     } catch (e) {
       // Fail closed: opening anyway would migrate the profile with no record, and an older app would then open it.
       dialog.showErrorBox(app.getName(), `Không ghi được ${seenFile} (${e && e.message}). ${app.getName()} không mở, vì thiếu số này thì bản SanoVids hoặc Sano Agent cũ hơn có thể mở nhầm dữ liệu rồi làm hỏng dự án. Hãy cho phép ghi file đó (bỏ chỉ đọc, đóng chương trình đang giữ nó) rồi mở lại.`)
