@@ -11,7 +11,7 @@ import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type Dr
 import { useShallow } from 'zustand/react/shallow'
 import { edgeId, linkAssets, requestRun, viewImages } from '../../actions'
 import { compileScene, imageSlotsFor, sceneCode } from '../../core/compile'
-import { costOf, foreignModelBadge, modeLabel, MODELS } from '../../core/models'
+import { foreignModelBadge, modeLabel, MODELS } from '../../core/models'
 import { foreignModelReason, isRedTextBlock, runBlock } from '../../core/runRules'
 import { placeholderGroups } from '../../core/placeholders'
 import type { Asset, CompiledPrompt, Project, Scene, Size } from '../../core/types'
@@ -30,7 +30,7 @@ import { MediaImg } from '../common/Media'
 import { PlaceholderBar } from '../inspector/PlaceholderBar'
 import { segmentForScene } from '../inspector/tokens'
 import { AssetPicker } from '../inspector/shared'
-import { useSettingsRunBlock } from '../runs/shared'
+import { useSettingsRunBlock, useTakeCost } from '../runs/shared'
 import { jobRefCount } from '../../providers/limits'
 import { appliedPresetId } from '../sidebar/shared'
 import {
@@ -339,7 +339,7 @@ function SceneFar({ scene, status, progress, w }: { scene: Scene; status: TakeSu
   const creditKind = useCreditKind()
   const rf = useReactFlow()
   const tone = farTone(status, hasVideo, !!reason)
-  const cost = costOf(scene.settings)
+  const cost = useTakeCost(scene.settings)
   // Bounded: 100+ far nodes are on screen at once, each must not lay out a whole 20,000-character paragraph.
   const lines = farExcerpt(scene.prompt, w)
   return (
@@ -430,7 +430,7 @@ function SceneFull({ scene, status, box, editing }: { scene: Scene; status: Take
   }, [assets, scene.firstFrame, scene.lastFrame])
 
   const code = sceneCode(scene.order)
-  const cost = costOf(scene.settings)
+  const cost = useTakeCost(scene.settings)
   const off = nodeEditor === 'off'
   // The "Chữ đỏ chờ ảnh" strip (PlaceholderBar, variant 'node'): red placeholders or labels that do not fit their
   // picture — the groups core/placeholders makes, only looked for when the compile already found such a token.

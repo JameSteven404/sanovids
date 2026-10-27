@@ -6,12 +6,13 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 
 ---
 
-## [0.6.0] — 2026-10-22 — Sửa cảnh ngay trên canvas, canvas mượt hơn, giữ đúng ảnh tham chiếu
+## [0.6.0] — 2026-10-27 — Sửa cảnh ngay trên canvas, canvas mượt hơn, giữ đúng ảnh tham chiếu
 
 ✨ **Thẻ cảnh là nơi sửa prompt và cấu hình**
 - Bấm vào prompt trên thẻ để gõ ngay; bấm dòng thông số để đổi model, thời lượng, độ phân giải, tỉ lệ và preset tại chỗ.
 - Enter đưa con trỏ vào prompt của cảnh đang chọn, Esc rời ô và giữ chữ, Ctrl+Enter mở xác nhận tạo video cho cảnh đó. Chữ đang gõ được giữ khi đổi cảnh, lưu hay đóng app.
 - Nút **Tạo video · … credit** nói rõ chi phí; cảnh chưa chạy được hiện lý do ngay trên thẻ. Lựa chọn canvasapp đang tắt hiện mờ kèm lý do.
+- **Giá theo đúng canvasapp**: SanoVids đọc bảng giá canvasapp đang áp dụng (cùng lúc đọc model, thời lượng, độ phân giải được phép), nên thẻ cảnh, preset và hộp xác nhận hiện đúng giá mới khi canvasapp đổi giá.
 
 ✨ **Canvas mượt hơn**
 - Con lăn chuột **di chuyển** canvas, Ctrl+con lăn hoặc chụm hai ngón để thu phóng (đổi ở Cài đặt → **Con lăn chuột**). Kéo, thu phóng và di chuyển với nhiều cảnh nhẹ hơn.

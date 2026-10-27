@@ -49,7 +49,7 @@ describe('takeCostLine / takeCostLabel — a newer build\'s provider (migrate: m
 describe('takeCostLine / takeCostLabel — a take sent through the SANO gateway', () => {
   it('names SANO, never canvasapp, as the site that accepts and bills the job', async () => {
     const done = takeCostLine(take({ provider: 'sano-gateway', charged: false, remoteId: 'job_1' }))
-    expect(done.note).toBe('đã trả bằng credit SANO · chi phí do SANO quản lý')
+    expect(done).toMatchObject({ amount: '—', note: 'chi phí chưa được SANO xác nhận — kiểm tra trong app SANO', struck: false })
     const queued = take({ provider: 'sano-gateway', status: 'queued' })
     stubInsideSano() // inside SANO, not signed in: it waits for that (once the token was read)
     await vi.waitFor(() => expect(takeCostLine(queued).note).toBe(SANO_LOGIN_WAIT))
@@ -71,7 +71,7 @@ describe('takeCostLine / takeCostLabel — a take sent through the SANO gateway'
     expect(takeCostLine(take({ provider: 'sano-gateway', status: 'queued' }))).toMatchObject({ note: SANO_UNAVAILABLE, struck: false })
     // what is (maybe) billed stays said: running with its job id (poll gets no news here either), an unknown earlier send
     expect(takeCostLine(take({ provider: 'sano-gateway', status: 'processing', remoteId: 'job_1' }))).toMatchObject({
-      note: 'Nhà cung cấp SANO chỉ dùng được khi mở SanoVids bên trong app SANO · đã trả bằng credit SANO · chi phí do SANO quản lý',
+      note: 'Nhà cung cấp SANO chỉ dùng được khi mở SanoVids bên trong app SANO · chi phí chưa được SANO xác nhận — kiểm tra trong app SANO',
       struck: false,
     })
     expect(takeCostLine({ ...take({ provider: 'sano-gateway', status: 'queued' }), submitUnknown: true }).note).toBe(
@@ -93,6 +93,15 @@ describe('takeCostLine / takeCostLabel — a take sent through the SANO gateway'
         note: 'giả lập — clip mẫu, không phát sinh phí',
         struck: true,
       })
+    }
+  })
+
+  it.each(['completed', 'failed', 'cancelled', 'processing', 'queued'] as const)('SANO %s: a job id and the local demo charge flag are not a fee receipt', (status) => {
+    for (const charged of [false, true, undefined]) {
+      const line = takeCostLine(take({ provider: 'sano-gateway', remoteId: 'job_1', status, charged }))
+      expect(line).toMatchObject({ amount: '—', struck: false })
+      expect(line.note).toContain('chi phí chưa được SANO xác nhận')
+      expect(line.note).not.toMatch(/đã trả|đã trừ|không phát sinh phí/)
     }
   })
 })
@@ -238,5 +247,19 @@ describe('cancel wording (actions.cancelTake)', () => {
       warning: true,
     })
     expect(cancelToastText(facts({ sentAway: false, status: 'queued' }))).toEqual({ text: 'Đã huỷ S03·T2.', warning: false })
+  })
+
+  it('a SANO cancellation never promises the next run will be billed (it may use the simulator)', () => {
+    const text = cancelQuestion(facts({ provider: 'sano-gateway', videoReady: true }))!
+    expect(text).toContain('vẫn lấy được trong app SANO')
+    expect(text).toContain('chi phí lượt chạy mới theo chế độ SANO xác nhận khi chạy')
+    expect(text).not.toMatch(/đã trả|đã trừ|sẽ tính phí|sẽ trừ credit|canvasapp/)
+  })
+
+  it('cancelling a SANO send with no reply reports unknown delivery rather than a charge (also valid for simulator takes)', () => {
+    const text = cancelToastText(facts({ provider: 'sano-gateway', sentAway: false })).text
+    expect(text).toContain('chưa rõ máy chủ đã nhận job chưa')
+    expect(text).toContain('kiểm tra trong app SANO')
+    expect(text).not.toMatch(/trừ credit|tính phí|canvasapp/)
   })
 })

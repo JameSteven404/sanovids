@@ -425,6 +425,8 @@ export function migrateTake(raw: unknown): Take {
   else delete out.expectSimulated
   if (typeof t.account === 'string' && t.account) out.account = t.account
   else delete out.account
+  if (t.accountBindingPending === true) out.accountBindingPending = true
+  else delete out.accountBindingPending
   // Custom file name: sanitized again (a file from elsewhere may hold separators, "..", reserved names…).
   const fileName = cleanTakeFileName(t.fileName)
   if (fileName) out.fileName = fileName

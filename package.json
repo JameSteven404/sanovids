@@ -13,6 +13,13 @@
   "sanovids": {
     "signers": [
       "7489ABFAC1A7CD23D5FFB0785CA7CAB414AE49ED"
+    ],
+    "devUnlockKeys": [
+      {
+        "kid": 1,
+        "alg": "ed25519",
+        "key": "zXIkd1pwMbtjLdYs_sna98d68-mQ-zoWaW0bcZboBps"
+      }
     ]
   },
   "scripts": {
