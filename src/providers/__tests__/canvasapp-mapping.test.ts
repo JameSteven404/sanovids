@@ -27,6 +27,7 @@ import {
   planBridgeCanvas,
   PROFILE_FALLBACKS,
   profileIssues,
+  profilePrice,
   profilesSignature,
   profileSpecOf,
   promptLimitOf,
@@ -444,15 +445,38 @@ describe('canvasapp mapping: profileIssues — the ONE rule of the submit, the i
     expect(profileIssues(SD, [sd({}, { can_create: false, display_name: '   ' })])[0].reason).toBe('Seedance 2.5 hiện không khả dụng trên canvasapp.')
   })
 
-  it('profilesSignature: the same refusals → the same string; a change of what is refused → another', () => {
+  it('profilesSignature: the same refusals and prices → the same string; a change of either → another', () => {
     const a = [sd({ durations: [5, 10] }), h3()]
     const b = JSON.parse(JSON.stringify(a)) as typeof a
     expect(profilesSignature(a, true)).toBe(profilesSignature(b, true))
-    // pricing / visible / enabled do not change what is refused
-    expect(profilesSignature([{ ...a[0], visible: false, options: { ...a[0].options, pricing: { x: 1 } } }, a[1]], true)).toBe(profilesSignature(a, true))
+    // visible / enabled change neither what is refused nor a price
+    expect(profilesSignature([{ ...a[0], visible: false }, a[1]], true)).toBe(profilesSignature(a, true))
+    // a new price table does (the UI shows canvasapp's price)
+    expect(profilesSignature([sd({ durations: [5, 10], pricing: { '480p': { '5': 7 } } }), a[1]], true)).not.toBe(profilesSignature(a, true))
     expect(profilesSignature([a[0], h3({ can_create: false })], true)).not.toBe(profilesSignature(a, true))
     expect(profilesSignature([sd({ durations: [5] }), a[1]], true)).not.toBe(profilesSignature(a, true))
     expect(profilesSignature([], false)).not.toBe(profilesSignature([], true))
+  })
+})
+
+describe('canvasapp mapping: profilePrice — canvasapp’s own price, read like its Run button', () => {
+  const SD = { model: 'seedance_2_5', duration: 15, resolution: '1080p' } as const
+  const sd = (pricing: unknown) => ({ model_profile: 'seedance_2_5', can_create: true, options: { pricing } })
+  it('pricing[resolution in lower case][seconds]', () => {
+    expect(profilePrice(SD, [sd({ '1080p': { '15': 30, '30': 40 }, '480p': { '15': 12 } })])).toBe(30)
+    expect(profilePrice({ ...SD, resolution: '1080P' }, [sd({ '1080p': { '15': 30 } })])).toBe(30)
+    expect(profilePrice({ ...SD, resolution: '480p' }, [sd({ '480p': { '15': 12 } })])).toBe(12)
+  })
+  it('no positive finite number there → null (SanoVids’ table applies): unreadable list, missing / malformed table, a value it does not price', () => {
+    expect(profilePrice(SD, [])).toBeNull() // fallbacks carry no pricing
+    expect(profilePrice(SD, [sd(undefined)])).toBeNull()
+    expect(profilePrice(SD, [sd({ '480p': { '15': 12 } })])).toBeNull()
+    for (const bad of [0, -5, '30', null, Number.NaN, Infinity, { n: 30 }]) expect(profilePrice(SD, [sd({ '1080p': { '15': bad } })]), String(bad)).toBeNull()
+    expect(profilePrice(SD, [sd([30])])).toBeNull()
+  })
+  it('MiniMax-H3 keeps its loaded pricing through the fallback merge', () => {
+    const h3 = { model_profile: 'minimax_h3', enabled: true, can_create: true, options: { disabled_modes: [], pricing: { '2k': { '10': 9 } } } }
+    expect(profilePrice({ model: 'minimax_h3', duration: 10, resolution: '2k' }, [h3])).toBe(9)
   })
 })
 

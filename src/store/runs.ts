@@ -60,7 +60,7 @@ import { putBlob } from '../lib/imageStore'
 import { activeProviderId, getProvider, providerBlockedReason, providerLimits, registerProvider, sanoGatewayProvider, useProviderLimits } from '../providers'
 import { decodeRemoteId } from '../providers/canvasapp/mapping'
 import type { SiteJobClaim, SiteTakeDraft } from '../providers/canvasapp/siteJobs'
-import { jobRefCount, settingsRunBlock, settingsRunWarning } from '../providers/limits'
+import { jobRefCount, settingsRunBlock, settingsRunWarning, takeCost } from '../providers/limits'
 import { SANO_LOGIN_TEXT, SANO_LOGIN_WAIT, SANO_OTHER_ACCOUNT, SANO_OTHER_ACCOUNT_WAIT, SANO_UNAVAILABLE } from '../providers/sano'
 import { createMockProvider, DEFAULT_MOCK_SETTINGS, parseMockSettings, type MockSettings } from '../providers/mock'
 import { posterFromVideo } from '../providers/poster'
@@ -707,7 +707,7 @@ export const useRuns = create<RunsState>()((set, get) => ({
               ? paidCancelledRunWarning(label, providerOf(before))
               : null
         const warnings = billed || warning ? [...(billed ? [billed] : []), ...compiled.warnings, ...(warning ? [warning] : [])] : compiled.warnings
-        return { sceneId: scene.id, ok: !reason, reason, cost: costOf(scene.settings), warnings }
+        return { sceneId: scene.id, ok: !reason, reason, cost: takeCost(limits, scene.settings), warnings }
       })
   },
 

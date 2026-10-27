@@ -4,6 +4,7 @@
 //   'server' + firm   → a sure refusal: the scene cannot run (settingsRunBlock), skipped by the queue, no credit spent.
 //   'fallback' / older → a warning only (settingsRunWarning): the submit reads again first and decides then.
 //   'none'            → nothing (not read yet: the submit reads and decides).
+import { costOf } from '../core/models'
 import type { CompiledPrompt, Scene, VideoSettings } from '../core/types'
 import type { ProviderId, SettingsLimits } from './types'
 
@@ -13,6 +14,15 @@ import type { ProviderId, SettingsLimits } from './types'
  */
 export const jobRefCount = (scene: Pick<Scene, 'settings' | 'firstFrame' | 'lastFrame'>, compiled: Pick<CompiledPrompt, 'images'>): number =>
   compiled.images.length + (scene.settings.mode === 'transform' ? Number(!!scene.firstFrame) + Number(!!scene.lastFrame) : 0)
+
+/**
+ * Credits a new take of `s` costs: the gateway's own price from its last read (canvasapp's pricing table, even when
+ * that read is older or a guess — it is canvasapp's newest known price), else SanoVids' table. Every cost shown before a
+ * run (cards, inspector, presets, menus, the run dialog) and the cost a take keeps come from here.
+ */
+export function takeCost(limits: SettingsLimits, s: VideoSettings): number {
+  return limits.price?.(s) ?? costOf(s)
+}
 
 /** A refusal text as a short reason (the run gate's reasons carry no final period). */
 const bare = (text: string) => text.replace(/\.\s*$/, '')

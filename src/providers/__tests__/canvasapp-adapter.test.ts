@@ -45,7 +45,8 @@ import {
   sceneNodeKey,
 } from '../canvasapp/mapping'
 import { createDesktopTransport, type CanvasappBridge } from '../canvasapp/transport'
-import { MODELS } from '../../core/models'
+import { costOf, MODELS } from '../../core/models'
+import { takeCost } from '../limits'
 import type { VideoSettings } from '../../core/types'
 import { isSubmitDeferred, isSubmitUncertain, NO_LIMITS, type JobRequest } from '../types'
 
@@ -1039,6 +1040,19 @@ describe('canvasapp adapter: what canvasapp runs now for the UI (settingsLimits 
     expect(limits.issues(req())).toEqual([])
     expect(provider.limitsInfo()).toMatchObject({ source: 'server', at: 1_000_000, firmUntil: 1_000_000 + PROFILES_TTL_MS, lastAttempt: { result: 'read' } })
     expect(provider.settingsLimits()).toBe(limits) // same object until something changes
+  })
+
+  it("price(): canvasapp's pricing of the read; null when it prices nothing (SanoVids' table applies through takeCost)", async () => {
+    const { provider, server } = limitsSetup()
+    profilesAre(server, json({ profiles: [{ model_profile: 'seedance_2_5', can_create: true, options: { pricing: { '480p': { '15': 33 } } } }] }))
+    await provider.submit(req())
+    const limits = provider.settingsLimits()
+    const s = { model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '480p', ratio: '16:9' } as const
+    expect(limits.price?.(s)).toBe(33)
+    expect(takeCost(limits, s)).toBe(33)
+    expect(limits.price?.({ ...s, duration: 30 })).toBeNull()
+    expect(takeCost(limits, { ...s, duration: 30 })).toBe(costOf({ ...s, duration: 30 }))
+    expect(takeCost(NO_LIMITS, s)).toBe(costOf(s))
   })
 
   it('TTL-gated: nothing is sent while fresh; read once when old; a UI refresh and a submit share ONE request', async () => {

@@ -115,6 +115,7 @@ import {
   modelProfileOf,
   planBridgeCanvas,
   profileIssues,
+  profilePrice,
   profilesSignature,
   ratioFromDimensions,
   sceneNodeKey,
@@ -1082,6 +1083,13 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
           return profileIssues(s, list)
         } catch {
           return [] // server data is rendered: it must never break a render
+        }
+      },
+      price: (s: VideoSettings): number | null => {
+        try {
+          return profilePrice(s, list)
+        } catch {
+          return null
         }
       },
     })
