@@ -18,6 +18,7 @@ import { App } from './App'
 import { initDevAccess } from './devAccessActions'
 import { initMotion } from './lib/canvasPrefs'
 import { initPwa, registerServiceWorker } from './lib/pwa'
+import { initSanoBridge } from './lib/sanoBridge'
 import { initTheme } from './lib/theme'
 import { initRetiredVideoNotice } from './videoRetired'
 import { showPlacementNoticeOnLaunch } from './placementNotice'
@@ -29,6 +30,9 @@ initTheme()
 document.documentElement.style.removeProperty('background')
 // "Hiệu ứng chuyển động" (Settings): <html data-motion>, followed by styles/app.css everywhere.
 initMotion()
+// Inside SANO: <html data-embedded> before the first paint, and the hello listener before React and bootstrap(), since
+// SANO posts its single hello on the frame's load event.
+initSanoBridge()
 
 // Before the first render: the one-shot beforeinstallprompt event can fire very early.
 initPwa()

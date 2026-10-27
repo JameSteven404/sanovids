@@ -497,6 +497,10 @@
   flex: none;
   min-width: 0;
 }
+/* Inside SANO (lib/sanoBridge) the top-bar pill is enough. */
+:root[data-embedded] .rq-bar-credit {
+  display: none;
+}
 .rq-chevron {
   display: inline-flex;
   color: var(--text-faint);

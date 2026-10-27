@@ -187,6 +187,10 @@ function EmptyInspector() {
           <FileText size={14} /> Nhập prompt cũ
         </button>
       </div>
+      {/* Shown only inside SANO, in place of the tip cards (inspector.css). */}
+      <button type="button" className="btn btn-sm btn-ghost in-guide" onClick={() => openDialog({ kind: 'shortcuts' })}>
+        Cách nối và phím tắt <span className="kbd">?</span>
+      </button>
       {creditKind === 'dev' ? (
         <p className="in-empty-foot faint">
           <Bug size={12} /> Chế độ Phát triển: canvasapp giả lập trong máy, video giả, credit dev — không tốn tiền thật.
