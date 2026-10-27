@@ -25,7 +25,7 @@ export const SANO_BUILD_FILES = Object.freeze(['package.json', 'package-lock.jso
 const SANO_WEB_DIRS = ['web', 'shared']
 /** Bundler packages whose runtime helpers end up in SANO's build (Vite 7 and its Rollup). */
 const SANO_BUNDLER_RUNTIME = ['vite', 'rollup']
-// shortcut: the default is Minh's checkout of SANO PR #68; set SANO_REPO on any other machine.
+// shortcut: the default is a worktree of Minh's SANO repo (any worktree can read the pinned commit); set SANO_REPO on any other machine.
 const DEFAULT_SANO_REPO = 'E:/SANO-AGENT-wt-docker'
 
 function check(result, what) {

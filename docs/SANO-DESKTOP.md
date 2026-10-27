@@ -116,7 +116,8 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
 - **Web SANO trong app (D240):** người dùng không cần Docker hay máy chủ. `npm run dist:sano-agent` chạy
   `scripts/build-sano.mjs` trước electron-builder:
   - Lấy đúng commit ghim trong `sano-agent/sano.json` (`{ repo, commit }`) từ một checkout SANO trên máy: biến môi
-    trường `SANO_REPO`, mặc định `E:/SANO-AGENT-wt-docker` (checkout của PR SANO #68). Sau khi Minh merge các PR SANO,
+    trường `SANO_REPO`, mặc định `E:/SANO-AGENT-wt-docker` (một worktree của repo SANO; worktree nào cũng đọc được commit
+    ghim). Hiện ghim đầu PR SANO #70 (dữ liệu mẫu trung tính, D242, nối sau #68). Sau khi Minh merge các PR SANO,
     đổi commit ghim sang commit trên `main` của SANO và trỏ `SANO_REPO` vào checkout đó.
   - `git archive` chỉ lấy file cần để build web (`package.json`, lockfile, `tsconfig.json`, `vite.config.ts`,
     `index.html`, `public/`, `web/`, `shared/`). Không lấy `knowledge/`, `context/`, máy chủ.
