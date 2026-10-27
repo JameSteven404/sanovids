@@ -106,7 +106,7 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
   `installerSidebar.bmp`, `uninstallerSidebar.bmp`, `installerHeader.bmp` vào `sano-agent/brand/build/`.
 - Giấy phép: một bản chung cho "Sano Agent (gồm khu Canvas — SanoVids)", giữ nguyên mọi điều khoản cũ, chỉ đổi tên.
   Ba bản giống hệt từng byte: `LICENSE.txt`, `build/license_vi.txt` (trang giấy phép của bộ cài, cả hai app) và
-  `scripts/releases-repo/LICENSE.txt`. Minh duyệt lời văn trước khi phát hành.
+  `scripts/releases-repo/LICENSE.txt`. Minh đã duyệt lời văn ngày 2026-10-27 (D238).
 - Không build song song hai app trong cùng một checkout: chung `dist/` và `build/release-notes.md`.
 
 ## 6. Phát hành Sano Agent
