@@ -22,7 +22,7 @@ module.exports = {
     name: 'sano-agent',
     productName: NAME,
     version,
-    description: 'Sano Agent — app SANO trên máy tính, khu Dựng phim là SanoVids',
+    description: 'Sano Agent — app SANO trên máy tính, khu Canvas là SanoVids',
     homepage: 'https://github.com/JameSteven404/sano-agent-releases',
     // The SANO web app the window opens (electron/hardening-rules sanoShell): inside the integrity-checked app.asar.
     sanoAgent: { url: 'http://127.0.0.1:8080/' },

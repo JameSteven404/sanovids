@@ -497,6 +497,8 @@ function createWindow() {
   // or app://bdp once "Mở Canvas" opened SanoVids on its own: hardening-rules mainWindowAllows).
   let canvas = false
   const stays = (url) => hardening.mainWindowAllows(url, { sanoUrl: SANO ? SANO.url : undefined, canvas })
+  // In Canvas the window (taskbar, Alt+Tab) stays "Sano Agent", not SanoVids' page title.
+  if (SANO) win.on('page-title-updated', (event) => { if (canvas) event.preventDefault() })
   webContents.setWindowOpenHandler(({ url }) => {
     // SANO desktop: "Đăng nhập bằng Google" (Google Identity Services) needs its popup as a child window.
     if (SANO && url.startsWith('https://accounts.google.com/')) return { action: 'allow', overrideBrowserWindowOptions: { parent: win, autoHideMenuBar: true } }
@@ -525,6 +527,7 @@ function createWindow() {
         if (action === 'quit') return app.quit()
         if (action === 'canvas') {
           canvas = true // before the load: from now on the window may only stay on app://bdp
+          win.setTitle(app.getName())
           return void win.loadURL(`${ORIGIN}/index.html`)
         }
         sanoOpened = false // a retry is a new first load: a redirect of it is explained too, whatever loaded before

@@ -467,7 +467,9 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
   it('D237 wiring: Mở Canvas loads app://bdp as the window’s page after the guard switched; no SANO dialog in Canvas', () => {
     const dialogAt = mainSource.indexOf('const sanoFailed = (message, detail) => {')
     const failed = mainSource.slice(dialogAt, mainSource.indexOf("webContents.on('will-redirect'"))
-    expect(failed).toMatch(/if \(action === 'canvas'\) \{\s+canvas = true[^\n]*\n\s+return void win\.loadURL\(`\$\{ORIGIN\}\/index\.html`\)\s+\}/)
+    expect(failed).toMatch(/if \(action === 'canvas'\) \{\s+canvas = true[^\n]*\n\s+win\.setTitle\(app\.getName\(\)\)\n\s+return void win\.loadURL\(`\$\{ORIGIN\}\/index\.html`\)\s+\}/)
+    // the window stays "Sano Agent" in Canvas (taskbar, Alt+Tab), not SanoVids' page title
+    expect(mainSource).toContain("if (SANO) win.on('page-title-updated', (event) => { if (canvas) event.preventDefault() })")
     // the guard's switch: declared once in createWindow, set only by Mở Canvas, never back
     expect(mainSource.split('let canvas = false').length - 1).toBe(1)
     expect(mainSource.match(/\bcanvas = (?:true|false)\b/g)).toEqual(['canvas = false', 'canvas = true'])
