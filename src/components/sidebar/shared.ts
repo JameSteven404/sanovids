@@ -3,7 +3,9 @@ import { Mountain, Package, Palette, UserRound, type LucideIcon } from 'lucide-r
 import { useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { imageSlotsFor, MENTION_RE, parseTokens, sceneCode, slugTag, takeCode, uniqueTag } from '../../core/compile'
-import { costOf, MODELS, normalizeSettings, usesRefs, type ModelSpec } from '../../core/models'
+import { MODELS, normalizeSettings, usesRefs, type ModelSpec } from '../../core/models'
+import { takeCost } from '../../providers/limits'
+import { NO_LIMITS, type SettingsLimits } from '../../providers/types'
 import { CREDIT_HINT, CREDIT_SOURCE_LABEL, formatCreditNumber, formatCredits, formatVnd, isSimulatedCredit, type CreditKind } from '../../lib/credits'
 import type { Asset, AssetKind, ModelId, Preset, Project, Scene, Take, VideoSettings, XY } from '../../core/types'
 import { LAYOUT, redo, undo, useProject } from '../../store/project'
@@ -456,9 +458,9 @@ export function creditTone(kind: CreditKind): 'is-sim' | 'is-real' {
   return isSimulatedCredit(kind) ? 'is-sim' : 'is-real'
 }
 
-/** Per-run cost of several scenes added up (what "Chạy tất cả" / a batch run costs). */
-export function totalCost(scenes: readonly { settings: VideoSettings }[]): number {
-  return scenes.reduce((t, s) => t + costOf(s.settings), 0)
+/** Per-run cost of several scenes added up (what "Chạy tất cả" / a batch run costs) on a provider's limits (takeCost). */
+export function totalCost(scenes: readonly { settings: VideoSettings }[], limits: SettingsLimits = NO_LIMITS): number {
+  return scenes.reduce((t, s) => t + takeCost(limits, s.settings), 0)
 }
 
 /** Second tooltip line of a canvasapp cost: the table is an estimate, the real account is billed by canvasapp. */

@@ -45,7 +45,7 @@ import type { Mode, ModelId } from '../../core/types'
 import { memoryStorage, type KeyValueStorage } from '../canvasapp/adapter'
 import type { TransportRequest, VideoProfile } from '../canvasapp/api'
 import type { BridgeResponse } from '../canvasapp/transport'
-import { ALLOWED_IMAGE_TYPES, BRIDGE_PROJECT_NAME, uuidFromKey } from '../canvasapp/mapping'
+import { ALLOWED_IMAGE_TYPES, BRIDGE_PROJECT_NAME, profilePrice, uuidFromKey } from '../canvasapp/mapping'
 import { CANVASAPP_VIDEO_MAX_BYTES } from './downloads'
 import { DEV_ENCRYPTIONS, DEV_LOGIN_COOKIES, restartOutcome, type DevEncryption, type DevLoginCookie, type DevRestartOutcome } from './keepLogin'
 import { pushDevLog, summarizeForLog } from './log'
@@ -103,12 +103,21 @@ export interface DevConfig {
    * continues where it stopped. Unknown on the live site: off by default (a cut download starts again later).
    */
   rangeSupport: boolean
+  /**
+   * The simulated site's price table, in percent of SanoVids' own (core/models): 100 = the same prices. Another value
+   * plays "canvasapp changed its prices": /api/video-profiles pricing and the charge of each job follow it.
+   */
+  pricePercent: DevPricePercent
   models: Record<ModelId, DevModelToggle>
   /** How the login cookie is set (keepLogin.ts): 'session' = lost when the app quits, like the real site as believed. */
   loginCookie: DevLoginCookie
   /** safeStorage on this simulated computer: the kept login copy can be written / read ('ok') or not. */
   encryption: DevEncryption
 }
+
+/** Price tables the Bảng phát triển offers (percent of SanoVids' own). */
+export const DEV_PRICE_PERCENTS = [100, 150, 200] as const
+export type DevPricePercent = (typeof DEV_PRICE_PERCENTS)[number]
 
 export const DEV_CONFIG_DEFAULT: DevConfig = {
   speed: 'fast',
@@ -119,6 +128,7 @@ export const DEV_CONFIG_DEFAULT: DevConfig = {
   latencyMs: 150,
   failRate: 0,
   rangeSupport: false,
+  pricePercent: 100,
   models: {
     seedance_2_5: { can_create: true, disabled_modes: [], off_durations: [], off_resolutions: [], off_ratios: [] },
     minimax_h3: { can_create: true, disabled_modes: [], off_durations: [], off_resolutions: [], off_ratios: [] },
@@ -745,6 +755,7 @@ function mergeConfig(raw: unknown): DevConfig {
     latencyMs: num(c.latencyMs, d.latencyMs, 0, 60_000),
     failRate: num(c.failRate, d.failRate, 0, 1),
     rangeSupport: typeof c.rangeSupport === 'boolean' ? c.rangeSupport : d.rangeSupport,
+    pricePercent: (DEV_PRICE_PERCENTS as readonly unknown[]).includes(c.pricePercent) ? (c.pricePercent as DevPricePercent) : d.pricePercent,
     models,
     loginCookie: (DEV_LOGIN_COOKIES as readonly unknown[]).includes(c.loginCookie) ? (c.loginCookie as DevLoginCookie) : d.loginCookie,
     encryption: (DEV_ENCRYPTIONS as readonly unknown[]).includes(c.encryption) ? (c.encryption as DevEncryption) : d.encryption,
@@ -752,7 +763,8 @@ function mergeConfig(raw: unknown): DevConfig {
 }
 
 /** /api/video-profiles of the simulated site for these model toggles (every model of SanoVids' table). */
-export function devVideoProfiles(models: DevConfig['models']): VideoProfile[] {
+export function devVideoProfiles(models: DevConfig['models'], pricePercent: number = 100): VideoProfile[] {
+  const scale = (n: number) => Math.max(1, Math.round((n * pricePercent) / 100))
   return (Object.values(MODELS) as (typeof MODELS)[ModelId][]).map((m) => {
     const t = models[m.id] ?? DEV_CONFIG_DEFAULT.models[m.id]
     return {
@@ -767,7 +779,7 @@ export function devVideoProfiles(models: DevConfig['models']): VideoProfile[] {
         durations: m.durations.filter((x) => !(t.off_durations ?? []).includes(x)),
         resolutions: m.resolutions.filter((x) => !(t.off_resolutions ?? []).includes(x)),
         aspect_ratios: m.ratios.filter((x) => !(t.off_ratios ?? []).includes(x)),
-        pricing: m.pricing,
+        pricing: Object.fromEntries(Object.entries(m.pricing).map(([res, row]) => [res, Object.fromEntries(Object.entries(row).map(([sec, n]) => [sec, scale(n)]))])),
       },
     }
   })
@@ -1262,7 +1274,7 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
     }
   }
 
-  const profilesNow = (): VideoProfile[] => devVideoProfiles(config.models)
+  const profilesNow = (): VideoProfile[] => devVideoProfiles(config.models, config.pricePercent)
 
   const hasUpload = (id: string) => state.uploads.some((u) => u.upload_id === id)
 
@@ -1286,7 +1298,9 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
     const model = b.model_profile as ModelId
     const frames = isFramesJob(b)
     const ratio = typeof b.aspect_ratio === 'string' ? b.aspect_ratio : null
-    const cost = costOf({ model, mode: b.mode as Mode, duration: b.duration as number, resolution: b.resolution as string, ratio: ratio ?? '16:9' })
+    // what the site's own price table says (the one /api/video-profiles shows), like the live site bills
+    const settings = { model, mode: b.mode as Mode, duration: b.duration as number, resolution: b.resolution as string, ratio: ratio ?? '16:9' }
+    const cost = profilePrice(settings, profilesNow()) ?? costOf(settings)
     if (state.balance < cost) return detail(config.insufficientStatus, `Số dư không đủ: cần ${cost} credit, còn ${state.balance}`)
 
     const speed = DEV_SPEED_MS[config.speed]
