@@ -37,6 +37,16 @@
 .sb-search {
   position: relative;
   display: block;
+  container: sb-search / inline-size;
+}
+/* A narrow sidebar gives the hint's room to the text: Ctrl F still works, the badge is just not drawn. */
+@container sb-search (max-width: 239px) {
+  .sb-search-kbd {
+    display: none;
+  }
+  .sb-search-input.input {
+    padding-right: 30px;
+  }
 }
 .sb-search-icon {
   position: absolute;
@@ -51,6 +61,7 @@
   height: 30px;
   min-height: 30px;
   padding: 0 54px 0 30px;
+  text-overflow: ellipsis;
   border: 1px solid transparent;
   border-radius: var(--radius-control);
   background: var(--bg-elev);
@@ -1191,13 +1202,14 @@
   background: var(--action-gradient);
   color: var(--on-accent);
 }
+/* wraps rather than cutting "dùng ở 6 cảnh" in a narrow sidebar; that phrase moves as one piece */
 .sb-preset-sub {
   font-size: 11px;
   color: var(--text-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   font-variant-numeric: tabular-nums;
+}
+.sb-nowrap {
+  white-space: nowrap;
 }
 /*
  * Cost labels (docs/SPEC-v2.md §9 — same language as the canvas card, inspector and scene table):

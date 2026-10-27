@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { adoptUserNodes, getNodesInside, type InternalNodeBase, type NodeBase } from '@xyflow/system'
-import { DOT_TOP, ESTIMATED_DOTS, estimatedGeometry, estimateDependsOnZoom, fallbackNodeSize, initialViewport, LOD_ZOOM, takeDotTop } from '../canvasModel'
+import { DOT_TOP, ESTIMATED_DOTS, estimatedGeometry, estimateDependsOnZoom, fallbackNodeSize, initialViewport, LOD_ZOOM, openingViewport, takeDotTop } from '../canvasModel'
 import { LAYOUT, ROW_H } from '../../../store/project'
 
 describe('initial canvas geometry', () => {
@@ -64,7 +64,7 @@ describe('initial canvas geometry', () => {
     // CanvasView mounts the board once its size is known; CanvasInner fits from the estimates in its first render.
     expect(src).toContain('useLayoutEffect(() => setReady(true), [])')
     expect(src).toMatch(/\{ready && \(\s*<ReactFlowProvider key=\{projectId\}>/)
-    expect(src).toContain('startViewport.current = root ? initialViewport(nodes, root.clientWidth, root.clientHeight) : null')
+    expect(src).toContain('startViewport.current = root ? openingViewport(nodes, root.clientWidth, root.clientHeight) : null')
     expect(src).toContain('defaultViewport={startViewport.current ?? undefined}')
     expect(src).toContain('done: !!startViewport.current')
     expect(src).toContain('onInit={onInit}')
@@ -105,6 +105,21 @@ describe('fit everything with nodes never measured', () => {
     const sized = [{ id: 'big', position: { x: 0, y: 0 }, data: {}, width: 3000, height: 304, ...estimatedGeometry('scene') }]
     expect(initialViewport(sized, 1440, 900)!.zoom).toBeLessThan(0.5)
     expect(initialViewport([{ ...sized[0], width: undefined }], 1440, 900)!.zoom).toBe(1)
+  })
+
+  it('opens a board too tall to read when fitted at its top, as wide as the stage; a readable fit stays as it is', () => {
+    const fit = initialViewport(nodes, 600, 630)!
+    const vp = openingViewport(nodes, 600, 630)!
+    expect(fit.zoom).toBeLessThan(0.2)
+    expect(vp.zoom).toBeGreaterThan(1.5 * fit.zoom)
+    // the first row's top is on screen near the top, the whole width fits
+    expect(nodes[0].position.y * vp.zoom + vp.y).toBeGreaterThanOrEqual(0)
+    expect(nodes[0].position.y * vp.zoom + vp.y).toBeLessThan(100)
+    expect(vp.x).toBeGreaterThanOrEqual(0)
+    expect(LAYOUT.sceneW * vp.zoom + vp.x).toBeLessThanOrEqual(600)
+    const few = nodes.slice(0, 2)
+    expect(openingViewport(few, 1440, 900)).toEqual(initialViewport(few, 1440, 900))
+    expect(openingViewport([], 600, 630)).toBeNull()
   })
 
   it('F / "Vừa màn hình" / "Sắp xếp" with nothing selected use it, never rf.fitView', () => {
