@@ -6,7 +6,7 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 
 ---
 
-## [0.6.0] — 2026-10-22 — Sửa cảnh ngay trên canvas, canvas mượt hơn, giữ đúng ảnh tham chiếu
+## [0.6.0] — 2026-10-27 — Sửa cảnh ngay trên canvas, canvas mượt hơn, giữ đúng ảnh tham chiếu
 
 ✨ **Thẻ cảnh là nơi sửa prompt và cấu hình**
 - Bấm vào prompt trên thẻ để gõ ngay; bấm dòng thông số để đổi model, thời lượng, độ phân giải, tỉ lệ và preset tại chỗ.
