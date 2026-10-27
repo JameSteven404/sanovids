@@ -11,6 +11,7 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 ⚠️ **SanoVids gộp vào Sano Agent**
 - Đây là bản SanoVids cuối cùng. Từ nay chỉ phát hành **Sano Agent**: app SANO trên máy tính, có khu **Canvas** chính là SanoVids.
 - Mở app, bạn thấy thông báo **SanoVids đã gộp vào Sano Agent**, kèm nút tải Sano Agent.
+- Tải Sano Agent: https://github.com/JameSteven404/sano-agent-releases/releases/latest
 - Dự án, video và đăng nhập canvasapp vẫn còn: Sano Agent mở cùng thư mục dữ liệu `%APPDATA%\SanoVids`.
 - Trước khi mở Sano Agent lần đầu: đóng SanoVids, chép thư mục `%APPDATA%\SanoVids` ra chỗ khác để sao lưu. Không mở cùng lúc hai app.
 - Cài Sano Agent vào thư mục mặc định của nó, không chọn thư mục cài của SanoVids.

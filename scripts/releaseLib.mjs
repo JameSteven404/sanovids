@@ -1148,14 +1148,19 @@ export function checkSameElectron({ ours, theirs, sanovidsVersion }) {
 /**
  * Sano Agent is built from the commit of the newest public SanoVids (docs/SANO-DESKTOP.md §5): the same renderer code
  * and Electron open the shared data folder. head = HEAD; theirs = the commit of tag v<sanovidsVersion> (null when
- * unreadable). → { level: 'ok' | 'fail', text }.
+ * unreadable). next = { version, local, remote }: SanoVids' tag v<Sano Agent's version> here and on GitHub. At HEAD
+ * in both and not older than the newest public SanoVids, it passes: Sano Agent goes first and that SanoVids follows
+ * (D236: SanoVids' final notice links to Sano Agent's download page). → { level: 'ok' | 'fail', text }.
  */
-export function checkSameCommit({ head, theirs, sanovidsVersion }) {
+export function checkSameCommit({ head, theirs, sanovidsVersion, next = null }) {
+  if (head && next && next.local === head && next.remote === head && compareVersions(next.version, sanovidsVersion) >= 0) {
+    return { level: 'ok', text: `Tag v${next.version} của SanoVids trỏ vào HEAD ${head.slice(0, 7)} (cả trên GitHub): đăng Sano Agent trước, SanoVids ${next.version} ngay sau` }
+  }
   if (!head || !theirs) return { level: 'fail', text: `Không đọc được commit của tag v${sanovidsVersion} hoặc HEAD (chạy git fetch origin --tags).` }
   if (head !== theirs) {
     return {
       level: 'fail',
-      text: `SanoVids ${sanovidsVersion} (bản công khai mới nhất) build từ ${theirs.slice(0, 7)}, không phải HEAD ${head.slice(0, 7)}: phát hành SanoVids từ commit này trước (hai app dùng chung thư mục dữ liệu).`,
+      text: `SanoVids ${sanovidsVersion} (bản công khai mới nhất) build từ ${theirs.slice(0, 7)}, không phải HEAD ${head.slice(0, 7)}: ${next ? `đặt tag v${next.version} của SanoVids trên HEAD và push (đăng Sano Agent trước, SanoVids ngay sau), hoặc ` : ''}phát hành SanoVids từ commit này trước (hai app dùng chung thư mục dữ liệu).`,
     }
   }
   return { level: 'ok', text: `Cùng commit ${head.slice(0, 7)} với SanoVids ${sanovidsVersion} (bản công khai mới nhất)` }

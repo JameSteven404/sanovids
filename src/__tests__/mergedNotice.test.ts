@@ -39,6 +39,8 @@ describe('SanoVids merged into Sano Agent: the launch notice', () => {
     expect(t).toMatchObject({ text: MERGED_NOTICE_TEXT, tone: 'info', persistent: true, closeLabel: 'Để sau', action: { label: 'Tải Sano Agent' } })
     expect(MERGED_NOTICE_TEXT).toContain('SanoVids đã gộp vào Sano Agent')
     expect(MERGED_NOTICE_TEXT).toContain('Dự án vẫn còn nguyên')
+    // the second app quits into the first one (same profile): the notice that starts the move says close + back up
+    expect(MERGED_NOTICE_TEXT).toContain('Trước khi mở Sano Agent: đóng SanoVids, sao lưu %APPDATA%\\SanoVids.')
     t.action!.run()
     expect(open).toHaveBeenCalledExactlyOnceWith(SANO_AGENT_RELEASES_URL)
     expect(SANO_AGENT_RELEASES_URL).toBe(rules.releasesUrl('Sano Agent'))

@@ -8,7 +8,9 @@ import { toast } from './store/ui'
 
 /** = electron/updater-rules releasesUrl('Sano Agent'). */
 export const SANO_AGENT_RELEASES_URL = 'https://github.com/JameSteven404/sano-agent-releases/releases/latest'
-export const MERGED_NOTICE_TEXT = 'SanoVids đã gộp vào Sano Agent. Dự án vẫn còn nguyên: Sano Agent mở cùng thư mục dữ liệu.'
+// Both apps open one profile and the second one quits (single-instance lock): close SanoVids before opening Sano Agent.
+export const MERGED_NOTICE_TEXT =
+  'SanoVids đã gộp vào Sano Agent. Dự án vẫn còn nguyên: Sano Agent mở cùng thư mục dữ liệu. Trước khi mở Sano Agent: đóng SanoVids, sao lưu %APPDATA%\\SanoVids.'
 
 /** `product` = window.bdpDesktop.product (main's app.getName(); missing on the web): every product but Sano Agent is SanoVids. */
 export function showsMergedNotice(product: unknown, embedded: boolean): boolean {

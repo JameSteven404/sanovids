@@ -1326,9 +1326,19 @@ describe('Sano Agent (--sano-agent: SANO_AGENT, sano-agent/electron-builder.cjs)
     expect(other).toMatchObject({ level: 'fail' })
     expect(other.text).toContain('phát hành SanoVids từ commit này trước')
     expect(lib.checkSameCommit({ head: a, theirs: null, sanovidsVersion: '0.6.0' }).level).toBe('fail')
+    // D236: Sano Agent first, SanoVids of the same version right after: its tag at HEAD here AND on GitHub
+    const next = { version: '1.0.0', local: a, remote: a }
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.6.0', next })).toMatchObject({ level: 'ok' })
+    expect(lib.checkSameCommit({ head: a, theirs: null, sanovidsVersion: '0.6.0', next }).level).toBe('ok')
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.6.0', next: { ...next, remote: null } }).level).toBe('fail')
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.6.0', next: { ...next, remote: b } }).level).toBe('fail')
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.6.0', next: { ...next, local: b } }).level).toBe('fail')
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '1.0.1', next }).level).toBe('fail')
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.6.0', next: { ...next, local: null } }).text).toContain('đặt tag v1.0.0 của SanoVids')
     const src = fs.readFileSync(path.join(root, 'scripts', 'publish-release.mjs'), 'utf8')
     expect(src).toContain("git(['rev-parse', '-q', '--verify', `${tagRef(sanovidsVersion, SANOVIDS)}^{commit}`])")
-    expect(src).toContain('checkSameCommit({ head, theirs: sanovidsCommit.code === 0 ? sanovidsCommit.out : null, sanovidsVersion })')
+    expect(src).toContain("git(['ls-remote', '--tags', 'origin', tagRef(V, SANOVIDS), `${tagRef(V, SANOVIDS)}^{}`])")
+    expect(src).toContain('checkSameCommit({ head, theirs: sanovidsCommit.code === 0 ? sanovidsCommit.out : null, sanovidsVersion, next })')
   })
 
   it('publish-release: every source tag goes through the product (sano-agent-v…), the feed tag stays v…', () => {
