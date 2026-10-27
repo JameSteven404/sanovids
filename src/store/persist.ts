@@ -662,9 +662,12 @@ async function syncBeforeEngine(projectId: string): Promise<boolean> {
   return true
 }
 
-/** Merge a late identity into its original project's stored takes in one transaction, preserving all other edits. */
+/**
+ * Merge a late identity into its original project's stored takes in one transaction, preserving all other edits.
+ * A take's account is immutable, so it is merged even after another tab's write (this tab then turns stale): the
+ * stored take must never keep the stale account another tab could submit and bill under.
+ */
 async function saveAccountBinding(projectId: string, takeIds: readonly string[], account: string): Promise<void> {
-  if (stale.has(projectId)) return
   const bindings = accountBindings.get(projectId) ?? new Map<string, string>()
   for (const id of takeIds) bindings.set(id, account)
   accountBindings.set(projectId, bindings)
@@ -674,10 +677,8 @@ async function saveAccountBinding(projectId: string, takeIds: readonly string[],
       const req = store.get(K.rev(projectId))
       req.onsuccess = () => {
         const stamp = (req.result as RevStamp | undefined) ?? null
-        if (isForeignWrite(stamp, baseRevs.get(projectId) ?? null, TAB_ID)) {
-          out.conflict = true
-          return
-        }
+        if (stamp?.deleted) return
+        out.conflict = stale.has(projectId) || isForeignWrite(stamp, baseRevs.get(projectId) ?? null, TAB_ID)
         const runs = store.get(K.runs(projectId))
         runs.onsuccess = () => {
           const stored = runs.result as RunsData | undefined
@@ -693,13 +694,10 @@ async function saveAccountBinding(projectId: string, takeIds: readonly string[],
       tx.oncomplete = () => resolve(out)
       tx.onabort = tx.onerror = () => reject(tx.error)
     }))
-    if (result.conflict) {
-      accountBindings.delete(projectId)
-      markStale(projectId)
-    } else if (result.stamp) {
-      baseRevs.set(projectId, result.stamp.rev)
-      broadcast('saved', projectId)
-    }
+    // This tab's copy is older than the stored one either way: only a write from a current copy becomes its base.
+    if (result.conflict) markStale(projectId)
+    else if (result.stamp) baseRevs.set(projectId, result.stamp.rev)
+    if (result.stamp) broadcast('saved', projectId)
   } catch {
     // Keep the binding in memory for the next save/open; no older account is submitted by this tab meanwhile.
     useUI.getState().toast('Chưa lưu được tài khoản của take. Hãy mở lại dự án và lưu trước khi đóng ứng dụng.', { tone: 'error' })

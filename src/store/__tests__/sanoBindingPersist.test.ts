@@ -59,7 +59,7 @@ beforeAll(async()=>{
 })
 afterAll(()=>{useRuns.getState().loadRuns({takes:[],credits:100,spent:0});p?.reset();registerProvider(original);setEngineHooks({});setEngineLockManager(undefined);vi.useRealTimers();vi.unstubAllEnvs();vi.unstubAllGlobals()})
 
-it.each(['warm-A','stale-A-click-B'] as const)('%s queued ownership survives project switch before fresh token resolves',async(scenario)=>{
+it.each(['warm-A','stale-A-click-B','stale-A-click-B-other-tab-saved'] as const)('%s queued ownership survives project switch before fresh token resolves',async(scenario)=>{
  p?.reset();useRuns.getState().loadRuns({takes:[],credits:100,spent:0});await flush()
  if(useProject.getState().project.id!==project.id)await switchProject(project.id)
  let current:'A'|'B'='A',slow=false,ready=false;const calls:any[]=[]
@@ -75,7 +75,7 @@ it.each(['warm-A','stale-A-click-B'] as const)('%s queued ownership survives pro
  await p.refreshLimits({force:true});registerProvider(p);ready=true;useProviderPrefs.setState({provider:'sano-gateway'})
  expect(useProject.getState().project.id).toBe(project.id)
  expect(p.account()).toBe(accountKey('fixture-A'))
- if(scenario==='stale-A-click-B')current='B'
+ if(scenario!=='warm-A')current='B'
  const intended=current
  slow=true
  expect(useRuns.getState().enqueue(['s1']).queued).toBe(1)
@@ -87,11 +87,14 @@ it.each(['warm-A','stale-A-click-B'] as const)('%s queued ownership survives pro
  const savedBefore=structuredClone(db.values.get(`runs:${project.id}`))
  expect(savedBefore.takes[0]).toMatchObject({id:queued.id,status:'queued'})
  expect(savedBefore.takes[0].account).toBe(accountKey('fixture-A'))
+ // Another tab saves the original project before the fresh account resolves: the binding still reaches its take.
+ if(scenario==='stale-A-click-B-other-tab-saved'){const rev=db.values.get(`rev:${project.id}`);db.values.set(`rev:${project.id}`,{rev:(rev?.rev??0)+1,tab:'fixture-other-tab',at:0});db.values.set(`runs:${project.id}`,{...savedBefore,spent:7})}
  await vi.advanceTimersByTimeAsync(600) // fresh account at Run finishes while X is open; original project's take is absent
  expect(p.account()).toBe(accountKey(`fixture-${intended}`))
  expect(useProject.getState().project.name).toBe('Edited other project while binding')
  const savedAfter=structuredClone(db.values.get(`runs:${project.id}`))
  expect(savedAfter.takes[0].account).toBe(accountKey(`fixture-${intended}`))
+ if(scenario==='stale-A-click-B-other-tab-saved')expect(savedAfter.spent).toBe(7) // the other tab's save is kept
  expect(calls.filter(c=>c.method==='POST')).toHaveLength(0)
  slow=false;current=intended==='A'?'B':'A';await p.refreshLimits({force:true})
  await switchProject(project.id)
