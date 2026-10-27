@@ -508,12 +508,13 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
     setWasBig(big)
     if (useCanvasLocal.getState().big !== big) useCanvasLocal.setState({ big })
   }, [big])
-  const minimapHidden = big && !shownFor
-  // A narrow board (SanoVids in SANO's Dựng phim, a small window) keeps its width for the cards: a smaller map.
+  // A narrow board (SanoVids inside SANO, a small window) keeps its width for the cards: the map waits until asked for
+  // (M / Hiển thị), then shows small. Even 120 × 90 covered the first scene's title at 768–799 px.
   const narrowBoard = useStore((s) => s.width > 0 && s.width < 600)
+  const minimapHidden = (big || narrowBoard) && !shownFor
   useEffect(() => {
-    useUI.setState({ minimapAutoHiddenFor: big ? projectId : null })
-    if (minimapHidden && showMinimap && !minimapNotified.has(projectId)) {
+    useUI.setState({ minimapAutoHiddenFor: big || narrowBoard ? projectId : null })
+    if (big && minimapHidden && showMinimap && !minimapNotified.has(projectId)) {
       minimapNotified.add(projectId)
       toast(`Dự án lớn (${baseNodes.length} thẻ): bản đồ thu nhỏ tạm ẩn để canvas mượt hơn.`, {
         action: { label: 'Hiện lại', run: () => {
@@ -523,7 +524,7 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
       })
     }
     return () => { useUI.setState({ minimapAutoHiddenFor: null }) }
-  }, [big, minimapHidden, showMinimap, projectId, baseNodes.length])
+  }, [big, narrowBoard, minimapHidden, showMinimap, projectId, baseNodes.length])
   const wireArea = useStore(useShallow((s) => big && edgeMode === 'all' ? wireViewport(s.transform, s.width, s.height) : null))
   const nearNodes = useMemo(() => {
     if (!wireArea) return null
