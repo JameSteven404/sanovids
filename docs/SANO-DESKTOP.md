@@ -117,8 +117,10 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
   `scripts/build-sano.mjs` trước electron-builder:
   - Lấy đúng commit ghim trong `sano-agent/sano.json` (`{ repo, commit }`) từ một checkout SANO trên máy: biến môi
     trường `SANO_REPO`, mặc định `E:/SANO-AGENT-wt-docker` (một worktree của repo SANO; worktree nào cũng đọc được commit
-    ghim). Hiện ghim đầu PR SANO #70 (dữ liệu mẫu trung tính, D242, nối sau #68). Sau khi Minh merge các PR SANO,
-    đổi commit ghim sang commit trên `main` của SANO và trỏ `SANO_REPO` vào checkout đó.
+    ghim). Hiện ghim đầu PR SANO #70 (03089b2: dữ liệu mẫu trung tính, D242/D249, nối sau #68). Sau khi Minh merge các
+    PR SANO bằng "Create a merge commit", giữ nguyên ghim nếu
+    `git -C "$SANO_REPO" merge-base --is-ancestor <commit trong sano.json> origin/main` trả 0; chỉ đổi ghim (rồi dựng
+    và thử lại) khi #70 không vào main nguyên vẹn (squash, rebase). Có thể trỏ `SANO_REPO` vào checkout `main`.
   - `git archive` chỉ lấy file cần để build web (`package.json`, lockfile, `tsconfig.json`, `vite.config.ts`,
     `index.html`, `public/`, `web/`, `shared/`). Không lấy `knowledge/`, `context/`, máy chủ.
   - Build trong thư mục tạm bằng lockfile của SANO (`npm ci --ignore-scripts`, `npm run build`), vì SANO dùng Vite 7 và
@@ -128,8 +130,8 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
     lucide-react 0.577…). Bộ cài Sano Agent chép file này thành `THIRD-PARTY-NOTICES.txt`.
   - Cần git, npm và mạng. Chạy riêng: `npm run build:sano`.
 - Mã SANO đã biên dịch nằm trong bộ cài: ai tải bộ cài cũng giải nén đọc được (không có source map, không có khoá; có
-  giao diện và dữ liệu mẫu nội bộ; trước khi đăng công khai, dữ liệu mẫu phải là dữ liệu trung tính, D242). Mỗi lần sửa
-  SANO là một bản Sano Agent ký số mới.
+  giao diện nội bộ, D242 cho phép). Dữ liệu mẫu là dữ liệu trung tính từ commit ghim của SANO #70 (D249); mỗi lần đổi
+  ghim, commit mới cũng phải giữ dữ liệu mẫu trung tính (D242). Mỗi lần sửa SANO là một bản Sano Agent ký số mới.
 - **Từ mã nguồn hoặc máy chủ team:** `SANO_URL` vẫn nhận `https://…` và `http://localhost`. Không mở được SANO ở địa chỉ
   đó (máy chủ tắt, sai cổng): cửa sổ báo "Không mở được SANO tại …" với **Thử lại / Mở Canvas / Thoát** (Enter là Thử lại,
   Esc là Thoát). **Mở Canvas** (D237) mở SanoVids chạy riêng ngay trong cửa sổ đó. Khi đó cửa sổ chỉ ở trong
@@ -154,8 +156,11 @@ Chủ dự án làm theo đúng thứ tự (từ checkout `main` sạch, trên m
    `Sano Agent`, name `sano-agent`, repo `JameSteven404/sano-agent-releases`, địa chỉ `app://sano/`. Không đổi nữa: đổi
    sau bản đầu = GUID mới, mục cài mới, gãy kênh cập nhật; đổi địa chỉ SANO = mất dữ liệu SANO của người dùng (bộ nhớ
    trang gắn với địa chỉ). **Điều kiện:**
-   - Trước bước 3 (merge): bộ cài dựng ra có dữ liệu mẫu trung tính thay cho dữ liệu mẫu nội bộ (D242). Nếu làm bằng
-     cách sửa thẳng SANO thì commit SANO ghim trong `sano-agent/sano.json` có dữ liệu đó và nằm trên SANO main.
+   - Trước bước 3 (merge): commit SANO ghim trong `sano-agent/sano.json` có dữ liệu mẫu trung tính (D242, D249: SANO
+     #70) và nằm trên SANO main: `git -C "$SANO_REPO" fetch origin`, rồi
+     `git -C "$SANO_REPO" merge-base --is-ancestor <commit trong sano.json> origin/main` phải trả 0. SANO #68 và #70
+     merge bằng "Create a merge commit" (squash hay rebase làm commit ghim không lên main). Chưa có công cụ nào tự kiểm
+     điều này: `release:check:sano-agent` chỉ so `BUILD.json` với `sano.json`.
    - Trước bước 9 (đăng): SANO đã xác nhận vector gốc và quyền dùng dấu S/phát (D244); có bản sao lưu ngoại tuyến của `.pfx` ngoài máy
      chính (D245). Nếu D244 không xác nhận được và Minh chọn icon tạm (cần D mới thay D232) thì đó là một commit mới: quay lại bước 3; nếu đã
      qua bước 6 thì tag đã push trỏ sai commit: dời tag hoặc tăng số phiên bản.
