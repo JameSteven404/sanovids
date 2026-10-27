@@ -108,7 +108,8 @@ chuẩn hoá): đừng xoá dòng này. `src/lib/__tests__/buildConfig.test.ts` 
 
 Bản cài **Sano Agent** (`npm run dist:sano-agent`, [SANO-DESKTOP.md](SANO-DESKTOP.md) mục 5–6) ký **đúng như SanoVids**:
 `sano-agent/electron-builder.cjs` giữ nguyên `build.win` (chứng chỉ, SHA-256, timestamp, 4 DLL trong `signExts`, file
-kèm), fuse và `files`, chỉ đổi icon. Ghim `sanovids.signers` nằm ở cấp ngoài cùng của `package.json` nên vào `app.asar`
+kèm), fuse và `files`, chỉ đổi icon, thêm `sano-dist/` (web SANO, D240) và dùng bản `THIRD-PARTY-NOTICES.txt` có thêm
+các gói của SANO. Ghim `sanovids.signers` nằm ở cấp ngoài cùng của `package.json` nên vào `app.asar`
 của Sano Agent: app tự kiểm chữ ký và kiểm bản cập nhật bằng cùng ghim. Quy tắc "ghim trước, ký sau" (mục 7) đọc
 `package.json` ở tag nguồn `sano-agent-v<bản trước>`. Bản cập nhật của app này phải ghi ProductName `Sano Agent`, nên bộ
 cài SanoVids không bao giờ được nhận thay, và ngược lại.

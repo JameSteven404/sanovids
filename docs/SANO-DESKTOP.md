@@ -8,7 +8,11 @@
 > **Canvas** bên trong. Mọi phiên bản về **1.0.0**, một nguồn duy nhất là `version` trong `package.json`. SanoVids 1.0.0
 > là bản cuối qua kênh cập nhật cũ (D236): chỉ để báo "SanoVids đã gộp vào Sano Agent", có nút tải Sano Agent; sau đó
 > SanoVids ngừng phát hành. Dự án đi theo vì hai app dùng chung `%APPDATA%\SanoVids` (D223). Bản 1.0 không có Google
-> (D234): SANO chạy ở chế độ demo, máy chủ chạy bằng Docker trên cùng máy (D233).
+> (D234): SANO chạy ở chế độ demo.
+>
+> **D240 (2026-10-27): Sano Agent tự chứa như SanoVids.** Web SANO được build sẵn và đóng gói trong app, mở ở
+> `app://sano/` (phương án D của TH-43). Người dùng không cần Docker, không cần máy chủ. Bản 1.0 không có API SANO.
+> Thay D233 (máy chủ Docker).
 
 ## 1. Mục đích
 
@@ -18,18 +22,30 @@ Máy chủ SANO không giữ phiên hay cookie canvasapp nào.
 
 ## 2. Chạy
 
-1. Chạy SANO trước (repo SANO-AGENT: `npm run dev`, mặc định `http://127.0.0.1:5173`; hoặc docker compose ở `http://127.0.0.1:8080`).
-2. Đóng SanoVids nếu đang mở: hai chế độ dùng chung thư mục dữ liệu, chỉ mở được một cửa sổ.
-3. Chạy `sano-desktop.bat` (địa chỉ khác: `sano-desktop.bat https://sano.example.vn`). File bat dựng lại SanoVids rồi mở SANO.
-4. Trong SANO: **SẢN XUẤT → Dựng phim**. Take mới vẫn chạy ở *chế độ Phát triển* (giả lập, không tốn credit). Muốn tạo
+Có hai cách, đều từ mã nguồn:
+
+- **Giống bản cài (D240):** `npm run build:sano` (dựng web SANO vào `sano-dist/`, cần checkout SANO, xem mục 5), rồi
+  `sano-desktop.bat app://sano/`. Không cần chạy SANO riêng.
+- **SANO từ máy chủ** (đang sửa SANO): chạy SANO trước (repo SANO-AGENT: `npm run dev`, mặc định
+  `http://127.0.0.1:5173`), rồi `sano-desktop.bat` (địa chỉ khác: `sano-desktop.bat https://sano.example.vn`).
+
+1. Đóng SanoVids nếu đang mở: hai chế độ dùng chung thư mục dữ liệu, chỉ mở được một cửa sổ.
+2. Chạy `sano-desktop.bat` như trên. File bat dựng lại SanoVids rồi mở SANO.
+3. Trong SANO: **Canvas**. Take mới vẫn chạy ở *chế độ Phát triển* (giả lập, không tốn credit). Muốn tạo
    video thật: Cài đặt của SanoVids → cổng canvasapp → bật, rồi **Đăng nhập** trên trang thật canvasapp.io.vn.
 
 ## 3. Cách hoạt động
 
 - `SANO_URL` chỉ có tác dụng khi chạy từ mã nguồn (bản đóng gói bỏ qua). Bản cài Sano Agent chỉ dùng địa chỉ nướng sẵn
   trong `package.json` của nó (`sanoAgent.url`, nằm trong `app.asar` có kiểm toàn vẹn); SanoVids đóng gói không có địa
-  chỉ nào. Nhận `https://…`, hoặc `http://` trên chính máy (`localhost`, `127.0.0.1`); chỉ lấy origin, tên máy chỉ gồm
-  chữ, số, `-` và `.` (vì origin đi vào CSP). Giá trị khác: app không mở (`hardening-rules.sanoShell`).
+  chỉ nào. Nhận đúng `app://sano/` (web SANO đóng gói trong app, D240), `https://…`, hoặc `http://` trên chính máy
+  (`localhost`, `127.0.0.1`); chỉ lấy origin, tên máy chỉ gồm chữ, số, `-` và `.` (vì origin đi vào CSP). Giá trị khác:
+  app không mở (`hardening-rules.sanoShell`).
+- `app://sano/` (D240): main phục vụ thư mục `sano-dist/` trong app, như `app://bdp/` phục vụ `dist/`. Chỉ ở chế độ này
+  host `sano` mới có; SanoVids thường và SANO từ máy chủ vẫn trả 404 cho mọi host khác `bdp`. `app://sano/api/…` luôn trả
+  404 dạng JSON (không có máy chủ), nên tab Máy chủ của SANO ghi "Chưa kết nối được API". Thiếu `sano-dist/index.html`
+  thì app báo lỗi rồi thoát. Trang SANO có CSP riêng (`hardening-rules.SANO_PAGE_CSP`): chỉ file của nó, không script
+  inline, khung duy nhất là `app://bdp`.
 - Thông báo main gửi tới trang (`devAccess:state`, `updates:state`) đi tới khung `app://bdp` (`hardening-rules.appFrames`),
   không bao giờ tới trang SANO.
 - Cửa sổ chính mở trang SANO và chỉ ở origin đó, kể cả khi máy chủ chuyển hướng; link ngoài mở trình duyệt.
@@ -60,6 +76,9 @@ Máy chủ SANO không giữ phiên hay cookie canvasapp nào.
 - Trong khung, SanoVids không có nút “Chọn thư mục tải về” (trình duyệt không cho khung khác origin mở hộp chọn thư mục).
   “Lưu video” và nút Thư mục trên canvas vẫn dùng hộp thoại của app.
 - Tải tệp từ trang SANO bị chặn (chỉ cho tải `blob:app://bdp/…`).
+- `app://sano/` (bản cài 1.0): dữ liệu SANO (bảng sản xuất, chat mẫu, nháp, giao diện) nằm trong bộ nhớ trang của
+  `app://sano`, trong thư mục dữ liệu chung. SANO chưa có chức năng xuất dữ liệu. Đổi địa chỉ này sau khi phát hành thì
+  mất dữ liệu đó, trừ khi có mã chuyển dữ liệu (TH-43 mục 5).
 
 ## 5. Bản cài Sano Agent
 
@@ -72,7 +91,9 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
 | Bộ cài | `SanoVids-Setup/Portable-x.y.z.exe` | `SanoAgent-Setup/Portable-x.y.z.exe`, cùng số phiên bản `package.json` (1.0.0, D235) |
 | Kênh cập nhật | `sanovids-releases` | `sano-agent-releases`; cache `%LOCALAPPDATA%\sano-agent-updater` |
 | Chữ ký | chứng chỉ `7489AB…`, timestamp, 4 DLL, tự kiểm chữ ký | giống hệt (cùng `win`, cùng ghim `sanovids.signers`) |
-| Cửa sổ | SanoVids | SANO ở `http://127.0.0.1:8080/` (nướng sẵn), Dựng phim = SanoVids |
+| Cửa sổ | SanoVids | SANO đóng gói sẵn ở `app://sano/` (D240), Canvas = SanoVids |
+| Trong `app.asar` | `dist/`, `electron/` | thêm `sano-dist/` (web SANO và `BUILD.json`) |
+| `THIRD-PARTY-NOTICES.txt` | `build/license-third-party.txt` | `build/license-third-party-sano-agent.txt`: thêm các gói của web SANO |
 
 - **Dữ liệu chung (D223):** Sano Agent mở `%APPDATA%\SanoVids` (cùng dự án, cookie canvasapp, `dev-access.json`, tuỳ chọn tự
   tải). Riêng file của trình cập nhật: `updater-sano-agent.json`, `logs\updater-sano-agent.log`. Gỡ Sano Agent không xoá
@@ -92,13 +113,27 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
   **Không bao giờ xoá hoặc tự sửa `electron-version`**: app cũ bị từ chối vì major mới hơn thì cài bản mới nhất của nó.
 - **Chế độ Phát triển** của bản cài bị khoá như SanoVids, chỉ mở bằng khoá của chủ (`sanovids.devUnlockKeys`). Chưa mở
   khoá thì take đi qua cổng canvasapp và **tốn credit thật**.
-- **Máy chủ SANO** ở cổng 8080 phải có khung desktop (`window.sanoDesktop`): build image từ nhánh SANO
-  `claude/sano-desktop-20261023` (hoặc sau khi nhánh đó vào main: `docker compose up -d --build` trong `E:\SANO AGENT`).
-  Thiếu khung đó thì Dựng phim là `/sanovids/` bản web: dữ liệu riêng, không có cổng canvasapp. Đổi địa chỉ (ví dụ khi có
-  HTTPS): sửa `sanoAgent.url` trong `sano-agent/electron-builder.cjs` rồi phát hành bản mới.
-- Không mở được SANO (máy chủ tắt, sai cổng): cửa sổ báo "Không mở được SANO tại …" với **Thử lại / Mở Canvas / Thoát**
-  (Enter là Thử lại, Esc là Thoát). **Mở Canvas** (D237) mở SanoVids chạy riêng ngay trong cửa sổ đó, như trước, không cần
-  Docker. Khi đó cửa sổ chỉ ở trong `app://bdp`, không về SANO nữa: muốn quay về SANO thì mở lại app.
+- **Web SANO trong app (D240):** người dùng không cần Docker hay máy chủ. `npm run dist:sano-agent` chạy
+  `scripts/build-sano.mjs` trước electron-builder:
+  - Lấy đúng commit ghim trong `sano-agent/sano.json` (`{ repo, commit }`) từ một checkout SANO trên máy: biến môi
+    trường `SANO_REPO`, mặc định `E:/SANO-AGENT-wt-docker` (checkout của PR SANO #68). Sau khi Minh merge các PR SANO,
+    đổi commit ghim sang commit trên `main` của SANO và trỏ `SANO_REPO` vào checkout đó.
+  - `git archive` chỉ lấy file cần để build web (`package.json`, lockfile, `tsconfig.json`, `vite.config.ts`,
+    `index.html`, `public/`, `web/`, `shared/`). Không lấy `knowledge/`, `context/`, máy chủ.
+  - Build trong thư mục tạm bằng lockfile của SANO (`npm ci --ignore-scripts`, `npm run build`), vì SANO dùng Vite 7 và
+    lucide-react 0.577. Có source map thì dừng (repo SANO là private).
+  - Chép kết quả ra `sano-dist/` (không đưa vào Git) kèm `BUILD.json` `{ commit, version }`. Không bao giờ ghi vào `dist/`.
+  - Ghi `build/license-third-party-sano-agent.txt`: giấy phép của SanoVids cộng các gói web SANO (react, react-dom,
+    lucide-react 0.577…). Bộ cài Sano Agent chép file này thành `THIRD-PARTY-NOTICES.txt`.
+  - Cần git, npm và mạng. Chạy riêng: `npm run build:sano`.
+- Mã SANO đã biên dịch nằm trong bộ cài: ai tải bộ cài cũng giải nén đọc được (không có source map, không có khoá; có
+  giao diện và dữ liệu mẫu nội bộ). Mỗi lần sửa SANO là một bản Sano Agent ký số mới.
+- **Từ mã nguồn hoặc máy chủ team:** `SANO_URL` vẫn nhận `https://…` và `http://localhost`. Không mở được SANO ở địa chỉ
+  đó (máy chủ tắt, sai cổng): cửa sổ báo "Không mở được SANO tại …" với **Thử lại / Mở Canvas / Thoát** (Enter là Thử lại,
+  Esc là Thoát). **Mở Canvas** (D237) mở SanoVids chạy riêng ngay trong cửa sổ đó. Khi đó cửa sổ chỉ ở trong
+  `app://bdp`, không về SANO nữa: muốn quay về SANO thì mở lại app. Với `app://sano/` hộp thoại này thực tế không hiện
+  (trang nằm trong app). Đổi địa chỉ nướng sẵn (ví dụ khi có máy chủ team HTTPS): sửa `sanoAgent.url` trong
+  `sano-agent/electron-builder.cjs` rồi phát hành bản mới.
 - **Icon**: dấu S/phát SANO trên ô đỏ `#E60000`, phương án A của bộ nhận diện TH-35 do Codex làm, Minh chọn ngày
   2026-10-27 (D232). Nguồn `sano-agent/icon-source/*.svg` là 8 SVG của SANO-AGENT `design/sano-agent/integration/icon-source/`
   (cùng tên, cùng khung với `build/icon-source`; 16/20/24 px là icon micro riêng). Đổi SVG thì chạy
@@ -114,8 +149,8 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
 Chủ dự án làm theo đúng thứ tự (từ checkout `main` sạch, trên máy có khoá ký):
 
 1. **Duyệt định danh vĩnh viễn:** appId `com.sanoagent.app`, tên app và tên exe `Sano Agent`, name `sano-agent`, repo
-   `JameSteven404/sano-agent-releases`, địa chỉ `http://127.0.0.1:8080/`. Đổi sau bản đầu = GUID mới, mục cài mới, gãy
-   kênh cập nhật.
+   `JameSteven404/sano-agent-releases`, địa chỉ `app://sano/`. Đổi sau bản đầu = GUID mới, mục cài mới, gãy
+   kênh cập nhật. Đổi địa chỉ SANO sau bản đầu = mất dữ liệu SANO của người dùng (bộ nhớ trang gắn với địa chỉ).
 2. ~~Ghim khoá mở khoá chế độ Phát triển~~ **Đã xong:** `sanovids.devUnlockKeys` đã ghim trên `main` từ 0.6.0
    (`release:check` của cả hai app vẫn chặn khi thiếu).
 3. **Merge** nhánh này vào `main` (trước đó sửa ngày ở mục `## [1.0.0] — yyyy-mm-dd — …` của `CHANGELOG.md` và
@@ -124,7 +159,8 @@ Chủ dự án làm theo đúng thứ tự (từ checkout `main` sạch, trên m
    (bản cuối, D236) **đăng sau cùng**, cả hai từ chính commit này. Nút "Tải Sano Agent" của bản cuối SanoVids mở trang
    tải về của Sano Agent, nên trang đó phải có bản cài trước.
 4. **Build cả hai**, lần lượt: `npm ci`, `npm test`, `npm run dist:sano-agent` (ra `release\sano-agent\`), rồi
-   `npm run dist:win` (ra `release\`). Có mạng (dấu thời gian của chữ ký). Chưa cần tag: build chỉ cần đúng commit.
+   `npm run dist:win` (ra `release\`). Có mạng (dấu thời gian của chữ ký, `npm ci` của SANO). Chưa cần tag: build chỉ cần
+   đúng commit. `dist:sano-agent` cần checkout SANO có commit ghim trong `sano-agent/sano.json` (`SANO_REPO`, mục 5).
 5. **Thử bản cài Sano Agent** theo mục 7. Có lỗi: sửa trên nhánh, merge, quay lại bước 4. Lúc này chưa có tag, chưa đăng
    gì, nên không mất bản SanoVids nào.
 6. **Đặt tag nguồn** cả hai trên đúng commit đó của `main`: `git tag -a sano-agent-v1.0.0 -m "Sano Agent 1.0.0"`,
@@ -134,8 +170,9 @@ Chủ dự án làm theo đúng thứ tự (từ checkout `main` sạch, trên m
    `scripts/releases-repo/`).
 8. **Kiểm tra cả hai:** `npm run release:check:sano-agent` và `npm run release:check`: mọi dòng ✓.
    `release:check:sano-agent` kiểm chữ ký, app-update.yml trỏ `sano-agent-releases` với
-   `updaterCacheDirName: sano-agent-updater`, tag `v1.0.0` của SanoVids trỏ vào HEAD (cả trên GitHub), và Electron giống
-   bản SanoVids công khai mới nhất.
+   `updaterCacheDirName: sano-agent-updater`, tag `v1.0.0` của SanoVids trỏ vào HEAD (cả trên GitHub), Electron giống
+   bản SanoVids công khai mới nhất, `app.asar` có `sano-dist/index.html` và `sano-dist/BUILD.json` với đúng commit ghim,
+   và `THIRD-PARTY-NOTICES.txt` giống `build/license-third-party-sano-agent.txt`.
 9. **Đăng Sano Agent:** `npm run release:publish:sano-agent` (chỉ repo công khai; repo nguồn chỉ có tag `sano-agent-v…`,
    không có release). Repo công khai dùng tag `v1.0.0`, như electron-updater cần. Mở
    `https://github.com/JameSteven404/sano-agent-releases/releases/latest`: phải thấy bộ cài 1.0.0.
@@ -155,14 +192,11 @@ Minh tự làm trên máy của mình. Agent không chạy bộ cài hay bản �
 6. **Lối tắt:** Start menu và Desktop có **Sano Agent** với icon dấu S/phát trên ô đỏ.
 7. **Icon:** thanh tác vụ và khay hệ thống hiện đúng icon đó khi app chạy.
 8. **Phiên bản:** Cài đặt → Giới thiệu hiện **1.0.0**, chữ ký số hợp lệ, đúng dấu vân tay ở bước 2.
-9. **SANO mở được:** bật máy chủ SANO bằng Docker rồi mở app: SANO hiện ở cửa sổ riêng. Trước khi các PR SANO
-   (#50 → #53 → #65 → #67 → #68) vào main, `main` chưa có Canvas: dựng từ checkout của nhánh #68
-   (`docker compose up -d --build` trong `E:\SANO-AGENT-wt-docker`). Sau khi merge: `docker compose up -d --build` trong
-   `E:\SANO AGENT`.
+9. **SANO mở được, không cần Docker:** mở app (không bật Docker, không chạy máy chủ nào). SANO hiện ngay ở cửa sổ riêng,
+   không có hộp thoại lỗi. Tab **Máy chủ** ghi "Chưa kết nối được API": đúng, bản 1.0 không có API.
 10. **Canvas và Trợ lý:** vào Canvas: SanoVids hiện toàn màn hình, gọn; nút **Trợ lý** ở góc phải trên mở trợ lý dự án.
-11. **Không có SANO:** tắt Docker (`docker compose stop`), mở lại app: hộp thoại "Không mở được SANO tại …" có
-    **Thử lại / Mở Canvas / Thoát**. Bật lại Docker rồi bấm **Thử lại**: vào được SANO. Tắt Docker lần nữa, mở lại app,
-    bấm **Mở Canvas**: SanoVids mở riêng, tạo và mở dự án được.
+11. **Dữ liệu SANO còn sau khi mở lại:** trong SANO sửa một mục của bảng sản xuất và đổi giao diện sáng/tối. Thoát app,
+    mở lại: thay đổi vẫn còn. Trên một máy không cài Docker, mở app: SANO và Canvas vẫn chạy như bước 9–10.
 12. **Một take thật, rẻ nhất:** trong Canvas, một cảnh **Seedance 2.5, 480p**, thời lượng ngắn nhất, qua cổng canvasapp.
     Đúng: credit trừ đúng giá hộp xác nhận báo, video tải về được. Chỉ một take.
 13. **Dự án cũ:** các dự án làm trong SanoVids có đủ trong Canvas (cảnh, ảnh, video đã tải).
@@ -186,11 +220,6 @@ Khi bản mới hỏng. Không bao giờ xoá release (máy đã cài cần nó 
    build từ cùng commit, và cùng Electron. SanoVids đã ngừng sau 1.0.0, nên trước khi phát hành 1.0.1 phải sửa luật này (mục 5 "Cùng commit, cùng
    Electron").
 
-**Máy chủ SANO (Docker trên cùng máy, D233):**
-- Trước khi lên 1.0, giữ bản cũ: `docker tag sano-api:local sano-api:pre-1.0`, `docker tag sano-web:local sano-web:pre-1.0`,
-  `docker compose stop`, rồi sao lưu volume:
-  `docker run --rm -v sano_sano-data:/data -v E:\sano-backup:/backup alpine tar cf /backup/sano-data-pre-1.0.tar -C /data .`
-- Quay về: `docker compose down` (không thêm `-v`), `docker tag sano-api:pre-1.0 sano-api:local`,
-  `docker tag sano-web:pre-1.0 sano-web:local`, khôi phục volume:
-  `docker run --rm -v sano_sano-data:/data -v E:\sano-backup:/backup alpine sh -c "find /data -mindepth 1 -delete && tar xf /backup/sano-data-pre-1.0.tar -C /data"`,
-  rồi `docker compose up -d` **không** `--build` (`--build` dựng lại image từ mã mới).
+**Web SANO (D240):** nằm trong bộ cài, nên rút lui đúng như app ở trên: bản vá 1.0.1 ghim commit SANO tốt cuối cùng
+trong `sano-agent/sano.json`. Người dùng không có Docker hay máy chủ SANO nào để quay về. Giữ nguyên địa chỉ `app://sano/`
+để không mất dữ liệu SANO trên máy.

@@ -201,7 +201,7 @@ Chi tiết cho người phát triển (cách ký, sao lưu khoá, đổi chứng
 ### Cách nhanh nhất (Windows)
 - **`start.bat`**: build (nếu chưa có) rồi mở bản chạy thật tại http://localhost:5180. Sau khi sửa code, xoá thư mục `dist/` hoặc chạy `npm run build` để cập nhật.
 - **`dev.bat`**: bản phát triển, tự tải lại khi sửa code.
-- **`sano-desktop.bat`**: mở app SANO trong cửa sổ desktop, khu “Dựng phim” là SanoVids với cổng canvasapp ([docs/SANO-DESKTOP.md](docs/SANO-DESKTOP.md)).
+- **`sano-desktop.bat`**: mở app SANO trong cửa sổ desktop, khu “Canvas” là SanoVids với cổng canvasapp ([docs/SANO-DESKTOP.md](docs/SANO-DESKTOP.md)). Giống bản cài Sano Agent (không cần máy chủ): `npm run build:sano` rồi `sano-desktop.bat app://sano/`.
 
 ### Dòng lệnh
 ```bash
@@ -220,6 +220,7 @@ npm run dev
 | `npm run dist:win` | Tạo 2 file `.exe` **đã ký số** (cài đặt + portable) trong `release/`, file tự cập nhật (`latest.yml`, `.blockmap`) trong `release/_build/`; bản cũ tự chuyển vào `release/ban-cu/`. Cần khoá ký của tác giả trên máy và có mạng ([docs/SIGNING.md](docs/SIGNING.md)) |
 | `npm run release:check` | Xem trước việc đăng bản: kiểm tra tag, file, nguồn cập nhật, GitHub và in đúng các lệnh sẽ chạy (không đăng gì) |
 | `npm run release:publish` | Đăng bản lên GitHub: repo riêng `sanovids` trước, trang tải về công khai `sanovids-releases` sau cùng (chỉ chủ dự án) |
+| `npm run build:sano` | Dựng web SANO (commit ghim trong `sano-agent/sano.json`, checkout SANO ở biến `SANO_REPO`) vào `sano-dist/` cho Sano Agent. `npm run dist:sano-agent` tự chạy lệnh này |
 | `npm run icons` | Tạo lại icon ứng dụng |
 | `node scripts/third-party-notices.mjs` | Tạo lại giấy phép của các thư viện mã nguồn mở (`build/license-third-party.txt` → `THIRD-PARTY-NOTICES.txt` trong thư mục cài). Chạy sau khi thêm / nâng thư viện: `npm test` báo nếu file đã cũ |
 | `npm run typecheck` / `npm test` | Kiểm tra TypeScript / chạy unit test |

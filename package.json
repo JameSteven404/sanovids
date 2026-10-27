@@ -40,7 +40,8 @@
     "tidy:release": "node scripts/tidy-release.mjs",
     "release:check": "node scripts/publish-release.mjs --dry-run",
     "release:publish": "node scripts/publish-release.mjs",
-    "dist:sano-agent": "node scripts/update-notes.mjs --sano-agent && node scripts/third-party-notices.mjs --check && vite build && node scripts/electron-build.mjs --config sano-agent/electron-builder.cjs --win nsis portable --publish never && node scripts/tidy-release.mjs --sano-agent",
+    "build:sano": "node scripts/build-sano.mjs",
+    "dist:sano-agent": "node scripts/update-notes.mjs --sano-agent && node scripts/third-party-notices.mjs --check && vite build && node scripts/build-sano.mjs && node scripts/electron-build.mjs --config sano-agent/electron-builder.cjs --win nsis portable --publish never && node scripts/tidy-release.mjs --sano-agent",
     "release:check:sano-agent": "node scripts/publish-release.mjs --sano-agent --dry-run",
     "release:publish:sano-agent": "node scripts/publish-release.mjs --sano-agent"
   },

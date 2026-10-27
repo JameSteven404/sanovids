@@ -63,6 +63,7 @@ import {
   checkPackagedIdentity,
   checkRotation,
   checkSameCommit,
+  checkSanoBuild,
   checkSameElectron,
   compareAssets,
   compareVersions,
@@ -136,7 +137,7 @@ const EXPECT = {
   // LICENSE.txt clause 6 promises these next to the exe (package.json build.win.extraFiles)
   shippedFiles: [
     { name: 'LICENSE.txt', source: path.join(root, 'LICENSE.txt') },
-    { name: NOTICES_SHIPPED, source: path.join(root, ...NOTICES_SOURCE.split('/')) },
+    { name: NOTICES_SHIPPED, source: path.join(root, ...(PRODUCT.notices ?? NOTICES_SOURCE).split('/')) },
   ],
   // installed apps accept the Setup as their update only when its VersionInfo names this app and this version
   productName: pkg.build?.productName ?? pkg.productName,
@@ -329,7 +330,7 @@ if (asarPath && exists(asarPath)) {
     const headBuf = Buffer.alloc(asarHeaderBytes(prefix))
     fs.readSync(fd, headBuf, 0, headBuf.length, 0)
     const header = readAsarHeader(headBuf)
-    for (const p of REQUIRED_ASAR_FILES) {
+    for (const p of [...REQUIRED_ASAR_FILES, ...(PRODUCT.asarFiles ?? [])]) {
       if (asarHas(header, p)) ok('app.asar', `Có ${p}`)
       else fail('app.asar', `Thiếu ${p}: bản build này không chạy / không tự cập nhật / không kiểm tra chữ ký số được.`)
     }
@@ -355,6 +356,14 @@ if (asarPath && exists(asarPath)) {
       const bad = checkPackagedIdentity(inner, pkg)
       if (bad.length) fail('app.asar', `package.json trong app không phải bản phát hành ${V}: ${bad.join('; ')}.`)
       else ok('app.asar', `package.json trong app: ${inner.name} / ${inner.productName} / ${V}, tác giả ${AUTHOR}, ${inner.sanovids.signers.length} vân tay chứng chỉ`)
+    }
+    // D240: Sano Agent packs SANO's web app, built from exactly the pinned SANO commit.
+    if (PRODUCT.sanoPin) {
+      const pin = JSON.parse(fs.readFileSync(path.join(root, PRODUCT.sanoPin), 'utf8'))
+      const built = asarHas(header, 'sano-dist/BUILD.json') ? readAsarJson('sano-dist/BUILD.json') : null
+      const problem = checkSanoBuild(built, pin)
+      if (problem) fail('app.asar', problem)
+      else ok('app.asar', `Web SANO ${built.version ?? '?'} build từ commit ${short(built.commit)}, đúng commit ghim trong ${PRODUCT.sanoPin}`)
     }
   } catch (e) {
     fail('app.asar', `Không đọc được app.asar (${e?.message ?? e}).`)

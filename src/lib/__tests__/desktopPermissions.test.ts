@@ -47,6 +47,8 @@ describe('default session permissions: document and container boundaries', () =>
     ['standalone app', 'app://bdp/index.html', true, undefined, null],
     ['app frame in configured SANO', 'https://sano.example.test/project', false, 'https://sano.example.test', 'https://sano.example.test'],
     ['app frame in configured loopback SANO', 'http://127.0.0.1:8080/', false, 'http://127.0.0.1:8080', 'http://127.0.0.1:8080'],
+    // D240: Sano Agent's own SANO page (sanoShell hard-codes this origin)
+    ['app frame in packed SANO (app://sano)', 'app://sano/', false, 'app://sano', 'app://sano'],
     // Chromium reports false even for a top-level fileSystem check: do not use it as a blanket deny.
     ['app document with fileSystem frame flag', 'app://bdp/', false, undefined, null],
   ] as const)('allows the app permissions: %s', (_name, top, isMainFrame, embeddingOrigin, sanoOrigin) => {
@@ -63,8 +65,17 @@ describe('default session permissions: document and container boundaries', () =>
     ['app URL credentials', 'app://bdp/', 'app://attacker@bdp/', 'app://bdp'],
     ['opaque requesting document', 'app://bdp/', 'about:blank', 'null'],
     ['wrong configured SANO port', 'https://sano.example.test:444/', 'app://bdp/', 'app://bdp'],
+    ['app://sano top page when SANO is a server', 'app://sano/', 'app://bdp/', 'app://bdp'],
   ])('denies both handlers: %s', (_name, top, requestingUrl, origin) => {
     expect(decisions({ getURL: () => top }, { requestingUrl, isMainFrame: false }, origin)).toEqual(permissions.map(() => [false, false]))
+  })
+
+  it.each([
+    ['packed SANO top page itself', 'app://sano/', 'app://sano/', 'app://sano'],
+    ['untrusted frame in packed SANO', 'app://sano/', 'https://untrusted.test/frame', 'https://untrusted.test'],
+    ['lookalike packed SANO host', 'app://sano.attacker.test/', 'app://bdp/', 'app://bdp'],
+  ])('denies both handlers with app://sano configured: %s', (_name, top, requestingUrl, origin) => {
+    expect(decisions({ getURL: () => top }, { requestingUrl, isMainFrame: false }, origin, 'app://sano')).toEqual(permissions.map(() => [false, false]))
   })
 
   it('denies an untrusted intermediate embedding origin even with a trusted top page', () => {

@@ -59,7 +59,13 @@ export const SANO_AGENT = Object.freeze({
   /** electron-updater's cache folder (%LOCALAPPDATA%\<name>-updater): never SanoVids' own. */
   cacheDir: 'sano-agent-updater',
   /** The SANO address baked into the app (package.json sanoAgent.url, electron/hardening-rules sanoShell). */
-  url: 'http://127.0.0.1:8080/',
+  url: 'app://sano/',
+  /** D240: the SANO web app packed in app.asar (scripts/build-sano.mjs), on top of REQUIRED_ASAR_FILES. */
+  asarFiles: Object.freeze(['sano-dist/index.html', 'sano-dist/BUILD.json']),
+  /** The SANO-AGENT commit sano-dist/ must be built from (checkSanoBuild). */
+  sanoPin: 'sano-agent/sano.json',
+  /** Its THIRD-PARTY-NOTICES.txt: SanoVids' notices plus SANO's packages (scripts/build-sano.mjs). */
+  notices: 'build/license-third-party-sano-agent.txt',
   privateRelease: false,
   mac: false,
 })
@@ -398,6 +404,19 @@ export const REQUIRED_ASAR_FILES = Object.freeze([
   'electron/devaccess-rules.cjs',
   'node_modules/electron-updater/package.json',
 ])
+/**
+ * D240: the SANO web app in Sano Agent's app.asar (sano-dist/BUILD.json, written by scripts/build-sano.mjs) against the
+ * commit pinned in sano-agent/sano.json. → a Vietnamese problem, or null when they match.
+ */
+export function checkSanoBuild(build, pin) {
+  const commit = (o) => (o && typeof o === 'object' && typeof o.commit === 'string' && /^[0-9a-f]{40}$/.test(o.commit) ? o.commit : null)
+  const want = commit(pin)
+  const got = commit(build)
+  if (!want) return 'sano-agent/sano.json không có commit SANO hợp lệ (40 ký tự hex).'
+  if (!got) return 'sano-dist/BUILD.json trong app không có commit SANO: chạy lại npm run dist:sano-agent.'
+  if (got !== want) return `SANO trong app build từ commit ${got.slice(0, 7)}, cần ${want.slice(0, 7)} (sano-agent/sano.json): chạy lại npm run dist:sano-agent.`
+  return null
+}
 /** The checks scripts/mac-inspect.mjs records in mac-check.json (every one must be true to publish). */
 export const MAC_CHECKS = Object.freeze([
   'codesign',
