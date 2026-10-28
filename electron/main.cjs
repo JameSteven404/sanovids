@@ -49,6 +49,7 @@ const MIME = {
 const updaterRules = require('./updater-rules.cjs')
 const hardening = require('./hardening-rules.cjs')
 const googleSignInRules = require('./google-signin-rules.cjs')
+const accountRules = require('./sano-account-rules.cjs')
 /**
  * Packaged app? Not app.isPackaged alone: Electron decides that from the exe NAME, so a copy of SanoVids.exe renamed
  * electron.exe would run the real app.asar with every packaged-only protection off. With the OnlyLoadAppFromAsar fuse
@@ -95,11 +96,18 @@ const DEV_OPEN_BUILD = require('./devaccess-rules.cjs').devOpenBuild({ devToolsA
  * frame: same profile, canvasapp gateway and checks (fromApp) as SanoVids. From source: SANO_URL. Packaged: only the
  * address Sano Agent bakes into its package.json (sano-agent/electron-builder.cjs); plain SanoVids has none.
  */
-const SANO = hardening.sanoShell({ isPackaged: PACKAGED, value: process.env.SANO_URL, baked: readBakedSanoUrl() })
+const SANO = hardening.sanoShell({ isPackaged: PACKAGED, value: process.env.SANO_URL, baked: readBakedSanoAgent('url') })
 if (SANO === false) {
   console.error('[SanoVids] SANO_URL must be https://…, http://localhost:<port>/ or app://sano/')
   process.exit(2)
 }
+/**
+ * SANO's account server (D253, sano-account-rules.cjs): from source SANO_API_URL, packaged only Sano Agent's baked
+ * sanoAgent.apiUrl (sano-agent/electron-builder.cjs). Unset or refused → the in-app sign-in is off (configured: false).
+ */
+const SANO_API_RAW = PACKAGED ? readBakedSanoAgent('apiUrl') : process.env.SANO_API_URL
+const SANO_API = SANO ? accountRules.accountApiUrl(SANO_API_RAW) : null
+if (SANO && SANO_API_RAW && !SANO_API) console.error('[SanoVids] SANO_API_URL must be https://host[:port] or http://127.0.0.1|localhost|[::1]:port: in-app sign-in is off')
 /** D240: SANO's page comes from the app itself (sano-dist/ at app://sano/), not from a server. */
 const SANO_IN_APP = !!SANO && SANO.url === hardening.SANO_IN_APP_URL
 if (SANO_IN_APP && !fs.existsSync(path.join(SANO_DIST, 'index.html'))) {
@@ -126,11 +134,11 @@ function readBakedProfileDir() {
   }
 }
 
-/** `sanoAgent.url` of the app's own package.json (only the Sano Agent build has it), else undefined. */
-function readBakedSanoUrl() {
+/** `sanoAgent[key]` (url, apiUrl) of the app's own package.json (only the Sano Agent build has it), else undefined. */
+function readBakedSanoAgent(key) {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'))
-    return pkg && pkg.sanoAgent && typeof pkg.sanoAgent.url === 'string' ? pkg.sanoAgent.url : undefined
+    return pkg && pkg.sanoAgent && typeof pkg.sanoAgent[key] === 'string' ? pkg.sanoAgent[key] : undefined
   } catch {
     return undefined
   }
@@ -270,6 +278,7 @@ if (!app.requestSingleInstanceLock()) {
     registerFileBridge()
     registerAppBridge()
     if (SANO) registerGoogleSignIn()
+    if (SANO) registerAccount()
     // Google account cookies the in-app sign-in popup of earlier SANO desktop runs left (TH-36 moved sign-in to the
     // default browser); nothing in the default session needs them, in either mode (same data folder).
     void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies)
@@ -795,16 +804,7 @@ function appPlacement() {
  * this process's memory. Only SANO's page itself may ask (fromSano). The client id comes from SANO's server.
  */
 function registerGoogleSignIn() {
-  const google = googleSignInRules.createGoogleSignIn({
-    clientId: sanoDesktopClientId,
-    // only if Google turns out to require it for the desktop client (TH-36 T1); set on the computer running SANO desktop
-    secret: process.env.SANO_GOOGLE_DESKTOP_CLIENT_SECRET,
-    createServer: http.createServer,
-    openExternal: (url) => shell.openExternal(url),
-    fetch: (url, init) => net.fetch(url, init),
-    focus: showMainWindow,
-    now: Date.now,
-  })
+  const google = newGoogleSignIn()
   ipcMain.handle('sano:googleSignIn', (event) => (fromSano(event) ? google.signIn() : gatewayError('not-allowed', 'Nguồn gọi không hợp lệ.')))
   ipcMain.handle('sano:googleToken', (event) => (fromSano(event) ? google.token() : null))
   ipcMain.handle('sano:googleSignOut', (event) => (fromSano(event) ? google.signOut() : false))
@@ -816,10 +816,46 @@ function fromSano(event) {
   return !!(win && !win.isDestroyed() && event.senderFrame && event.senderFrame === win.webContents.mainFrame && event.senderFrame.origin === SANO.origin)
 }
 
-/** googleDesktopClientId of SANO's /api/assistant/status, or null (not configured, SANO unreachable). */
+/** A Google sign-in of its own (google-signin-rules.cjs): the page bridge and the account each have one. */
+function newGoogleSignIn() {
+  return googleSignInRules.createGoogleSignIn({
+    clientId: sanoDesktopClientId,
+    // only if Google turns out to require it for the desktop client (TH-36 T1); set on the computer running SANO desktop
+    secret: process.env.SANO_GOOGLE_DESKTOP_CLIENT_SECRET,
+    createServer: http.createServer,
+    openExternal: (url) => shell.openExternal(url),
+    fetch: (url, init) => net.fetch(url, init),
+    focus: showMainWindow,
+    now: Date.now,
+  })
+}
+
+/**
+ * Sano Agent's in-app sign-in (D253): window.sanoDesktop.account → these handlers → SANO's account server, called with
+ * Node's fetch (no Origin header, no Chromium cookie). Only SANO's page itself may call (fromSano, on every call).
+ */
+function registerAccount() {
+  const account = accountRules.createAccount({
+    apiUrl: SANO_API,
+    fetch: (url, init) => fetch(url, init),
+    file: path.join(profile.dir, 'sano-account.bin'),
+    fs: fs.promises,
+    safeStorage,
+    now: Date.now,
+    random: (n) => crypto.randomBytes(n),
+    google: newGoogleSignIn(),
+    log: (line) => console.error(line),
+  })
+  accountRules.registerAccountIpc(ipcMain, account, fromSano)
+}
+
+/**
+ * googleDesktopClientId of /api/assistant/status, or null (not configured, unreachable): of the account server when
+ * there is one (app://sano/ has no API), else of SANO's own origin.
+ */
 async function sanoDesktopClientId() {
   try {
-    const res = await net.fetch(`${SANO.origin}/api/assistant/status`, { signal: AbortSignal.timeout(15_000) })
+    const res = await net.fetch(`${SANO_API || SANO.origin}/api/assistant/status`, { signal: AbortSignal.timeout(15_000) })
     return res.ok ? googleSignInRules.desktopClientId(await res.json()) : null
   } catch {
     return null

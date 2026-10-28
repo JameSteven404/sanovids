@@ -401,6 +401,8 @@ export const REQUIRED_ASAR_FILES = Object.freeze([
   'electron/keeplogin-rules.cjs',
   // main.cjs requires it on every start (SANO desktop's Google sign-in, TH-36)
   'electron/google-signin-rules.cjs',
+  // and Sano Agent's in-app sign-in (D253)
+  'electron/sano-account-rules.cjs',
   // the development-mode lock (DV): without it a release build cannot lock or unlock development mode
   'electron/devaccess.cjs',
   'electron/devaccess-rules.cjs',

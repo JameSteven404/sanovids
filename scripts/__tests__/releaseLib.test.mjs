@@ -638,7 +638,7 @@ describe('release scripts (source guarantees)', () => {
   it('publish-release checks the signed build before anything is published', () => {
     const src = read('publish-release.mjs')
     // the files app.asar must hold: one shared list (the Windows group (g) and the Mac zip check use it)
-    for (const f of ['electron/main.cjs', 'electron/preload.cjs', 'electron/updater.cjs', 'electron/updater-rules.cjs', 'electron/signature.cjs', 'electron/hardening-rules.cjs', 'electron/keeplogin-rules.cjs', 'electron/google-signin-rules.cjs']) {
+    for (const f of ['electron/main.cjs', 'electron/preload.cjs', 'electron/updater.cjs', 'electron/updater-rules.cjs', 'electron/signature.cjs', 'electron/hardening-rules.cjs', 'electron/keeplogin-rules.cjs', 'electron/google-signin-rules.cjs', 'electron/sano-account-rules.cjs']) {
       expect(lib.REQUIRED_ASAR_FILES).toContain(f)
     }
     expect(src).toContain('for (const p of [...REQUIRED_ASAR_FILES, ...(PRODUCT.asarFiles ?? [])]) {')

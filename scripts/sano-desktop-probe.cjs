@@ -12,12 +12,15 @@ const path = require('node:path')
 const { app, BrowserWindow, session } = require('electron')
 
 // main.cjs must load synchronously (it registers schemes before 'ready'), so the port is picked, not asked for
-const PORT = 40000 + Math.floor(Math.random() * 20000)
+// (SANO_PROBE_PORT / SANO_PROBE_PROFILE: a fixed port and a throwaway profile of the caller's choice)
+const PORT = Number(process.env.SANO_PROBE_PORT) || 40000 + Math.floor(Math.random() * 20000)
 const ORIGIN = `http://127.0.0.1:${PORT}`
-const PROFILE = path.join(os.tmpdir(), 'sanovids-sano-probe')
+const PROFILE = process.env.SANO_PROBE_PROFILE || path.join(os.tmpdir(), 'sanovids-sano-probe')
 fs.rmSync(PROFILE, { recursive: true, force: true })
 process.env.SANO_URL = `${ORIGIN}/`
 process.env.SANOVIDS_PROFILE_DIR = PROFILE
+// D253: no account server, so the in-app sign-in reports itself unconfigured (no network call)
+delete process.env.SANO_API_URL
 
 const checks = []
 const refused = []
@@ -55,11 +58,14 @@ async function run() {
   check("the iframe is at SANO's origin", !!sub && sub.origin === ORIGIN)
   check('SANO-origin iframe: no sanoDesktop', !!sub && (await sub.executeJavaScript('typeof window.sanoDesktop')) === 'undefined')
   check("main answers the main window's top frame (signOut → true)", (await js(wc, 'window.sanoDesktop.google.signOut()')) === true)
+  check("account: SANO's top frame gets status (unconfigured without SANO_API_URL)", (await js(wc, 'window.sanoDesktop.account.status().then((s) => `${s.configured}/${s.signedIn}`)')) === 'false/false')
+  check('account: unconfigured sign-in rejects (not-configured)', (await js(wc, "window.sanoDesktop.account.login({ identifier: 'a', password: 'b' }).catch((e) => e.code)")) === 'not-configured')
   // the same preload in another window at SANO's origin: the page gets sanoDesktop, main refuses every call
   const other = new BrowserWindow({ show: false, webPreferences: { preload: path.join(__dirname, '..', 'electron', 'preload.cjs'), sandbox: true, contextIsolation: true, additionalArguments: [`--bdp-sano-origin=${ORIGIN}`] } })
   await other.loadURL(`${ORIGIN}/`)
   check('another window: signOut refused (false)', (await js(other.webContents, 'window.sanoDesktop.google.signOut()')) === false)
   check('another window: signIn refused (not-allowed)', (await js(other.webContents, 'window.sanoDesktop.google.signIn().then((r) => r.code)')) === 'not-allowed')
+  check('another window: account.status refused (not-allowed)', (await js(other.webContents, 'window.sanoDesktop.account.status().catch((e) => e.code)')) === 'not-allowed')
   other.destroy()
   check('nothing went to https', refused.length === 0)
 }

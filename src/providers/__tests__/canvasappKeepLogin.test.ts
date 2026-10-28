@@ -1460,9 +1460,12 @@ describe('keep-login wiring (electron/main.cjs)', () => {
     expect(reg).not.toMatch(/\.restore\(|safeStorage/)
     const start = fnBody('startCanvasappKeepLogin')
     expect(start).not.toMatch(/\.restore\(|readFile\(|ensureCanvasappRestored/)
-    // safeStorage appears only in the require line and inside the injected crypto object of startCanvasappKeepLogin
+    // safeStorage appears only in the require line, inside the injected crypto object of startCanvasappKeepLogin, and
+    // handed as is to Sano Agent's account (sano-account-rules.cjs, D253: used on a status() call, never at start)
     const cryptoObj = start.slice(start.indexOf('const asyncSafeStorage = {'), blockAt(start, start.indexOf('const asyncSafeStorage = {'))[1])
-    expect(count(mainCode, 'safeStorage')).toBe(count(cryptoObj, 'safeStorage') + 1)
+    expect(count(mainCode, 'safeStorage')).toBe(count(cryptoObj, 'safeStorage') + 2)
+    expect(count(fnBody('registerAccount'), 'safeStorage')).toBe(1)
+    expect(fnBody('registerAccount')).toContain('\n    safeStorage,\n')
     expect(mainCode).toMatch(/const \{ app, BrowserWindow, Menu, dialog, ipcMain, net, protocol, safeStorage, session, shell \} = require\('electron'\)/)
     // only inside arrow functions (called later by the keep-login object, never at start)
     for (const line of cryptoObj.split('\n').filter((l) => l.includes('safeStorage'))) expect(line).toMatch(/^\s+\w+: (async )?\([^)]*\) => /)

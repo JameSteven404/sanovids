@@ -352,7 +352,7 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(h.sanoShell({ isPackaged: true, baked: 'http://sano.example.vn/' })).toBe(false)
     expect(h.sanoShell({ isPackaged: false, baked: 'app://sano/' })).toBeNull()
     expect(h.sanoShell({ isPackaged: false, baked: 'http://127.0.0.1:8080/' })).toBeNull()
-    expect(mainSource).toMatch(/return pkg && pkg\.sanoAgent && typeof pkg\.sanoAgent\.url === 'string' \? pkg\.sanoAgent\.url : undefined/)
+    expect(mainSource).toMatch(/return pkg && pkg\.sanoAgent && typeof pkg\.sanoAgent\[key\] === 'string' \? pkg\.sanoAgent\[key\] : undefined/)
   })
 
   it('D240 app://sano: exactly that address, origin hard-coded (Node’s URL says "null" for a custom scheme)', () => {
@@ -380,7 +380,7 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
       expect(i, s).toBeGreaterThan(-1)
       return i
     }
-    expect(at('const SANO = hardening.sanoShell({ isPackaged: PACKAGED, value: process.env.SANO_URL, baked: readBakedSanoUrl() })')).toBeLessThan(at('fs.mkdirSync(profile.dir'))
+    expect(at("const SANO = hardening.sanoShell({ isPackaged: PACKAGED, value: process.env.SANO_URL, baked: readBakedSanoAgent('url') })")).toBeLessThan(at('fs.mkdirSync(profile.dir'))
     expect(mainSource).toMatch(/if \(SANO === false\) \{\s+console\.error\([^)]*\)\s+process\.exit\(2\)/)
     expect(mainSource).toContain('nodeIntegrationInSubFrames: !!SANO,')
     // D223: shared projects with SanoVids — set before ready, SANO mode only, the only Chromium switch main adds
@@ -566,7 +566,7 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     const run = (origin: string, sano: boolean, sanoOrigin = 'http://127.0.0.1:8080', isMainFrame = true) => {
       const exposed: string[] = []
       const electron = {
-        contextBridge: { exposeInMainWorld: (key: string) => void exposed.push(key) },
+        contextBridge: { exposeInMainWorld: (key: string) => void exposed.push(key), executeInMainWorld: ({ func, args }: { func: (...a: unknown[]) => unknown; args: unknown[] }) => new Function(`return (${func})`)()(...args) },
         ipcRenderer: { invoke: () => Promise.resolve(), on: () => undefined, removeListener: () => undefined },
       }
       const argv = ['--bdp-version=1.0.0', '--bdp-product=Sano Agent', ...(sano ? [`--bdp-sano-origin=${sanoOrigin}`] : [])]
@@ -610,8 +610,9 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     }
     const from = mainSource.slice(mainSource.indexOf('function fromSano(event) {'), mainSource.indexOf('async function sanoDesktopClientId()'))
     expect(from).toContain('event.senderFrame === win.webContents.mainFrame && event.senderFrame.origin === SANO.origin')
-    // the client id comes from SANO's server; Google's endpoints are constants of google-signin-rules.cjs
-    expect(mainSource).toContain('await net.fetch(`${SANO.origin}/api/assistant/status`, { signal: AbortSignal.timeout(15_000) })')
+    // the client id comes from SANO's account server (app://sano/ has no API), else SANO's own; Google's endpoints are
+    // constants of google-signin-rules.cjs
+    expect(mainSource).toContain('await net.fetch(`${SANO_API || SANO.origin}/api/assistant/status`, { signal: AbortSignal.timeout(15_000) })')
     expect(mainSource).not.toMatch(/googleapis|oauth2/)
     // the gateway still answers app://bdp frames only
     expect(mainSource).toContain("return url.startsWith(ORIGIN + '/')")
@@ -626,9 +627,13 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     const sano = /\n {2}contextBridge\.exposeInMainWorld\('sanoDesktop', \{\n([\s\S]*?)\n {2}\}\)\n/.exec(preloadSource)
     expect(sano).not.toBeNull()
     expect([...sano![1].matchAll(/^ {4}(\w+): /gm)].map((m) => m[1])).toEqual(['sanovidsUrl', 'google'])
+    // D253: the account object is built in the page's world (its Errors keep their code), then exposed here
+    expect(sano![1]).toMatch(/\n {4}account,$/)
+    expect(preloadSource).toContain('  const account = contextBridge.executeInMainWorld({')
     expect(sano![1]).toContain("sanovidsUrl: 'app://bdp/',")
     // no argument crosses: main decides the client, the endpoints and where the tokens go
-    expect([...sano![1].matchAll(/^ {6}(\w+): (.*)$/gm)].map((m) => `${m[1]}: ${m[2]}`)).toEqual([
+    const google = sano![1]
+    expect([...google.matchAll(/^ {6}(\w+): (.*)$/gm)].map((m) => `${m[1]}: ${m[2]}`)).toEqual([
       "signIn: () => ipcRenderer.invoke('sano:googleSignIn'),",
       "token: () => ipcRenderer.invoke('sano:googleToken'),",
       "signOut: () => ipcRenderer.invoke('sano:googleSignOut'),",

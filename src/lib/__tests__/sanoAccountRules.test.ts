@@ -1,0 +1,504 @@
+// Sano Agent in-app sign-in (electron/sano-account-rules.cjs, D253): the account against a fake SANO account server
+// (an injected fetch answering /api/auth/* like SANO's server/accounts.ts), a fake reversible safeStorage, an
+// in-memory fs and a fake Google sign-in. Never a real server, never Google. Passwords are built at run time.
+import { createHash, randomUUID } from 'node:crypto'
+import { createRequire } from 'node:module'
+import { afterEach, describe, expect, it } from 'vitest'
+import mainSource from '../../../electron/main.cjs?raw'
+import preloadSource from '../../../electron/preload.cjs?raw'
+
+type User = { id: string; name: string; email: string; username: string | null; admin: boolean }
+type Status = { configured: boolean; signedIn: boolean; user: User | null; persistent: boolean; offline?: boolean }
+type Answer<T> = { ok: true; value: T } | { ok: false; error: string; code?: string }
+type GoogleResult = { ok: true; idToken: string } | { ok: false; code: string; message: string }
+interface Account {
+  status(): Promise<Answer<Status>>
+  login(i: unknown): Promise<Answer<Status>>
+  register(i: unknown): Promise<Answer<{ ok: true }>>
+  forgot(i: unknown): Promise<Answer<{ ok: true }>>
+  google(): Promise<Answer<Status>>
+  cancelGoogle(): Promise<Answer<undefined>>
+  signOut(): Promise<Answer<Status>>
+}
+interface Rules {
+  TIMEOUT_MS: number
+  LIMITS: Record<string, number>
+  REDIRECT_URI: string
+  CALLS: readonly string[]
+  TEXT: Record<string, string>
+  NOT_ALLOWED: { ok: false; error: string; code: string }
+  accountApiUrl(v: unknown): string | null
+  createAccount(fx: Record<string, unknown>): Account
+  registerAccountIpc(ipcMain: { handle(ch: string, fn: (event: unknown, input: unknown) => unknown): void }, account: Account, allowed: (event: unknown) => boolean): void
+}
+const nodeRequire = createRequire(import.meta.url)
+const R = nodeRequire('../../../electron/sano-account-rules.cjs') as Rules
+
+const API = 'http://127.0.0.1:8796'
+const FILE = 'C:/profile/sano-account.bin'
+const NOW = Date.parse('2026-10-28T10:00:00Z')
+const pw = () => `Pw-${randomUUID()}`
+const S256 = (v: string) => createHash('sha256').update(v).digest('base64url')
+const json = (status: number, value: unknown) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json; charset=utf-8' } })
+
+/** SANO's /api/auth/* as far as the app uses it: one verified account, codes bound to redirect_uri + S256 challenge. */
+function fakeServer(password = pw()) {
+  const user: User = { id: 'u-1', name: 'Minh', email: 'minh@sanogroup.tv', username: 'minh', admin: false }
+  const calls: { method: string; path: string; auth?: string; body: Record<string, unknown> | null; init: RequestInit }[] = []
+  const codes = new Map<string, { challenge: string; redirect: string }>()
+  const sessions = new Set<string>()
+  const secrets: string[] = [password]
+  const opts: { offline?: boolean; meStatus?: number; state?: string; redirect?: string; hang?: string; raw?: Response } = {}
+  const issue = (body: Record<string, unknown>) => {
+    const code = `code-${randomUUID()}`
+    secrets.push(code)
+    codes.set(code, { challenge: String(body.code_challenge), redirect: String(body.redirect_uri) })
+    const u = new URL(opts.redirect ?? String(body.redirect_uri))
+    u.searchParams.set('code', code)
+    u.searchParams.set('state', opts.state ?? String(body.state))
+    return json(200, { redirect: u.href })
+  }
+  const fetch = async (url: string, init: RequestInit) => {
+    const u = new URL(url)
+    const headers = init.headers as Record<string, string>
+    const body = typeof init.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : null
+    calls.push({ method: String(init.method), path: u.pathname, auth: headers.Authorization, body, init })
+    if (opts.hang === u.pathname) return new Promise<Response>(() => undefined)
+    if (opts.offline) throw new TypeError('fetch failed')
+    if (opts.raw) return opts.raw
+    expect(u.origin).toBe(API)
+    if (body) expect(headers['Content-Type']).toBe('application/json')
+    switch (`${init.method} ${u.pathname}`) {
+      case 'POST /api/auth/login':
+        if (body?.identifier !== 'minh' || body.password !== password) return json(401, { error: 'Sai tài khoản hoặc mật khẩu.' })
+        if (body.client !== 'desktop' || body.redirect_uri !== R.REDIRECT_URI) return json(400, { error: 'Yêu cầu đăng nhập không hợp lệ.' })
+        return issue(body)
+      case 'POST /api/auth/google':
+        if (body?.credential !== 'google-id-token') return json(401, { error: 'Đăng nhập Google không hợp lệ.' })
+        return issue(body)
+      case 'POST /api/auth/token': {
+        const c = codes.get(String(body?.code))
+        codes.delete(String(body?.code))
+        if (!c || c.redirect !== body?.redirect_uri || S256(String(body?.code_verifier)) !== c.challenge) return json(400, { error: 'Mã đăng nhập không hợp lệ hoặc đã hết hạn. Đăng nhập lại.' })
+        const token = `sano_${randomUUID()}`
+        secrets.push(token, String(body?.code_verifier))
+        sessions.add(token)
+        return json(200, { token, expiresAt: new Date(NOW + 30 * 86_400_000).toISOString(), user })
+      }
+      case 'GET /api/auth/me': {
+        if (opts.meStatus) return json(opts.meStatus, { error: 'x' })
+        const ok = sessions.has(String(headers.Authorization).replace('Bearer ', ''))
+        return ok ? json(200, user) : json(401, { error: 'Phiên đăng nhập đã hết hạn. Đăng nhập lại.' })
+      }
+      case 'POST /api/auth/logout':
+        sessions.delete(String(headers.Authorization).replace('Bearer ', ''))
+        return json(200, { ok: true })
+      case 'POST /api/auth/register':
+        if (!String(body?.email).endsWith('@sanogroup.tv')) return json(403, { error: 'Chỉ email @sanogroup.tv được tự tạo tài khoản.' })
+        return json(200, { ok: true })
+      case 'POST /api/auth/forgot':
+        return json(200, { ok: true })
+    }
+    return json(404, { error: 'Không tìm thấy API.' })
+  }
+  return { user, calls, sessions, secrets, opts, fetch, password }
+}
+
+/** userData's file, encrypted by a fake safeStorage (base64 behind a prefix: never the plaintext). */
+function machine(encrypt = true) {
+  const files = new Map<string, Buffer>()
+  const fs = {
+    readFile: async (p: string) => {
+      const b = files.get(p)
+      if (!b) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return b
+    },
+    writeFile: async (p: string, b: Buffer) => void files.set(p, Buffer.from(b)),
+    rename: async (a: string, b: string) => {
+      files.set(b, files.get(a)!)
+      files.delete(a)
+    },
+    rm: async (p: string) => void files.delete(p),
+  }
+  const safeStorage = {
+    isEncryptionAvailable: () => encrypt,
+    encryptString: (s: string) => Buffer.from(`v10${Buffer.from(s).toString('base64')}`),
+    decryptString: (b: Buffer) => {
+      const s = b.toString()
+      if (!s.startsWith('v10')) throw new Error('Error while decrypting the ciphertext provided to safeStorage.decryptString.')
+      return Buffer.from(s.slice(3), 'base64').toString()
+    },
+  }
+  return { files, fs, safeStorage }
+}
+
+function fakeGoogle(result: () => Promise<GoogleResult> = async () => ({ ok: true, idToken: 'google-id-token' })) {
+  const g = { signIns: 0, signOuts: 0, cancel: null as null | (() => void) }
+  return Object.assign(g, {
+    signIn: () => {
+      g.signIns++
+      return new Promise<GoogleResult>((resolve) => {
+        g.cancel = () => resolve({ ok: false, code: 'cancelled', message: 'Bạn đã hủy đăng nhập.' })
+        void result().then(resolve)
+      })
+    },
+    signOut: () => {
+      g.signOuts++
+      g.cancel?.()
+      return true
+    },
+  })
+}
+
+const logs: string[] = []
+function setup(o: { server?: ReturnType<typeof fakeServer>; m?: ReturnType<typeof machine>; google?: ReturnType<typeof fakeGoogle>; apiUrl?: string | null; now?: number } = {}) {
+  const server = o.server ?? fakeServer()
+  const m = o.m ?? machine()
+  const google = o.google ?? fakeGoogle()
+  let seed = 0
+  const account = R.createAccount({
+    apiUrl: o.apiUrl === undefined ? API : o.apiUrl,
+    fetch: server.fetch,
+    file: FILE,
+    fs: m.fs,
+    safeStorage: m.safeStorage,
+    now: () => o.now ?? NOW,
+    random: (n: number) => Uint8Array.from({ length: n }, () => (seed = (seed * 31 + 7) % 251)),
+    google,
+    log: (line: string) => void logs.push(line),
+  })
+  return { account, server, m, google }
+}
+const value = <T,>(a: Answer<T>) => {
+  if (!a.ok) throw new Error(`expected ok, got ${a.error}`)
+  return a.value
+}
+
+afterEach(() => {
+  logs.length = 0
+})
+
+describe('accountApiUrl: https://host[:port], or http on this machine with a port; nothing else', () => {
+  it('accepts a server origin only', () => {
+    for (const [v, want] of [
+      ['https://sano.example.vn', 'https://sano.example.vn'],
+      ['https://sano.example.vn/', 'https://sano.example.vn'],
+      ['https://sano.example.vn:8443', 'https://sano.example.vn:8443'],
+      ['http://127.0.0.1:8796', 'http://127.0.0.1:8796'],
+      ['http://localhost:8796/', 'http://localhost:8796'],
+      ['http://[::1]:8796', 'http://[::1]:8796'],
+    ]) expect(R.accountApiUrl(v), v).toBe(want)
+    for (const bad of [undefined, null, '', 7, 'sano.example.vn', 'http://sano.example.vn', 'http://127.0.0.1', 'http://127.0.0.1:80', 'http://192.168.1.2:8796', 'https://sano.example.vn/api', 'https://sano.example.vn/?x=1', 'https://sano.example.vn?', 'https://sano.example.vn#x', 'https://u:p@sano.example.vn', 'https://u@sano.example.vn', 'ftp://sano.example.vn', 'app://sano/', 'file:///C:/x', ' https://sano.example.vn', 'javascript:alert(1)']) {
+      expect(R.accountApiUrl(bad), String(bad)).toBeNull()
+    }
+  })
+})
+
+describe('createAccount (fake SANO account server)', () => {
+  it('unconfigured: status says so, every call refuses without the network; 1.0 behaves as today', async () => {
+    const { account, server } = setup({ apiUrl: null })
+    expect(value(await account.status())).toEqual({ configured: false, signedIn: false, user: null, persistent: true })
+    for (const r of [await account.login({ identifier: 'minh', password: pw() }), await account.register({ email: 'a@sanogroup.tv', username: 'a', name: 'A', password: pw() }), await account.forgot({ identifier: 'a' }), await account.google()]) {
+      expect(r).toEqual({ ok: false, error: 'Bản Sano Agent này chưa nối máy chủ tài khoản.', code: 'not-configured' })
+    }
+    expect(value(await account.signOut()).signedIn).toBe(false)
+    expect(server.calls).toEqual([])
+  })
+
+  it('password sign-in: fresh verifier + state per attempt, code → sano_ session, kept encrypted; a restart is still signed in', async () => {
+    const t = setup()
+    const { account, server, m } = t
+    expect(value(await account.status())).toEqual({ configured: true, signedIn: false, user: null, persistent: true })
+    const s = value(await account.login({ identifier: 'minh', password: server.password }))
+    expect(s).toEqual({ configured: true, signedIn: true, user: server.user, persistent: true })
+    const [login, token] = server.calls
+    expect(login).toMatchObject({ method: 'POST', path: '/api/auth/login', body: { identifier: 'minh', client: 'desktop', redirect_uri: R.REDIRECT_URI } })
+    expect(token).toMatchObject({ method: 'POST', path: '/api/auth/token', body: { redirect_uri: R.REDIRECT_URI } })
+    expect(token.body!.code_challenge).toBeUndefined()
+    // every request: JSON, 20 s, no redirect followed, no cookie
+    for (const c of server.calls) {
+      expect(c.init.redirect).toBe('manual')
+      expect(c.init.signal).toBeInstanceOf(AbortSignal)
+      expect(c.init.credentials).toBeUndefined()
+    }
+    expect(R.TIMEOUT_MS).toBe(20_000)
+    // the file: encrypted, never the token in plaintext
+    const bytes = m.files.get(FILE)!
+    const tok = server.secrets.find((x) => x.startsWith('sano_'))!
+    expect(bytes.toString()).not.toContain(tok)
+    expect(JSON.parse(m.safeStorage.decryptString(bytes))).toEqual({ token: tok, expiresAt: '2026-11-27T10:00:00.000Z', user: server.user })
+    // a second attempt uses a new verifier and state
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    const logins = server.calls.filter((c) => c.path === '/api/auth/login')
+    expect(logins[0].body!.state).not.toBe(logins[1].body!.state)
+    expect(logins[0].body!.code_challenge).not.toBe(logins[1].body!.code_challenge)
+    // restart: same machine, a new account object reads the file and asks /me
+    const again = setup({ server, m })
+    expect(value(await again.account.status())).toEqual({ configured: true, signedIn: true, user: server.user, persistent: true })
+    expect(server.calls.at(-1)).toMatchObject({ method: 'GET', path: '/api/auth/me', auth: `Bearer ${server.secrets.filter((x) => x.startsWith('sano_')).at(-1)}`, body: null })
+  })
+
+  it('/me refreshes the cached user (and the file)', async () => {
+    const { account, server, m } = setup()
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    server.user.name = 'Minh Nguyễn'
+    expect(value(await account.status()).user!.name).toBe('Minh Nguyễn')
+    expect(JSON.parse(m.safeStorage.decryptString(m.files.get(FILE)!)).user.name).toBe('Minh Nguyễn')
+  })
+
+  it("state mismatch, or a code for another address: refused, nothing kept, no token exchange", async () => {
+    for (const o of [{ state: 'someone-else' }, { redirect: 'http://127.0.0.1:9/other' }, { redirect: 'http://127.0.0.1:5555/callback' }]) {
+      const { account, server, m } = setup()
+      Object.assign(server.opts, o)
+      expect(await account.login({ identifier: 'minh', password: server.password })).toEqual({ ok: false, error: R.TEXT.stateMismatch, code: 'state-mismatch' })
+      expect(server.calls.map((c) => c.path)).toEqual(['/api/auth/login'])
+      expect(m.files.size).toBe(0)
+      expect(value(await account.status()).signedIn).toBe(false)
+    }
+  })
+
+  it("the server's Vietnamese errors pass through (login, register, forgot)", async () => {
+    const { account, server } = setup()
+    expect(await account.login({ identifier: 'minh', password: `${server.password}x` })).toEqual({ ok: false, error: 'Sai tài khoản hoặc mật khẩu.' })
+    expect(await account.register({ email: 'a@gmail.com', username: 'a', name: 'A', password: pw() })).toEqual({ ok: false, error: 'Chỉ email @sanogroup.tv được tự tạo tài khoản.' })
+    expect(await account.register({ email: 'a@sanogroup.tv', username: 'a', name: 'A', password: pw() })).toEqual({ ok: true, value: { ok: true } })
+    expect(server.calls.at(-1)!.body).toEqual({ email: 'a@sanogroup.tv', username: 'a', name: 'A', password: expect.any(String) })
+    expect(await account.forgot({ identifier: 'a' })).toEqual({ ok: true, value: { ok: true } })
+    expect(server.calls.at(-1)).toMatchObject({ path: '/api/auth/forgot', body: { identifier: 'a' } })
+    // a code, when the server sends one
+    server.opts.raw = json(429, { error: 'Quá nhiều yêu cầu. Vui lòng thử lại sau một phút.', code: 'rate-limit' })
+    expect(await account.forgot({ identifier: 'a' })).toEqual({ ok: false, error: 'Quá nhiều yêu cầu. Vui lòng thử lại sau một phút.', code: 'rate-limit' })
+  })
+
+  it('a redirect is never followed; a non-JSON answer is no answer', async () => {
+    const { account, server } = setup()
+    server.opts.raw = new Response(null, { status: 302, headers: { location: 'https://evil.example.vn/' } })
+    expect(await account.forgot({ identifier: 'a' })).toEqual({ ok: false, error: R.TEXT.invalid, code: 'bad-answer' })
+    server.opts.raw = new Response('<html>proxy</html>', { status: 200, headers: { 'content-type': 'text/html' } })
+    expect(await account.forgot({ identifier: 'a' })).toEqual({ ok: false, error: R.TEXT.invalid })
+  })
+
+  it('inputs: strings only, within the limits; refused before the network', async () => {
+    const { account, server } = setup()
+    for (const bad of [undefined, null, 'x', {}, { identifier: 'minh' }, { identifier: 'minh', password: 7 }, { identifier: 'a'.repeat(255), password: 'x' }, { identifier: 'minh', password: 'p'.repeat(129) }]) {
+      expect(await account.login(bad), JSON.stringify(bad)).toEqual({ ok: false, error: R.TEXT.badInput, code: 'bad-input' })
+    }
+    expect((await account.register({ email: 'a@sanogroup.tv', username: 'u'.repeat(33), name: 'A', password: pw() })).ok).toBe(false)
+    expect((await account.register({ email: 'a@sanogroup.tv', username: 'u', name: 'n'.repeat(101), password: pw() })).ok).toBe(false)
+    expect((await account.forgot({ identifier: ['a'] })).ok).toBe(false)
+    expect(server.calls).toEqual([])
+    expect(R.LIMITS).toEqual({ identifier: 254, password: 128, name: 100, email: 254, username: 32 })
+  })
+
+  it('401 (or 403) on /me: signed out, the file deleted; offline (or 5xx): still signed in with the cached user', async () => {
+    for (const st of [401, 403]) {
+      const { account, server, m } = setup()
+      value(await account.login({ identifier: 'minh', password: server.password }))
+      server.opts.meStatus = st
+      expect(value(await account.status())).toEqual({ configured: true, signedIn: false, user: null, persistent: true })
+      expect(m.files.size).toBe(0)
+    }
+    const { account, server, m } = setup()
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    server.opts.offline = true
+    expect(value(await account.status())).toEqual({ configured: true, signedIn: true, user: server.user, persistent: true, offline: true })
+    server.opts.offline = false
+    server.opts.meStatus = 502
+    expect(value(await account.status())).toMatchObject({ signedIn: true, offline: true })
+    expect(m.files.size).toBe(1)
+    // the server revoked it meanwhile (a sign-out elsewhere): the next answer signs out
+    server.opts.meStatus = undefined
+    server.sessions.clear()
+    expect(value(await account.status()).signedIn).toBe(false)
+  })
+
+  it('expired by expiresAt: signed out without asking the server; a damaged file: signed out and deleted', async () => {
+    const server = fakeServer()
+    const m = machine()
+    value(await setup({ server, m }).account.login({ identifier: 'minh', password: server.password }))
+    const later = setup({ server, m, now: NOW + 31 * 86_400_000 })
+    const n = server.calls.length
+    expect(value(await later.account.status()).signedIn).toBe(false)
+    expect(server.calls.length).toBe(n)
+    expect(m.files.size).toBe(0)
+    m.files.set(FILE, Buffer.from('garbage'))
+    expect(value(await setup({ server, m }).account.status()).signedIn).toBe(false)
+    expect(m.files.size).toBe(0)
+  })
+
+  it('no encryption on this computer: memory only (persistent false), nothing written; a restart is signed out', async () => {
+    const server = fakeServer()
+    const m = machine(false)
+    const { account } = setup({ server, m })
+    expect(value(await account.login({ identifier: 'minh', password: server.password }))).toEqual({ configured: true, signedIn: true, user: server.user, persistent: false })
+    expect(m.files.size).toBe(0)
+    expect(value(await account.status())).toMatchObject({ signedIn: true, persistent: false })
+    expect(value(await setup({ server, m }).account.status()).signedIn).toBe(false)
+  })
+
+  it('sign-out: file and memory gone at once, logout sent best effort (never waited on), a Google wait cancelled', async () => {
+    const { account, server, m, google } = setup()
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    const tok = server.secrets.find((x) => x.startsWith('sano_'))
+    server.opts.hang = '/api/auth/logout' // the server never answers: sign-out still returns
+    expect(value(await account.signOut())).toEqual({ configured: true, signedIn: false, user: null, persistent: true })
+    expect(server.calls.at(-1)).toMatchObject({ method: 'POST', path: '/api/auth/logout', auth: `Bearer ${tok}` })
+    expect(m.files.size).toBe(0)
+    expect(google.signOuts).toBe(1)
+    expect(value(await account.status()).signedIn).toBe(false)
+    // offline sign-out signs out too
+    const t = setup()
+    value(await t.account.login({ identifier: 'minh', password: t.server.password }))
+    t.server.opts.offline = true
+    expect(value(await t.account.signOut()).signedIn).toBe(false)
+    expect(t.m.files.size).toBe(0)
+  })
+
+  it('a sign-in that finishes after a sign-out is dropped', async () => {
+    const t = setup()
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const fetch = t.server.fetch
+    const slow = R.createAccount({
+      apiUrl: API,
+      fetch: async (url: string, init: RequestInit) => {
+        if (url.endsWith('/api/auth/token')) await gate
+        return fetch(url, init)
+      },
+      file: FILE,
+      fs: t.m.fs,
+      safeStorage: t.m.safeStorage,
+      now: () => NOW,
+      random: (n: number) => new Uint8Array(n).fill(3),
+      google: fakeGoogle(),
+      log: () => undefined,
+    })
+    const login = slow.login({ identifier: 'minh', password: t.server.password })
+    await new Promise((r) => setTimeout(r, 0))
+    value(await slow.signOut())
+    release()
+    expect(value(await login).signedIn).toBe(false)
+    expect(t.m.files.size).toBe(0)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(t.server.sessions.size).toBe(0) // the dropped session was ended on the server too
+    expect(value(await slow.status()).signedIn).toBe(false)
+  })
+
+  it("Google: #18's browser sign-in gives the ID token, POST google → code → session; Google's tokens are dropped", async () => {
+    const { account, server, google } = setup()
+    expect(value(await account.google())).toEqual({ configured: true, signedIn: true, user: server.user, persistent: true })
+    expect(server.calls.map((c) => c.path)).toEqual(['/api/auth/google', '/api/auth/token'])
+    expect(server.calls[0].body).toMatchObject({ credential: 'google-id-token', client: 'desktop', redirect_uri: R.REDIRECT_URI, state: expect.any(String), code_challenge: expect.any(String) })
+    expect([google.signIns, google.signOuts]).toEqual([1, 1])
+  })
+
+  it('Google: cancel → "Đã huỷ đăng nhập Google."; #18 failures keep their message; a refused token passes through', async () => {
+    const waiting = setup({ google: fakeGoogle(() => new Promise(() => undefined)) })
+    const g = waiting.account.google()
+    await new Promise((r) => setTimeout(r, 0))
+    value(await waiting.account.cancelGoogle())
+    expect(await g).toEqual({ ok: false, error: 'Đã huỷ đăng nhập Google.', code: 'cancelled' })
+    expect(waiting.server.calls).toEqual([])
+    const timeout = setup({ google: fakeGoogle(async () => ({ ok: false, code: 'timeout', message: 'Hết 5 phút chờ đăng nhập. Hãy thử lại.' })) })
+    expect(await timeout.account.google()).toEqual({ ok: false, error: 'Hết 5 phút chờ đăng nhập. Hãy thử lại.', code: 'timeout' })
+    const refused = setup({ google: fakeGoogle(async () => ({ ok: true, idToken: 'other' })) })
+    expect(await refused.account.google()).toEqual({ ok: false, error: 'Đăng nhập Google không hợp lệ.' })
+    expect(refused.m.files.size).toBe(0)
+  })
+
+  it('logs: never a password, token, code or verifier', async () => {
+    const { account, server } = setup()
+    await account.login({ identifier: 'minh', password: server.password })
+    await account.status()
+    server.opts.offline = true
+    await account.status()
+    await account.login({ identifier: 'minh', password: server.password })
+    await account.signOut()
+    expect(logs.length).toBeGreaterThan(0)
+    for (const line of logs) for (const s of server.secrets) expect(line).not.toContain(s)
+  })
+})
+
+describe('IPC: every account:* call checks the sender (fromSano), and the preload turns { ok: false } into an Error', () => {
+  it('registerAccountIpc: all seven calls; a refused sender never reaches the account', async () => {
+    const handlers = new Map<string, (event: unknown, input: unknown) => unknown>()
+    const reached: string[] = []
+    const account = Object.fromEntries(R.CALLS.map((c) => [c, async (input: unknown) => (reached.push(c), { ok: true, value: input })])) as unknown as Account
+    R.registerAccountIpc({ handle: (ch, fn) => void handlers.set(ch, fn) }, account, (event) => event === 'sano')
+    expect([...handlers.keys()]).toEqual(['account:status', 'account:login', 'account:register', 'account:forgot', 'account:google', 'account:cancelGoogle', 'account:signOut'])
+    for (const [ch, fn] of handlers) expect(await fn('frame', { x: 1 }), ch).toEqual({ ok: false, error: 'Nguồn gọi không hợp lệ.', code: 'not-allowed' })
+    expect(reached).toEqual([])
+    expect(await handlers.get('account:login')!('sano', { identifier: 'a' })).toEqual({ ok: true, value: { identifier: 'a' } })
+  })
+
+  it('main: SANO mode only, fromSano on every call, Node fetch (no Origin), the profile file, the env / baked server', () => {
+    expect(mainSource).toContain('\n    if (SANO) registerAccount()\n')
+    const body = mainSource.slice(mainSource.indexOf('function registerAccount() {'), mainSource.indexOf('async function sanoDesktopClientId()'))
+    expect(body).toContain('accountRules.registerAccountIpc(ipcMain, account, fromSano)')
+    expect(body).toContain('fetch: (url, init) => fetch(url, init),')
+    expect(body).not.toContain('net.fetch')
+    expect(body).toContain("file: path.join(profile.dir, 'sano-account.bin'),")
+    expect(body).toContain('google: newGoogleSignIn(),')
+    expect(mainSource.split("ipcMain.handle('account:").length - 1).toBe(0) // only through registerAccountIpc
+    expect(mainSource).toContain("const SANO_API_RAW = PACKAGED ? readBakedSanoAgent('apiUrl') : process.env.SANO_API_URL")
+    expect(mainSource).toContain('const SANO_API = SANO ? accountRules.accountApiUrl(SANO_API_RAW) : null')
+    const from = mainSource.slice(mainSource.indexOf('function fromSano(event) {'), mainSource.indexOf('/** A Google sign-in of its own'))
+    expect(from).toContain('event.senderFrame === win.webContents.mainFrame && event.senderFrame.origin === SANO.origin')
+  })
+
+  it('preload: SANO top frame only; inputs cut one past the limit; { ok: false } → Error(message) with code', async () => {
+    const invoked: [string, unknown][] = []
+    let answer: unknown = { ok: true, value: { signedIn: false } }
+    const exposed: Record<string, { account: Record<string, (i?: unknown) => Promise<unknown>> }> = {}
+    const electron = {
+      contextBridge: { exposeInMainWorld: (key: string, api: never) => void (exposed[key] = api), executeInMainWorld: ({ func, args }: { func: (...a: unknown[]) => unknown; args: unknown[] }) => new Function(`return (${func})`)()(...args) },
+      ipcRenderer: { invoke: async (ch: string, input: unknown) => (invoked.push([ch, input]), answer), on: () => undefined, removeListener: () => undefined },
+    }
+    const run = (isMainFrame: boolean) => {
+      const proc = { argv: ['--bdp-version=1.0.0', '--bdp-sano-origin=app://sano'], versions: { electron: '44.0.0' }, platform: 'win32', isMainFrame }
+      new Function('require', 'process', 'location', 'window', preloadSource)(() => electron, proc, { origin: 'app://sano' }, { addEventListener: () => undefined })
+    }
+    run(false)
+    expect(exposed.sanoDesktop).toBeUndefined()
+    run(true)
+    const a = exposed.sanoDesktop.account
+    expect(Object.keys(a)).toEqual(['status', 'login', 'register', 'forgot', 'google', 'cancelGoogle', 'signOut'])
+    expect(await a.status()).toEqual({ signedIn: false })
+    await a.login({ identifier: 'x'.repeat(400), password: 7, extra: 'dropped' })
+    expect(invoked.at(-1)).toEqual(['account:login', { identifier: 'x'.repeat(255), password: '' }])
+    await a.register({ email: 'e', username: 'u'.repeat(50), name: 'n', password: 'p' })
+    expect(invoked.at(-1)).toEqual(['account:register', { email: 'e', username: 'u'.repeat(33), name: 'n', password: 'p' }])
+    await a.forgot(null)
+    expect(invoked.at(-1)).toEqual(['account:forgot', { identifier: '' }])
+    answer = { ok: false, error: 'Sai tài khoản hoặc mật khẩu.', code: 'bad-password' }
+    const e = (await a.login({ identifier: 'a', password: 'b' }).catch((x) => x)) as Error & { code?: string }
+    expect(e).toBeInstanceOf(Error)
+    expect([e.message, e.code]).toEqual(['Sai tài khoản hoặc mật khẩu.', 'bad-password'])
+    answer = { ok: false, error: 'Đã huỷ đăng nhập Google.', code: 'cancelled' }
+    await expect(a.google()).rejects.toThrow('Đã huỷ đăng nhập Google.')
+  })
+})
+
+describe('Sano Agent build: SANO_API_URL baked at build time as sanoAgent.apiUrl', () => {
+  /** The config as electron-builder loads it with this SANO_API_URL (a fresh require; env and cache restored). */
+  const load = (env: string | undefined) => {
+    const id = nodeRequire.resolve('../../../sano-agent/electron-builder.cjs')
+    const before = process.env.SANO_API_URL
+    if (env === undefined) delete process.env.SANO_API_URL
+    else process.env.SANO_API_URL = env
+    delete nodeRequire.cache[id]
+    try {
+      return (nodeRequire(id) as { extraMetadata: { sanoAgent: Record<string, string> } }).extraMetadata.sanoAgent
+    } finally {
+      if (before === undefined) delete process.env.SANO_API_URL
+      else process.env.SANO_API_URL = before
+      delete nodeRequire.cache[id]
+    }
+  }
+  it('unset → 1.0 as shipped (no apiUrl); set → its origin; refused → no build', () => {
+    expect(load(undefined)).toEqual({ url: 'app://sano/' })
+    expect(load('https://sano.example.vn/')).toEqual({ url: 'app://sano/', apiUrl: 'https://sano.example.vn' })
+    expect(load('http://127.0.0.1:8796')).toEqual({ url: 'app://sano/', apiUrl: 'http://127.0.0.1:8796' })
+    expect(() => load('http://sano.example.vn')).toThrow(/SANO_API_URL must be/)
+  })
+})
