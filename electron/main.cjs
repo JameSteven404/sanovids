@@ -840,7 +840,12 @@ function registerAccount() {
     fetch: (url, init) => fetch(url, init),
     file: path.join(profile.dir, 'sano-account.bin'),
     fs: fs.promises,
-    safeStorage,
+    // Linux's plain-text backend counts as unavailable (session kept in memory only), as for keep-login
+    safeStorage: {
+      isEncryptionAvailable: () => safeStorage.isEncryptionAvailable() && !(process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text'),
+      encryptString: (text) => safeStorage.encryptString(text),
+      decryptString: (bytes) => safeStorage.decryptString(bytes),
+    },
     now: Date.now,
     random: (n) => crypto.randomBytes(n),
     google: newGoogleSignIn(),

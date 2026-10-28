@@ -124,6 +124,7 @@ function createAccount(fx) {
   let held = null // { token, expiresAt, user }
   let loaded = null // the session file, read once
   let epoch = 0 // signOut bumps it: a sign-in that finishes after it is dropped
+  let cancels = 0 // cancelGoogle bumps it: a Google sign-in still exchanging its token is dropped
   const persistent = () => {
     try {
       return fx.safeStorage.isEncryptionAvailable() === true
@@ -208,6 +209,7 @@ function createAccount(fx) {
       await fx.fs.rename(fx.file + '.tmp', fx.file)
     } catch (e) {
       fx.log(`[SanoVids] account: session kept in memory only (${e && e.code})`)
+      await Promise.resolve(fx.fs.rm(fx.file + '.tmp', { force: true })).catch(() => undefined) // never leave a token beside the file
     }
   }
 
@@ -218,7 +220,7 @@ function createAccount(fx) {
   }
 
   /** login / google: authorize params → code (our state) → token, with a fresh verifier per attempt. */
-  async function exchange(path, body) {
+  async function exchange(path, body, cancelled = () => false) {
     const started = epoch
     const verifier = base64url(fx.random(32))
     const state = base64url(fx.random(32))
@@ -227,9 +229,10 @@ function createAccount(fx) {
     const s = readSession(await post('/api/auth/token', { code, code_verifier: verifier, redirect_uri: REDIRECT_URI }))
     if (!s) throw new AccountError(TEXT.invalid, 'bad-answer')
     await current() // the file read first: its clean-up never deletes the session written below
-    if (epoch !== started) {
-      // signed out while this ran: the new session is dropped, and ended on the server too (best effort)
+    if (epoch !== started || cancelled()) {
+      // signed out (or Huỷ) while this ran: the new session is dropped, and ended on the server too (best effort)
       call('POST', '/api/auth/logout', {}, s.token).catch(() => undefined)
+      if (epoch === started) throw new AccountError(TEXT.googleCancelled, 'cancelled')
       return status(null)
     }
     await save(s)
@@ -277,13 +280,15 @@ function createAccount(fx) {
     },
     async google() {
       configured()
+      const asked = cancels
       const r = await fx.google.signIn()
       // the account keeps its own sano_ session: Google's tokens (refresh token included) are not kept
       fx.google.signOut()
       if (!r || !r.ok) throw new AccountError(r && r.code === 'cancelled' ? TEXT.googleCancelled : (r && r.message) || TEXT.invalid, (r && r.code) || 'failed')
-      return exchange('/api/auth/google', { credential: r.idToken })
+      return exchange('/api/auth/google', { credential: r.idToken }, () => cancels !== asked)
     },
     async cancelGoogle() {
+      cancels++
       fx.google.signOut() // a sign-in waiting on the browser ends 'cancelled'
     },
     async signOut() {

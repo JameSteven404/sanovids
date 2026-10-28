@@ -336,6 +336,16 @@ describe('createAccount (fake SANO account server)', () => {
     expect(value(await setup({ server, m }).account.status()).signedIn).toBe(false)
   })
 
+  it('a failed rename (antivirus lock): memory only, and the encrypted token is not left in the .tmp', async () => {
+    const m = machine()
+    m.fs.rename = async () => {
+      throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+    }
+    const { account, server } = setup({ m })
+    expect(value(await account.login({ identifier: 'minh', password: server.password })).signedIn).toBe(true)
+    expect([...m.files.keys()]).toEqual([])
+  })
+
   it('sign-out: file and memory gone at once, logout sent best effort (never waited on), a Google wait cancelled', async () => {
     const { account, server, m, google } = setup()
     value(await account.login({ identifier: 'minh', password: server.password }))
@@ -406,6 +416,39 @@ describe('createAccount (fake SANO account server)', () => {
     expect(refused.m.files.size).toBe(0)
   })
 
+  it('Google: Huỷ after the browser answered, while the server exchange runs: cancelled, nothing kept, the session ended', async () => {
+    const t = setup()
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const fetch = t.server.fetch
+    const slow = R.createAccount({
+      apiUrl: API,
+      fetch: async (url: string, init: RequestInit) => {
+        if (url.endsWith('/api/auth/token')) await gate
+        return fetch(url, init)
+      },
+      file: FILE,
+      fs: t.m.fs,
+      safeStorage: t.m.safeStorage,
+      now: () => NOW,
+      random: (n: number) => new Uint8Array(n).fill(5),
+      google: fakeGoogle(),
+      log: () => undefined,
+    })
+    const g = slow.google()
+    await new Promise((r) => setTimeout(r, 0))
+    value(await slow.cancelGoogle())
+    release()
+    expect(await g).toEqual({ ok: false, error: 'Đã huỷ đăng nhập Google.', code: 'cancelled' })
+    expect(t.m.files.size).toBe(0)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(t.server.calls.at(-1)).toMatchObject({ method: 'POST', path: '/api/auth/logout', auth: expect.stringMatching(/^Bearer sano_/) })
+    expect(t.server.sessions.size).toBe(0)
+    expect(value(await slow.status()).signedIn).toBe(false)
+    // the next Google sign-in is not cancelled by the old Huỷ
+    expect(value(await slow.google()).signedIn).toBe(true)
+  })
+
   it('logs: never a password, token, code or verifier', async () => {
     const { account, server } = setup()
     await account.login({ identifier: 'minh', password: server.password })
@@ -439,6 +482,7 @@ describe('IPC: every account:* call checks the sender (fromSano), and the preloa
     expect(body).not.toContain('net.fetch')
     expect(body).toContain("file: path.join(profile.dir, 'sano-account.bin'),")
     expect(body).toContain('google: newGoogleSignIn(),')
+    expect(body).toContain("safeStorage.getSelectedStorageBackend() === 'basic_text'") // Linux plain text: memory only
     expect(mainSource.split("ipcMain.handle('account:").length - 1).toBe(0) // only through registerAccountIpc
     expect(mainSource).toContain("const SANO_API_RAW = PACKAGED ? readBakedSanoAgent('apiUrl') : process.env.SANO_API_URL")
     expect(mainSource).toContain('const SANO_API = SANO ? accountRules.accountApiUrl(SANO_API_RAW) : null')
