@@ -14,6 +14,10 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 - Canvas hẹp (dưới 600 px) tạm ẩn bản đồ thu nhỏ để không che thẻ cảnh; **Shift+M** hoặc **Hiển thị** bật lại bản nhỏ.
 - Ô tìm kiếm có chữ gợi ý ngắn hơn; thanh bên hẹp thì ẩn huy hiệu Ctrl F (phím tắt vẫn dùng được). Dòng preset xuống hàng thay vì bị cắt. Rê chuột lên tên dự án để xem tên đầy đủ.
 
+✨ **Gọn hơn khi mở trong SANO, có nút Trợ lý**
+- Ẩn logo, nút Nhập prompt và Phím tắt (vẫn có trong menu **+** và phím **?**), ô credit thứ hai ở thanh Hàng đợi; khung **Chưa chọn gì** thu mẹo thành nút **Cách nối và phím tắt**, không phải cuộn. Mở SanoVids riêng vẫn như cũ.
+- Nút **Trợ lý** ở góc phải trên cùng mở trợ lý dự án của SANO.
+
 ## [0.6.0] — 2026-10-27 — Sửa cảnh ngay trên canvas, canvas mượt hơn, giữ đúng ảnh tham chiếu
 
 ✨ **Thẻ cảnh là nơi sửa prompt và cấu hình**

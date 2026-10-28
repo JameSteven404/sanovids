@@ -16,6 +16,7 @@ import {
   Redo2,
   RotateCw,
   Settings,
+  Sparkles,
   Sun,
   Table2,
   TriangleAlert,
@@ -33,6 +34,7 @@ import type { Scene, Take, ViewMode } from '../../core/types'
 import { openFilmPlayer } from '../../filmActions'
 import { useDownloadPrefs } from '../../lib/downloads'
 import { useShortcutTitle } from '../../lib/keymapPrefs'
+import { openSanoAssistant, useSanoBridge } from '../../lib/sanoBridge'
 import { THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
 import { activeProviderId, devAllowed, PROVIDER_LABEL, useProviderPrefs } from '../../providers'
 import { useDevServer } from '../../providers/dev'
@@ -56,6 +58,7 @@ const VIEW_ICON: Record<ViewMode, LucideIcon> = { canvas: Workflow, table: Table
  */
 export function TopBar() {
   const openDialog = useUI((s) => s.openDialog)
+  const assistant = useSanoBridge((s) => s.assistant)
   // Gateway balance (the simulated account in development mode, else the real canvasapp one): refreshed on focus /
   // visibility / every 60 s, and after every job of that gateway (store/credits). Ref-counted, so the pills' own
   // useCreditInfo() share this one sync.
@@ -106,11 +109,17 @@ export function TopBar() {
           <button type="button" className="icon-btn" onClick={() => openDialog({ kind: 'settings' })} title="Cài đặt (dự án, nhà cung cấp video)" aria-label="Cài đặt">
             <Settings size={16} />
           </button>
-          <button type="button" className="icon-btn" onClick={() => openDialog({ kind: 'shortcuts' })} title="Phím tắt (?)" aria-label="Phím tắt">
+          <button type="button" className="icon-btn tb-keys" onClick={() => openDialog({ kind: 'shortcuts' })} title="Phím tắt (?)" aria-label="Phím tắt">
             <Keyboard size={16} />
           </button>
           <PanelToggles />
         </div>
+        {/* Inside SANO, once SANO's hello offered it (lib/sanoBridge): on the edge SANO's assistant drawer opens from. */}
+        {assistant && (
+          <div className="tb-pill">
+            <AssistantButton />
+          </div>
+        )}
       </div>
     </header>
   )
@@ -462,6 +471,16 @@ function DownloadAllButton() {
     <button type="button" className="icon-btn tb-download" onClick={() => void run()} disabled={!count || busy} title={title} aria-label="Tải tất cả video chọn (.zip)">
       {busy ? <LoaderCircle size={16} className="tb-spin" /> : <Download size={16} />}
       {count > 0 && !busy && <span className="tb-download-n">{count > 99 ? '99+' : count}</span>}
+    </button>
+  )
+}
+
+/** "Trợ lý": asks SANO to open its project assistant (the label stays at every width; it is the accessible name). */
+function AssistantButton() {
+  return (
+    <button type="button" className="tb-btn tb-assistant" onClick={() => openSanoAssistant()} title="Mở trợ lý dự án của SANO">
+      <Sparkles size={16} />
+      <span>Trợ lý</span>
     </button>
   )
 }
