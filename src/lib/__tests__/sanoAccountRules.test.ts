@@ -364,6 +364,46 @@ describe('createAccount (fake SANO account server)', () => {
     expect(t.m.files.size).toBe(0)
   })
 
+  it('sign-out with the session file locked (Windows EPERM): emptied, else the server must revoke it, else an honest error', async () => {
+    const restart = (t: ReturnType<typeof setup>) => setup({ server: t.server, m: t.m }).account
+    const lock = (m: ReturnType<typeof machine>, what: ('rm' | 'writeFile')[]) => {
+      const { rm, writeFile } = m.fs
+      const locked = (p: string) => {
+        if (p === FILE) throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+      }
+      if (what.includes('rm')) m.fs.rm = async (p: string) => (locked(p), rm(p))
+      if (what.includes('writeFile')) m.fs.writeFile = async (p: string, b: Buffer) => (locked(p), writeFile(p, b))
+    }
+    // rm fails, overwrite works: the file is emptied, logout still not waited on
+    const a = setup()
+    value(await a.account.login({ identifier: 'minh', password: a.server.password }))
+    lock(a.m, ['rm'])
+    a.server.opts.hang = '/api/auth/logout'
+    expect(value(await a.account.signOut()).signedIn).toBe(false)
+    expect(a.m.files.get(FILE)?.length).toBe(0)
+    a.server.opts.hang = undefined
+    expect(value(await restart(a).status()).signedIn).toBe(false)
+    // nothing can touch the file, the server is up: logout awaited, the token revoked, a restart finds no session
+    const b = setup()
+    value(await b.account.login({ identifier: 'minh', password: b.server.password }))
+    lock(b.m, ['rm', 'writeFile'])
+    expect(value(await b.account.signOut()).signedIn).toBe(false)
+    expect(b.server.sessions.size).toBe(0)
+    expect(value(await restart(b).status()).signedIn).toBe(false)
+    // nothing can touch the file, the server is down: an error, never a fake sign-out (memory and a restart agree)
+    const c = setup()
+    value(await c.account.login({ identifier: 'minh', password: c.server.password }))
+    lock(c.m, ['rm', 'writeFile'])
+    c.server.opts.offline = true
+    expect(await c.account.signOut()).toEqual({ ok: false, error: R.TEXT.signOutFailed, code: 'sign-out-failed' })
+    expect(value(await c.account.status())).toMatchObject({ signedIn: true, offline: true })
+    expect(value(await restart(c).status())).toMatchObject({ signedIn: true, offline: true })
+    // back online, the retry signs out
+    c.server.opts.offline = false
+    expect(value(await c.account.signOut()).signedIn).toBe(false)
+    expect(value(await restart(c).status()).signedIn).toBe(false)
+  })
+
   it('a sign-in that finishes after a sign-out is dropped', async () => {
     const t = setup()
     let release!: () => void

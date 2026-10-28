@@ -124,7 +124,11 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
   backend `basic_text`) thì chỉ giữ trong bộ nhớ (`persistent: false`, mở lại app phải đăng nhập lại); ghi file lỗi
   (ví dụ antivirus khoá) cũng vậy, và không để lại `sano-account.bin.tmp`. `status()` hỏi `GET /api/auth/me`: 401 hoặc 403 thì xoá
   phiên; mất mạng / máy chủ lỗi thì vẫn đăng nhập với người dùng đã lưu (`offline: true`); quá `expiresAt` thì coi như
-  đã đăng xuất, không hỏi máy chủ. `signOut()` xoá file và bộ nhớ ngay, gửi `POST logout` nhưng không chờ.
+  đã đăng xuất, không hỏi máy chủ. `signOut()` xoá bộ nhớ rồi xoá file, gửi `POST logout` nhưng không chờ. Không xoá được
+  file (Windows khoá, `EPERM`) thì ghi đè file thành rỗng; không ghi đè được thì chờ `POST logout` (20 giây): máy chủ
+  thu hồi (2xx hoặc 401) thì vẫn là đã đăng xuất, còn không thì phiên được giữ lại (lần mở sau cũng thấy) và `signOut()`
+  báo lỗi `sign-out-failed` "Phiên vẫn còn trên máy này. Kiểm tra mạng rồi thử lại, hoặc đóng hẳn Sano Agent rồi mở
+  lại.", không bao giờ giả vờ đã đăng xuất.
 - **Cầu nối** (khớp SANO web, TH-44 bước 3):
   ```ts
   type AccountUser = { id: string; name: string; email: string; username: string | null; admin: boolean }
@@ -141,7 +145,7 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
   ```
   Lỗi là `Error` có `message` tiếng Việt (của máy chủ, hoặc "Không kết nối được máy chủ tài khoản. Kiểm tra mạng rồi
   thử lại.", "Bản Sano Agent này chưa nối máy chủ tài khoản.") và `code` khi có (`not-configured`, `offline`,
-  `bad-input`, `state-mismatch`, `cancelled`, `timeout`, `not-allowed`…). Error ném trong preload qua `contextBridge`
+  `bad-input`, `state-mismatch`, `cancelled`, `timeout`, `not-allowed`, `sign-out-failed`…). Error ném trong preload qua `contextBridge`
   chỉ còn `message`, nên preload dựng object `account` trong world của trang (`contextBridge.executeInMainWorld`) và
   Error được tạo ở đó. Preload cắt mỗi trường ở giới hạn + 1 ký tự; main kiểm lại (chỉ chuỗi; `identifier`/`email` ≤ 254,
   `password` ≤ 128, `name` ≤ 100, `username` ≤ 32).

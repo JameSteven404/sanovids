@@ -28,6 +28,7 @@ const TEXT = Object.freeze({
   stateMismatch: 'Đăng nhập chưa hoàn tất. Hãy thử lại.',
   googleCancelled: 'Đã huỷ đăng nhập Google.',
   notAllowed: 'Nguồn gọi không hợp lệ.',
+  signOutFailed: 'Phiên vẫn còn trên máy này. Kiểm tra mạng rồi thử lại, hoặc đóng hẳn Sano Agent rồi mở lại.',
 })
 const NOT_ALLOWED = Object.freeze({ ok: false, error: TEXT.notAllowed, code: 'not-allowed' })
 
@@ -197,8 +198,21 @@ function createAccount(fx) {
     return held
   }
 
+  /** Deletes the session file, else empties it (load() refuses empty bytes) → true when no token is left on disk. */
   async function remove() {
-    await Promise.resolve(fx.fs.rm(fx.file, { force: true })).catch((e) => fx.log(`[SanoVids] account: could not delete the session file (${e && e.code})`))
+    try {
+      await fx.fs.rm(fx.file, { force: true })
+      return true
+    } catch (e) {
+      fx.log(`[SanoVids] account: could not delete the session file (${e && e.code})`)
+    }
+    try {
+      await fx.fs.writeFile(fx.file, Buffer.alloc(0))
+      return true
+    } catch (e) {
+      fx.log(`[SanoVids] account: could not empty the session file (${e && e.code})`)
+      return false
+    }
   }
 
   async function save(s) {
@@ -213,10 +227,11 @@ function createAccount(fx) {
     }
   }
 
+  /** Forgets s, memory first → false only when its token is still in the file. */
   async function clear(s) {
-    if (held !== s) return // signed in again meanwhile
+    if (held !== s) return true // signed in again meanwhile
     held = null
-    if (persistent()) await remove()
+    return persistent() ? remove() : true
   }
 
   /** login / google: authorize params → code (our state) → token, with a fresh verifier per attempt. */
@@ -296,9 +311,15 @@ function createAccount(fx) {
       const s = await current()
       fx.google.signOut()
       if (s) {
-        await clear(s)
-        // best effort, never awaited: an offline sign-out still signs out here
-        if (fx.apiUrl) call('POST', '/api/auth/logout', {}, s.token).catch(() => undefined)
+        const gone = await clear(s)
+        const logout = fx.apiUrl ? call('POST', '/api/auth/logout', {}, s.token) : Promise.reject(new Error('no server'))
+        // file gone: best effort, never awaited, so an offline sign-out still signs out here
+        if (gone) logout.catch(() => undefined)
+        // file stuck (Windows lock): only the server revoking the token keeps the next start from reopening it
+        else if (!(await logout.then((r) => r.ok || r.status === 401, () => false))) {
+          if (held === null) held = s // still signed in on the next start: say so now too, never a fake sign-out
+          throw new AccountError(TEXT.signOutFailed, 'sign-out-failed')
+        }
       }
       return status(null)
     },
