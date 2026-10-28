@@ -48,7 +48,7 @@ function fakeServer(password = pw()) {
   const codes = new Map<string, { challenge: string; redirect: string }>()
   const sessions = new Set<string>()
   const secrets: string[] = [password]
-  const opts: { offline?: boolean; meStatus?: number; state?: string; redirect?: string; hang?: string; raw?: Response } = {}
+  const opts: { offline?: boolean; meStatus?: number; state?: string; redirect?: string; hang?: string; gate?: Promise<unknown>; raw?: Response } = {}
   const issue = (body: Record<string, unknown>) => {
     const code = `code-${randomUUID()}`
     secrets.push(code)
@@ -63,7 +63,7 @@ function fakeServer(password = pw()) {
     const headers = init.headers as Record<string, string>
     const body = typeof init.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : null
     calls.push({ method: String(init.method), path: u.pathname, auth: headers.Authorization, body, init })
-    if (opts.hang === u.pathname) return new Promise<Response>(() => undefined)
+    if (opts.hang === u.pathname) await (opts.gate ?? new Promise(() => undefined)) // a gate answers it later, as the server would
     if (opts.offline) throw new TypeError('fetch failed')
     if (opts.raw) return opts.raw
     expect(u.origin).toBe(API)
@@ -402,6 +402,46 @@ describe('createAccount (fake SANO account server)', () => {
     c.server.opts.offline = false
     expect(value(await c.account.signOut()).signedIn).toBe(false)
     expect(value(await restart(c).status()).signedIn).toBe(false)
+    // while the server is asked (up to 20 s), a reload or a second click still sees the signed-in user, never a fake sign-out
+    const d = setup()
+    value(await d.account.login({ identifier: 'minh', password: d.server.password }))
+    lock(d.m, ['rm', 'writeFile'])
+    let answer!: () => void
+    d.server.opts.hang = '/api/auth/logout'
+    d.server.opts.gate = new Promise<void>((r) => (answer = r))
+    const first = d.account.signOut()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(value(await d.account.status()).signedIn).toBe(true)
+    const second = d.account.signOut()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(value(await d.account.status()).signedIn).toBe(true)
+    answer()
+    expect(value(await first).signedIn).toBe(false)
+    expect(value(await second).signedIn).toBe(false)
+    expect(value(await d.account.status()).signedIn).toBe(false)
+    expect(value(await restart(d).status()).signedIn).toBe(false)
+  })
+
+  it('a sign-out while a sign-in is still writing the session file: the token never lands on disk afterwards', async () => {
+    const t = setup()
+    const { rename } = t.m.fs
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let reached!: () => void
+    const atRename = new Promise<void>((r) => (reached = r))
+    t.m.fs.rename = async (a: string, b: string) => {
+      reached()
+      await gate
+      return rename(a, b)
+    }
+    const login = t.account.login({ identifier: 'minh', password: t.server.password })
+    await atRename
+    t.server.opts.offline = true
+    expect(value(await t.account.signOut()).signedIn).toBe(false)
+    release()
+    await login
+    expect(t.m.files.size).toBe(0)
+    expect(value(await setup({ server: t.server, m: t.m }).account.status()).signedIn).toBe(false)
   })
 
   it('a sign-in that finishes after a sign-out is dropped', async () => {

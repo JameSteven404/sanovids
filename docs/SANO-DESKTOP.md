@@ -126,9 +126,12 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
   phiên; mất mạng / máy chủ lỗi thì vẫn đăng nhập với người dùng đã lưu (`offline: true`); quá `expiresAt` thì coi như
   đã đăng xuất, không hỏi máy chủ. `signOut()` xoá bộ nhớ rồi xoá file, gửi `POST logout` nhưng không chờ. Không xoá được
   file (Windows khoá, `EPERM`) thì ghi đè file thành rỗng; không ghi đè được thì chờ `POST logout` (20 giây): máy chủ
-  thu hồi (2xx hoặc 401) thì vẫn là đã đăng xuất, còn không thì phiên được giữ lại (lần mở sau cũng thấy) và `signOut()`
-  báo lỗi `sign-out-failed` "Phiên vẫn còn trên máy này. Kiểm tra mạng rồi thử lại, hoặc đóng hẳn Sano Agent rồi mở
-  lại.", không bao giờ giả vờ đã đăng xuất.
+  thu hồi (2xx hoặc 401) thì vẫn là đã đăng xuất (token vẫn nằm trong file: lần mở sau mà mất mạng thì app hiện lại
+  người dùng cũ ở chế độ ngoại tuyến cho đến khi `/me` trả 401), còn không thì phiên được giữ lại (lần mở sau cũng thấy)
+  và `signOut()` báo lỗi `sign-out-failed` "Phiên vẫn còn trên máy này. Kiểm tra mạng rồi thử lại, hoặc đóng hẳn Sano
+  Agent rồi mở lại.", không bao giờ giả vờ đã đăng xuất. Trong lúc chờ máy chủ, `status()` và lần bấm đăng xuất thứ hai
+  vẫn thấy người dùng đang đăng nhập. Phiên đăng xuất giữa lúc đang ghi file (đăng nhập, cập nhật hồ sơ) thì file vừa
+  ghi bị xoá ngay, token không nằm lại trên đĩa.
 - **Cầu nối** (khớp SANO web, TH-44 bước 3):
   ```ts
   type AccountUser = { id: string; name: string; email: string; username: string | null; admin: boolean }

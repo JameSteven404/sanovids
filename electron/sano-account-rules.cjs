@@ -221,6 +221,7 @@ function createAccount(fx) {
     try {
       await fx.fs.writeFile(fx.file + '.tmp', fx.safeStorage.encryptString(JSON.stringify(s)))
       await fx.fs.rename(fx.file + '.tmp', fx.file)
+      if (held !== s) await remove() // signed out (or replaced) while writing: never leave this token on disk
     } catch (e) {
       fx.log(`[SanoVids] account: session kept in memory only (${e && e.code})`)
       await Promise.resolve(fx.fs.rm(fx.file + '.tmp', { force: true })).catch(() => undefined) // never leave a token beside the file
@@ -315,10 +316,11 @@ function createAccount(fx) {
         const logout = fx.apiUrl ? call('POST', '/api/auth/logout', {}, s.token) : Promise.reject(new Error('no server'))
         // file gone: best effort, never awaited, so an offline sign-out still signs out here
         if (gone) logout.catch(() => undefined)
-        // file stuck (Windows lock): only the server revoking the token keeps the next start from reopening it
-        else if (!(await logout.then((r) => r.ok || r.status === 401, () => false))) {
-          if (held === null) held = s // still signed in on the next start: say so now too, never a fake sign-out
-          throw new AccountError(TEXT.signOutFailed, 'sign-out-failed')
+        // file stuck (Windows lock): the server revoking the token stops an online next start from reopening it (offline, it reopens as ngoại tuyến until /me answers 401)
+        else {
+          if (held === null) held = s // the token stays in the file until the server revokes it: signed in meanwhile (a reload, a second click)
+          if (!(await logout.then((r) => r.ok || r.status === 401, () => false))) throw new AccountError(TEXT.signOutFailed, 'sign-out-failed')
+          if (held === s) held = null
         }
       }
       return status(null)
