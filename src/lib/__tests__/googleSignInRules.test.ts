@@ -416,15 +416,23 @@ describe('google-signin-rules: token() renews in memory', () => {
     expect(s.t.forms).toHaveLength(0)
   })
 
-  it('signOut forgets the tokens; a refresh finishing after it does not sign back in', async () => {
+  it("signOut forgets the tokens; a refresh finishing after it does not sign back in, nor hand the next account's token to the old request", async () => {
     const s = await signedIn(NOW + 1000)
     let release: () => void = () => undefined
     s.t.answers.push(() => new Promise((r) => (release = () => r({ body: { id_token: idToken(NOW + 3600_000) } }))))
     const pending = s.g.token()
     await expect.poll(() => s.t.forms.length).toBe(1)
     expect(s.g.signOut()).toBe(true)
+    // a second account signs in while the first account's refresh is still running
+    const second = idToken(NOW + 7200_000, 'u2')
+    s.t.answers.push({ body: { id_token: second, refresh_token: 'r2' } })
+    const auth = s.nextOpen()
+    const signIn = s.g.signIn()
+    const u = await auth
+    await visit(u, `?code=c&state=${u.searchParams.get('state')}`)
+    expect(await signIn).toMatchObject({ ok: true })
     release()
     expect(await pending).toBeNull()
-    expect(await s.g.token()).toBeNull()
+    expect(await s.g.token()).toBe(second)
   })
 })

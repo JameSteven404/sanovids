@@ -211,7 +211,7 @@ function createGoogleSignIn(fx) {
     } catch {
       // no answer (offline, timeout): keep the tokens for the next try
     }
-    if (held !== h) return held && held.idToken // signed out / in again meanwhile
+    if (held !== h) return null // signed out or replaced meanwhile: a newer session's token never serves an older request
     // Google answered: a usable ID token or none (no id_token, or a 4xx refusal: invalid_grant incl. invalid_rapt,
     // invalid_client, unauthorized_client) → signed out. 408 / 429 only mean "later", like 5xx: retrying can succeed.
     const s = answer && answer.status
