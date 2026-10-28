@@ -1331,6 +1331,17 @@ describe('Sano Agent (--sano-agent: SANO_AGENT, sano-agent/electron-builder.cjs)
     expect(checkPackagedIdentity({ ...repoPkg, sanoAgent: { url: A.url } }, repoPkg)[0]).toMatch(/^sanoAgent /)
   })
 
+  it('checkPackagedIdentity: a baked account server must be https (a loopback SANO_API_URL left in the shell is a test build)', () => {
+    const eff = lib.effectivePackage(repoPkg, cfg)
+    const at = (apiUrl) => {
+      const sanoAgent = { ...eff.sanoAgent, apiUrl }
+      return checkPackagedIdentity({ ...eff, build: undefined, sanoAgent }, { ...eff, sanoAgent })
+    }
+    expect(at('http://127.0.0.1:8796')).toEqual(['sanoAgent.apiUrl "http://127.0.0.1:8796" (bản phát hành chỉ nhận https://; bản build thử nghiệm?)'])
+    expect(at('https://sano.example.vn')).toEqual([])
+    expect(checkPackagedIdentity({ ...eff, build: undefined }, eff)).toEqual([])
+  })
+
   it('checkSameElectron: the Electron of the newest public SanoVids, or ✗', () => {
     const lock = (v) => JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/electron': { version: v } } })
     expect(lib.lockElectronVersion(lock('44.5.1'))).toBe('44.5.1')

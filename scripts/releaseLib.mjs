@@ -1087,6 +1087,9 @@ export function checkPackagedIdentity(inner, repoPkg) {
   if (JSON.stringify(inner.sanoAgent ?? null) !== JSON.stringify(repo.sanoAgent ?? null)) {
     bad.push(`sanoAgent ${JSON.stringify(inner.sanoAgent ?? null)} (cần ${JSON.stringify(repo.sanoAgent ?? null)})`)
   }
+  // A public Sano Agent talks only to a real server: a loopback apiUrl (a source-run SANO_API_URL left in the build shell) would lock every user on the sign-in screen.
+  const apiUrl = inner.sanoAgent && typeof inner.sanoAgent === 'object' ? inner.sanoAgent.apiUrl : undefined
+  if (apiUrl !== undefined && !(typeof apiUrl === 'string' && apiUrl.startsWith('https://'))) bad.push(`sanoAgent.apiUrl ${JSON.stringify(apiUrl)} (bản phát hành chỉ nhận https://; bản build thử nghiệm?)`)
   return bad
 }
 
