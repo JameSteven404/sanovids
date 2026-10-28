@@ -1251,6 +1251,7 @@ describe('Sano Agent (--sano-agent: SANO_AGENT, sano-agent/electron-builder.cjs)
   const A = lib.SANO_AGENT
   const cfg = require('../../sano-agent/electron-builder.cjs')
   const repoPkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+  const AV = repoPkg.version // Sano Agent's version is package.json's (D235)
 
   it('SANO_AGENT pins match sano-agent/electron-builder.cjs (a drift fails here, not at release time)', () => {
     expect(A).toMatchObject({
@@ -1270,19 +1271,19 @@ describe('Sano Agent (--sano-agent: SANO_AGENT, sano-agent/electron-builder.cjs)
     expect(lib.productFromArgv(['node', 'x', '--sano-agent', '--dry-run'])).toBe(A)
     expect(lib.effectivePackage(repoPkg, null)).toBe(repoPkg)
     const eff = lib.effectivePackage(repoPkg, cfg)
-    expect(eff).toMatchObject({ name: 'sano-agent', productName: 'Sano Agent', version: '0.1.0', sanovids: repoPkg.sanovids, scripts: repoPkg.scripts, build: cfg })
+    expect(eff).toMatchObject({ name: 'sano-agent', productName: 'Sano Agent', version: AV, sanovids: repoPkg.sanovids, scripts: repoPkg.scripts, build: cfg })
   })
 
   it('file names, assets (public feed only, no Mac), titles and notes name Sano Agent', () => {
-    const f = releaseFiles('0.1.0', A)
-    expect([f.setup, f.portable, f.blockmap]).toEqual(['SanoAgent-Setup-0.1.0.exe', 'SanoAgent-Portable-0.1.0.exe', 'SanoAgent-Setup-0.1.0.exe.blockmap'])
-    expect(assetsFor('public', '0.1.0', { product: A })).toEqual(['SanoAgent-Setup-0.1.0.exe', 'SanoAgent-Setup-0.1.0.exe.blockmap', 'latest.yml', 'SanoAgent-Portable-0.1.0.exe', SIGNING_CERT_FILE])
-    expect(releaseTitle('0.1.0', 'Bản đầu', A)).toBe('Sano Agent 0.1.0 — Bản đầu')
-    expect(updateNotesText('', '0.1.0', A)).toEqual({ found: false, text: 'Sano Agent 0.1.0\n' })
+    const f = releaseFiles(AV, A)
+    expect([f.setup, f.portable, f.blockmap]).toEqual([`SanoAgent-Setup-${AV}.exe`, `SanoAgent-Portable-${AV}.exe`, `SanoAgent-Setup-${AV}.exe.blockmap`])
+    expect(assetsFor('public', AV, { product: A })).toEqual([`SanoAgent-Setup-${AV}.exe`, `SanoAgent-Setup-${AV}.exe.blockmap`, 'latest.yml', `SanoAgent-Portable-${AV}.exe`, SIGNING_CERT_FILE])
+    expect(releaseTitle(AV, 'Bản đầu', A)).toBe(`Sano Agent ${AV} — Bản đầu`)
+    expect(updateNotesText('', AV, A)).toEqual({ found: false, text: `Sano Agent ${AV}\n` })
     const changelog = fs.readFileSync(path.join(root, A.changelog), 'utf8')
-    expect(updateNotesText(changelog, '0.1.0', A).found).toBe(true)
-    const notes = buildReleaseNotes({ version: '0.1.0', body: '✨ a', sha256: { [f.setup]: SHA_A, [f.portable]: SHA_B }, audience: 'public', product: A })
-    expect(notes).toContain(`| **SanoAgent-Setup-0.1.0.exe** |`)
+    expect(updateNotesText(changelog, AV, A).found).toBe(true)
+    const notes = buildReleaseNotes({ version: AV, body: '✨ a', sha256: { [f.setup]: SHA_A, [f.portable]: SHA_B }, audience: 'public', product: A })
+    expect(notes).toContain(`| **SanoAgent-Setup-${AV}.exe** |`)
     expect(notes).not.toContain('SanoVids-Setup')
     // SanoVids keeps its own names
     expect(releaseFiles('0.6.0').setup).toBe('SanoVids-Setup-0.6.0.exe')
@@ -1325,9 +1326,19 @@ describe('Sano Agent (--sano-agent: SANO_AGENT, sano-agent/electron-builder.cjs)
     expect(other).toMatchObject({ level: 'fail' })
     expect(other.text).toContain('phát hành SanoVids từ commit này trước')
     expect(lib.checkSameCommit({ head: a, theirs: null, sanovidsVersion: '0.6.0' }).level).toBe('fail')
+    // D236: Sano Agent first, SanoVids of the same version right after: its tag at HEAD here AND on GitHub
+    const next = { version: '1.0.0', local: a, remote: a }
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.6.0', next })).toMatchObject({ level: 'ok' })
+    expect(lib.checkSameCommit({ head: a, theirs: null, sanovidsVersion: '0.6.0', next }).level).toBe('ok')
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.6.0', next: { ...next, remote: null } }).level).toBe('fail')
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.6.0', next: { ...next, remote: b } }).level).toBe('fail')
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.6.0', next: { ...next, local: b } }).level).toBe('fail')
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '1.0.1', next }).level).toBe('fail')
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.6.0', next: { ...next, local: null } }).text).toContain('đặt tag v1.0.0 của SanoVids')
     const src = fs.readFileSync(path.join(root, 'scripts', 'publish-release.mjs'), 'utf8')
     expect(src).toContain("git(['rev-parse', '-q', '--verify', `${tagRef(sanovidsVersion, SANOVIDS)}^{commit}`])")
-    expect(src).toContain('checkSameCommit({ head, theirs: sanovidsCommit.code === 0 ? sanovidsCommit.out : null, sanovidsVersion })')
+    expect(src).toContain("git(['ls-remote', '--tags', 'origin', tagRef(V, SANOVIDS), `${tagRef(V, SANOVIDS)}^{}`])")
+    expect(src).toContain('checkSameCommit({ head, theirs: sanovidsCommit.code === 0 ? sanovidsCommit.out : null, sanovidsVersion, next })')
   })
 
   it('publish-release: every source tag goes through the product (sano-agent-v…), the feed tag stays v…', () => {

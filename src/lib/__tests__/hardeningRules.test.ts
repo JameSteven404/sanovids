@@ -38,10 +38,15 @@ interface Hardening {
   downloadLogLabel(url: unknown, filename: unknown): string
   DEFAULT_SESSION_PERMISSIONS: readonly string[]
   permissionAllowed(p: unknown): boolean
+  defaultPermissionAllowed(permission: unknown, o: Record<string, unknown>): boolean
   sha256Base64(bytes: Uint8Array): string
   inlineScriptHashes(html: unknown): string[]
   contentSecurityPolicy(html: unknown, frameAncestors?: string): string
   sanoShell(o: unknown): { url: string; origin: string } | null | false
+  mainWindowAllows(url: unknown, o: unknown): boolean
+  SANO_FAILED_RESTART: string
+  sanoFailedDialog(message: string, detail: string): { buttons: string[]; defaultId: number; cancelId: number; detail: string } & Record<string, unknown>
+  sanoFailedAction(response: unknown): 'retry' | 'canvas' | 'quit'
   appFrames(wc: unknown): { url: string }[]
   GOOGLE_SIGN_IN: RegExp
   appSignaturePayload(verdict: unknown, opts: { packaged: boolean }): Payload
@@ -368,13 +373,13 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(shared).toBeLessThan(at('app.whenReady()'))
     expect(mainSource.split('commandLine.appendSwitch(').length - 1).toBe(1)
     expect(mainSource.split('nodeIntegrationInSubFrames').length - 1).toBe(1)
-    expect(mainSource).toContain("const home = SANO ? SANO.url : ORIGIN + '/'")
-    expect(mainSource).toContain('if (url.startsWith(home)) return')
+    expect(mainSource).toContain('const stays = (url) => hardening.mainWindowAllows(url, { sanoUrl: SANO ? SANO.url : undefined, canvas })')
+    expect(mainSource).toContain('if (stays(url)) return')
     expect(mainSource).toContain("if (SANO && url.startsWith('https://accounts.google.com/')) return { action: 'allow', overrideBrowserWindowOptions: { parent: win, autoHideMenuBar: true } }")
     expect(mainSource).toContain('void win.loadURL(SANO ? SANO.url : `${ORIGIN}/index.html`)')
     // server redirects of SANO's page are held to the same home; the Google popup is guarded, its cookies dropped on close
     // refused on the first load: plain SanoVids prints and exits; SANO mode prints too (from source) and asks in the window
-    expect(mainSource).toMatch(/webContents\.on\('will-redirect', \(event, url\) => \{\s+if \(!event\.isMainFrame \|\| url\.startsWith\(home\)\) return\s+event\.preventDefault\(\)\s+\/\/[^\n]*\n\s+if \(SANO \? sanoOpened : mainWindowShown\) return\s+console\.error\([^\n]*\)\s+if \(SANO\) sanoFailed\(`SANO tại \$\{SANO\.url\} chuyển hướng sang \$\{url\}`, '[^'\n]*địa chỉ cuối[^'\n]*'\)\s+else app\.exit\(2\)\s+\}\)/)
+    expect(mainSource).toMatch(/webContents\.on\('will-redirect', \(event, url\) => \{\s+if \(!event\.isMainFrame \|\| stays\(url\)\) return\s+event\.preventDefault\(\)\s+(?:\/\/[^\n]*\n\s+)+if \(canvas \|\| \(SANO \? sanoOpened : mainWindowShown\)\) return\s+console\.error\([^\n]*\)\s+if \(SANO\) sanoFailed\(`SANO tại \$\{SANO\.url\} chuyển hướng sang \$\{url\}`, '[^'\n]*địa chỉ cuối[^'\n]*'\)\s+else app\.exit\(2\)\s+\}\)/)
     // a redirect is the server's, never opened in the browser (only will-navigate, the user's click, is)
     const redirect = mainSource.slice(at("webContents.on('will-redirect'"), at("webContents.on('will-redirect'") + 400)
     expect(redirect.slice(0, redirect.indexOf('\n  })'))).not.toContain('openExternal')
@@ -397,7 +402,7 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(mainSource).toContain("...(SANO && process.platform === 'win32' ? {} : { icon: path.join(DIST, 'icons', process.platform === 'win32' ? 'icon.ico' : 'icon-512.png') }),")
     const fail = mainSource.slice(mainSource.indexOf("webContents.on('did-fail-load'"), mainSource.indexOf('void win.loadURL(SANO ? SANO.url'))
     expect(mainSource).toMatch(/if \(SANO\) \{\s+webContents\.on\('did-fail-load'/)
-    expect(fail).toContain('if (!isMainFrame || errorCode === -3) return')
+    expect(fail).toContain('if (canvas || !isMainFrame || errorCode === -3) return')
     expect(fail).toContain('sanoFailed(`Không mở được SANO tại ${SANO.url}`, ')
     // one dialog for both (did-fail-load, a refused first redirect): shown in the window, Thử lại / Thoát
     const dialogAt = mainSource.indexOf('const sanoFailed = (message, detail) => {')
@@ -407,13 +412,97 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(failed).toContain('firstShow()')
     expect(failed).not.toContain('win.show()')
     expect(mainSource).toContain("win.once('ready-to-show', firstShow)")
-    expect(mainSource).toMatch(/if \(SANO\) webContents\.on\('did-navigate', \(_event, url\) => \{\s+if \(url\.startsWith\(home\)\) sanoOpened = true/)
-    expect(failed).toContain("title: 'Sano Agent', message, detail, buttons: ['Thử lại', 'Thoát']")
+    expect(mainSource).toMatch(/if \(SANO\) webContents\.on\('did-navigate', \(_event, url\) => \{\s+if \(url\.startsWith\(SANO\.url\)\) sanoOpened = true/)
+    expect(failed).toContain('.showMessageBox(win, hardening.sanoFailedDialog(message, detail))')
     // Thử lại after SANO had loaded once: the retry's own redirect is explained again (sanoOpened reset first)
-    expect(failed).toMatch(/if \(response !== 0\) return app\.quit\(\)\s+sanoOpened = false[^\n]*\n\s+void win\.loadURL\(SANO\.url\)/)
+    expect(failed).toMatch(/const action = hardening\.sanoFailedAction\(response\)\s+if \(action === 'quit'\) return app\.quit\(\)/)
+    expect(failed).toMatch(/\n\s+sanoOpened = false[^\n]*\n\s+void win\.loadURL\(SANO\.url\)/)
     expect(failed).not.toContain('app.exit')
     // the page learns which app it is (download page label), from main only
     expect(preloadSource).toContain("product: productArg ? productArg.slice('--bdp-product='.length) : '',")
+  })
+
+  it('D237 mainWindowAllows: SANO’s address only, or app://bdp only once “Mở Canvas” opened SanoVids on its own', () => {
+    const sanoUrl = 'http://127.0.0.1:8080/'
+    // plain SanoVids: app://bdp/ only
+    for (const o of [{}, { sanoUrl: '' }, { canvas: true }, null, undefined]) {
+      expect(h.mainWindowAllows('app://bdp/index.html', o)).toBe(true)
+      expect(h.mainWindowAllows(sanoUrl, o)).toBe(false)
+    }
+    // SANO desktop: SANO's address only (SanoVids is its frame, never the window's page)
+    expect(h.mainWindowAllows('http://127.0.0.1:8080/canvas?x=1', { sanoUrl })).toBe(true)
+    expect(h.mainWindowAllows('app://bdp/index.html', { sanoUrl })).toBe(false)
+    expect(h.mainWindowAllows('app://bdp/index.html', { sanoUrl, canvas: 'true' })).toBe(false)
+    // Canvas: app://bdp and nothing else, SANO included
+    const canvas = { sanoUrl, canvas: true }
+    for (const ok of ['app://bdp/', 'app://bdp/index.html', 'app://bdp/index.html#/x']) expect(h.mainWindowAllows(ok, canvas), ok).toBe(true)
+    for (const bad of [sanoUrl, 'http://127.0.0.1:8080/x', 'http://localhost:8080/', 'app://bdpx/', 'app://bdp.evil.vn/', 'app://other/', 'https://accounts.google.com/', 'file:///C:/x.html', 'about:blank', 'APP://BDP/', '', undefined, null, 7]) {
+      expect(h.mainWindowAllows(bad, canvas), String(bad)).toBe(false)
+    }
+  })
+
+  it('D237 failure dialog: Thử lại / Mở Canvas / Thoát; Enter retries, Esc quits (never Mở Canvas); one restart sentence', () => {
+    const d = h.sanoFailedDialog('Không mở được SANO tại http://127.0.0.1:8080/', 'Kiểm tra máy chủ SANO đã chạy chưa, rồi bấm Thử lại.')
+    expect(d).toEqual({
+      type: 'error',
+      title: 'Sano Agent',
+      message: 'Không mở được SANO tại http://127.0.0.1:8080/',
+      detail: `Kiểm tra máy chủ SANO đã chạy chưa, rồi bấm Thử lại. ${h.SANO_FAILED_RESTART}`,
+      buttons: ['Thử lại', 'Mở Canvas', 'Thoát'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+    })
+    expect(d.buttons.map((_, i) => h.sanoFailedAction(i))).toEqual(['retry', 'canvas', 'quit'])
+    expect(h.sanoFailedAction(d.defaultId)).toBe('retry')
+    expect(h.sanoFailedAction(d.cancelId)).toBe('quit')
+    for (const other of [-1, 3, 1.5, '1', null, undefined, Number.NaN]) expect(h.sanoFailedAction(other), String(other)).toBe('quit')
+    // one short sentence: restarting the app goes back to SANO
+    expect(h.SANO_FAILED_RESTART).toMatch(/^[^.]{10,60}\.$/)
+    expect(h.SANO_FAILED_RESTART).toContain('mở lại app')
+    // both callers (did-fail-load, a refused first redirect) get it
+    expect(mainSource.split('sanoFailed(`').length - 1).toBe(2)
+  })
+
+  it('D237 wiring: Mở Canvas loads app://bdp as the window’s page after the guard switched; no SANO dialog in Canvas', () => {
+    const dialogAt = mainSource.indexOf('const sanoFailed = (message, detail) => {')
+    const failed = mainSource.slice(dialogAt, mainSource.indexOf("webContents.on('will-redirect'"))
+    expect(failed).toMatch(/if \(action === 'canvas'\) \{\s+canvas = true[^\n]*\n\s+win\.setTitle\(app\.getName\(\)\)\n\s+return void win\.loadURL\(`\$\{ORIGIN\}\/index\.html`\)\s+\}/)
+    // the window stays "Sano Agent" in Canvas (taskbar, Alt+Tab), not SanoVids' page title
+    expect(mainSource).toContain("if (SANO) win.on('page-title-updated', (event) => { if (canvas) event.preventDefault() })")
+    // the guard's switch: declared once in createWindow, set only by Mở Canvas, never back
+    expect(mainSource.split('let canvas = false').length - 1).toBe(1)
+    expect(mainSource.match(/\bcanvas = (?:true|false)\b/g)).toEqual(['canvas = false', 'canvas = true'])
+    // SanoVids as the main frame: main's pushes (updates:state, devAccess:state) reach it, the bridge answers it (fromApp)
+    expect(h.appFrames({ mainFrame: { framesInSubtree: [{ url: 'app://bdp/index.html', isDestroyed: () => false }] } })).toHaveLength(1)
+    expect(mainSource).toContain("return url.startsWith(ORIGIN + '/')")
+    // its permissions hold top-level in Sano Agent too; SANO's page never gets them
+    const perm = { requestingUrl: 'app://bdp/index.html', topUrl: 'app://bdp/index.html', sanoOrigin: 'http://127.0.0.1:8080' }
+    expect(h.defaultPermissionAllowed('fileSystem', perm)).toBe(true)
+    expect(h.defaultPermissionAllowed('fileSystem', { ...perm, requestingUrl: 'http://127.0.0.1:8080/' })).toBe(false)
+    // CSP: the one app://bdp policy stays valid top-level (frame-ancestors only matters when framed)
+    const policy = h.contentSecurityPolicy(indexBytes, 'http://127.0.0.1:8080')
+    expect(policy.split('; ').filter((x) => x.startsWith('frame-ancestors'))).toEqual(['frame-ancestors http://127.0.0.1:8080'])
+    expect(policy.replace('frame-ancestors http://127.0.0.1:8080', "frame-ancestors 'none'")).toBe(h.contentSecurityPolicy(indexBytes))
+  })
+
+  it('D237 preload run: app://bdp gets bdpDesktop, never sanoDesktop; SANO’s page gets sanoDesktop only', () => {
+    const run = (origin: string, sano: boolean) => {
+      const exposed: string[] = []
+      const electron = {
+        contextBridge: { exposeInMainWorld: (key: string) => void exposed.push(key) },
+        ipcRenderer: { invoke: () => Promise.resolve(), on: () => undefined, removeListener: () => undefined },
+      }
+      const argv = ['--bdp-version=1.0.0', '--bdp-product=Sano Agent', ...(sano ? ['--bdp-sano-origin=http://127.0.0.1:8080'] : [])]
+      const proc = { argv, versions: { electron: '44.0.0' }, platform: 'win32' }
+      new Function('require', 'process', 'location', 'window', preloadSource)(() => electron, proc, { origin }, { addEventListener: () => undefined })
+      return exposed
+    }
+    expect(run('app://bdp', true)).toEqual(['bdpDesktop'])
+    expect(run('app://bdp', false)).toEqual(['bdpDesktop'])
+    expect(run('http://127.0.0.1:8080', true)).toEqual(['sanoDesktop'])
+    expect(run('https://accounts.google.com', true)).toEqual([])
+    expect(run('http://127.0.0.1:8080', false)).toEqual([])
   })
 
   it('appFrames: the live app://bdp frames of a window (main frame or SANO’s Dựng phim frame), never SANO’s page', () => {

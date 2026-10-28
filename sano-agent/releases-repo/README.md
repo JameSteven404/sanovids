@@ -1,6 +1,6 @@
 # Sano Agent — trang tải về chính thức
 
-**Sano Agent** là app SANO trên máy tính Windows. Khu **Dựng phim** của SANO trong app là chính SanoVids bản desktop: tạo video thật bằng tài khoản canvasapp.io.vn của bạn, và **dùng chung dự án với SanoVids** đã cài trên máy.
+**Sano Agent** là app SANO trên máy tính Windows. Từ bản 1.0, **SanoVids đã gộp vào Sano Agent**: khu **Canvas** của SANO trong app là chính SanoVids, tạo video thật bằng tài khoản canvasapp.io.vn của bạn, và **dùng chung dự án với SanoVids** đã cài trên máy.
 
 **Tác giả:** Nguyễn Giang Minh (Jame Steven) · **Đồng hành:** Sano Group
 
@@ -19,7 +19,7 @@ Repo này chỉ chứa **bản cài đặt** và **tệp cập nhật** của Sa
 | `latest.yml`, `*.blockmap` | Dành cho trình tự cập nhật của app | Không cần tải |
 | `SanoVids-NguyenGiangMinh.cer` | Chứng chỉ công khai để kiểm tra / tin cậy chữ ký số (cùng chứng chỉ với SanoVids) | — |
 
-Cần **Windows 10 hoặc 11, 64-bit** và máy chủ SANO đang chạy ở `http://127.0.0.1:8080` (app báo **Không mở được SANO** khi máy chủ chưa chạy).
+Cần **Windows 10 hoặc 11, 64-bit** và máy chủ SANO đang chạy ở `http://127.0.0.1:8080`. Máy chủ chưa chạy thì app báo **Không mở được SANO**; bấm **Mở Canvas** để vẫn dùng SanoVids như trước.
 
 ### Trước khi cài
 
@@ -32,7 +32,7 @@ Cần **Windows 10 hoặc 11, 64-bit** và máy chủ SANO đang chạy ở `htt
 
 ## Tự cập nhật
 
-- Bản **Setup** tự kiểm tra bản mới ở trang này, tải trong nền và cài khi khởi động lại hoặc khi tắt app, như SanoVids. Tự cập nhật chạy cả khi bạn không vào Dựng phim.
+- Bản **Setup** tự kiểm tra bản mới ở trang này, tải trong nền và cài khi khởi động lại hoặc khi tắt app, như SanoVids. Tự cập nhật chạy cả khi bạn không vào Canvas.
 - **Mỗi bản cập nhật được kiểm tra chữ ký số trước khi cài**: chỉ file ký bằng chứng chỉ của tác giả và đúng là Sano Agent phiên bản mới mới được cài. Bộ cài SanoVids không bao giờ được cài thay Sano Agent, và ngược lại.
 - Bản **Portable** chỉ báo có bản mới.
 - Cập nhật bị lỗi: gửi cho tác giả file `%APPDATA%\SanoVids\logs\updater-sano-agent.log`.

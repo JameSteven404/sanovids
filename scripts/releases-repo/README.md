@@ -1,5 +1,9 @@
 # SanoVids — trang tải về chính thức
 
+> **SanoVids đã gộp vào Sano Agent.** SanoVids 1.0.0 là bản cuối; từ nay chỉ phát hành Sano Agent, có khu Canvas chính là
+> SanoVids. **[Tải Sano Agent](https://github.com/JameSteven404/sano-agent-releases/releases/latest)**. Dự án vẫn còn:
+> Sano Agent mở cùng thư mục `%APPDATA%\SanoVids`. Trước khi mở Sano Agent: đóng SanoVids và sao lưu thư mục đó.
+
 **SanoVids** là ứng dụng Windows để làm phim AI theo từng cảnh trên một canvas: quản lý nhân vật, nối ảnh tham chiếu vào cảnh, viết prompt với `@image_1`, `@video_1`, chạy tạo video hàng loạt, rồi lấy video vừa tạo để nối tiếp sang cảnh sau.
 
 **Tác giả:** Nguyễn Giang Minh (Jame Steven) · **Đồng hành:** Sano Group

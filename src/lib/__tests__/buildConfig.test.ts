@@ -434,6 +434,7 @@ describe('Sano Agent (sano-agent/electron-builder.cjs: SanoVids build, own ident
   it('extraMetadata: no signer / test pins of its own (arrays are unioned), and a SANO address main accepts packaged', () => {
     expect(Object.keys(cfg.extraMetadata)).toEqual(['author', 'name', 'productName', 'version', 'description', 'homepage', 'sanoAgent'])
     expect(cfg.extraMetadata.author).toEqual(pkg.build.extraMetadata.author)
+    expect(cfg.extraMetadata.version).toBe(pkg.version) // one version for both apps (D235)
     const hardening = nodeRequire('../../../electron/hardening-rules.cjs') as { sanoShell: (o: unknown) => unknown }
     expect(hardening.sanoShell({ isPackaged: true, baked: cfg.extraMetadata.sanoAgent.url })).toEqual({ url: 'http://127.0.0.1:8080/', origin: 'http://127.0.0.1:8080' })
   })

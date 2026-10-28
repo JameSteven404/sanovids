@@ -22,6 +22,7 @@ import { initSanoBridge } from './lib/sanoBridge'
 import { initTheme } from './lib/theme'
 import { initRetiredVideoNotice } from './videoRetired'
 import { showPlacementNoticeOnLaunch } from './placementNotice'
+import { showMergedNoticeOnLaunch } from './mergedNotice'
 
 // Appearance (Sáng / Tối / Theo hệ thống) before the first render, so nothing paints in the wrong theme; it then
 // follows the OS while the choice is "Theo hệ thống". index.html painted the page background inline to avoid a
@@ -45,6 +46,8 @@ initRetiredVideoNotice()
 // A Mac run from a .dmg / Tải về / an external drive: once per launch, how to move the app into Applications (never
 // moved automatically).
 void showPlacementNoticeOnLaunch()
+// The last SanoVids release (D236): once per launch, SanoVids has moved into Sano Agent, with its download button.
+showMergedNoticeOnLaunch()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

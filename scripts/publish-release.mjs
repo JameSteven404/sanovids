@@ -493,7 +493,15 @@ if (PRODUCT.config) {
   results.push({ level: same.level, group: 'Dữ liệu chung với SanoVids', text: same.text })
   if (sanovidsVersion) {
     const sanovidsCommit = git(['rev-parse', '-q', '--verify', `${tagRef(sanovidsVersion, SANOVIDS)}^{commit}`])
-    const sameCommit = checkSameCommit({ head, theirs: sanovidsCommit.code === 0 ? sanovidsCommit.out : null, sanovidsVersion })
+    // SanoVids' tag of this version, pushed but not yet released: Sano Agent may go first (docs/SANO-DESKTOP.md §6).
+    const nextLocal = git(['rev-parse', '-q', '--verify', `${tagRef(V, SANOVIDS)}^{commit}`])
+    const nextRemote = git(['ls-remote', '--tags', 'origin', tagRef(V, SANOVIDS), `${tagRef(V, SANOVIDS)}^{}`])
+    const next = {
+      version: V,
+      local: nextLocal.code === 0 ? nextLocal.out : null,
+      remote: nextRemote.code === 0 ? peeledTagSha(nextRemote.out, `${SANOVIDS.sourceTagPrefix}${V}`) : null,
+    }
+    const sameCommit = checkSameCommit({ head, theirs: sanovidsCommit.code === 0 ? sanovidsCommit.out : null, sanovidsVersion, next })
     results.push({ level: sameCommit.level, group: 'Dữ liệu chung với SanoVids', text: sameCommit.text })
   }
 }
