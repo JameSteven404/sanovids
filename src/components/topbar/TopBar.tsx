@@ -171,7 +171,7 @@ const ProjectName = memo(function ProjectName() {
     )
   }
   return (
-    <button type="button" className="tb-name" onClick={start} title="Bấm để đổi tên dự án">
+    <button type="button" className="tb-name" onClick={start} title={`${name} — bấm để đổi tên`}>
       <span className="tb-name-text">{name}</span>
     </button>
   )

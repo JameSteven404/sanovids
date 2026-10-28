@@ -6,6 +6,14 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 
 ---
 
+## [Chưa phát hành]
+
+🐞 **Cửa sổ hẹp (Dựng phim trong SANO, cửa sổ nhỏ)**
+- Dự án có cột cảnh dài mở ở đầu bảng, vừa bề ngang canvas (tối đa 80%), thay vì thu cả bảng xuống 19% không đọc được. **Vừa màn hình** (F) vẫn hiện toàn bộ.
+- Mở ứng dụng khi cửa sổ đang thu nhỏ rồi khôi phục: canvas vừa lại theo kích thước thật, miễn là chưa kéo hay thu phóng.
+- Canvas hẹp (dưới 600 px) tạm ẩn bản đồ thu nhỏ để không che thẻ cảnh; **Shift+M** hoặc **Hiển thị** bật lại bản nhỏ.
+- Ô tìm kiếm có chữ gợi ý ngắn hơn; thanh bên hẹp thì ẩn huy hiệu Ctrl F (phím tắt vẫn dùng được). Dòng preset xuống hàng thay vì bị cắt. Rê chuột lên tên dự án để xem tên đầy đủ.
+
 ## [0.6.0] — 2026-10-27 — Sửa cảnh ngay trên canvas, canvas mượt hơn, giữ đúng ảnh tham chiếu
 
 ✨ **Thẻ cảnh là nơi sửa prompt và cấu hình**
