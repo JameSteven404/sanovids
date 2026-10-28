@@ -110,6 +110,10 @@ renderer: lib/updates.ts ⇄ src/updateActions.ts ⇄ UpdatePill · UpdateDialog
    4. đăng bản riêng, rồi **cuối cùng** mới đăng bản công khai (`--draft=false --prerelease=false --latest`) — từ giây này máy người dùng thấy bản mới;
    5. kiểm tra như một máy lạ (không đăng nhập): `/releases/latest` = tag mới, `latest.yml` tải về giống hệt file trên máy, `releases.atom` có tag mới (5 lần, cách 10 giây).
 7. Mở trang tải về xem lại bằng mắt. Máy đã cài bản Setup sẽ nhận bản mới trong vòng vài giờ.
+8. **Bản này đổi Electron** (hoặc định dạng dữ liệu): phát hành luôn **Sano Agent** từ đúng commit này (tăng `version` trong
+   `sano-agent/electron-builder.cjs` ngay ở bước 1; [SANO-DESKTOP.md](SANO-DESKTOP.md) mục 6). Hai app dùng chung
+   `%APPDATA%\SanoVids`: Sano Agent còn Electron cũ sẽ mở thư mục mà Electron mới đã nâng cấp. Commit phát hành mang cả hai
+   lần tăng version và cả hai mục CHANGELOG (`CHANGELOG.md` và `sano-agent/CHANGELOG.md`).
 
 **`release:check` kiểm tra gì**:
 - (a) mục CHANGELOG (thiếu dòng liên kết chỉ ⚠);
@@ -141,6 +145,16 @@ renderer: lib/updates.ts ⇄ src/updateActions.ts ⇄ UpdatePill · UpdateDialog
 | đã đăng, **file khác** | **DỪNG** — không bao giờ ghi đè file đã đăng (máy người dùng có thể đang tải nó). Muốn sửa: tăng phiên bản và đăng bản mới |
 
 Ghi chú GitHub được lưu ở `release/_build/publish/notes-private.md` và `notes-public.md` (bản xem trước ghi vào thư mục tạm). Bản công khai không có liên kết nào vào repo riêng.
+
+### Sano Agent
+
+`npm run dist:sano-agent` → `npm run release:check:sano-agent` → `npm run release:publish:sano-agent`
+([SANO-DESKTOP.md](SANO-DESKTOP.md) mục 6). Nguồn cập nhật là repo công khai riêng `JameSteven404/sano-agent-releases`
+(tag `vX.Y.Z` ở đó; repo nguồn chỉ có tag `sano-agent-vX.Y.Z`, không có release riêng tư, không có bản Mac), cache
+`%LOCALAPPDATA%\sano-agent-updater`. Sano Agent dùng chung thư mục dữ liệu với SanoVids nhưng file riêng:
+`updater-sano-agent.json`, `logs\updater-sano-agent.log`. Sano Agent build từ commit của bản SanoVids công khai mới nhất
+(cổng kiểm tra báo ✗ khi tag đó không phải HEAD hoặc khác Electron): đổi Electron hoặc định dạng dữ liệu thì phát hành cả hai
+(bước 8 ở trên).
 
 ### Quy tắc an toàn (đừng phá)
 - **Không bao giờ build bản phát hành thiếu `build.publish`** (hoặc trỏ nơi khác): người cài bản đó sẽ không bao giờ nhận bản sau. `tidy-release` cảnh báo, `release:check` chặn.
@@ -206,8 +220,8 @@ Ghi chú GitHub được lưu ở `release/_build/publish/notes-private.md` và 
 | Không kết nối được máy chủ cập nhật. | Mất mạng, tường lửa, proxy | App tự thử lại sau 30 phút |
 | Máy chủ cập nhật đang bận. | GitHub giới hạn lượt (403 / 429) | Đợi; app tự thử lại |
 | File cập nhật tải về bị lỗi (sai mã kiểm tra) nên đã bị bỏ. | File trên GitHub khác `latest.yml` (hoặc tải hỏng) | Kiểm tra bằng `release:check` / đăng bản mới hơn |
-| Bản cập nhật này không mang chữ ký số đúng của tác giả hoặc không đúng phiên bản được báo (có thể là file giả mạo) nên SanoVids đã xoá nó, không cài gì. Đừng tự tải bản này về cài. Chỉ cài bộ cài có dấu vân tay chứng chỉ trùng với Cài đặt → Giới thiệu, hoặc hỏi tác giả. | Mã `signature`: bộ cài tải về không ký, ký bởi chứng chỉ chưa ghim (kể cả trùng tên), bị sửa sau khi ký, không đúng phiên bản / sản phẩm được báo, hoặc bị đổi sau khi xác minh. Lý do ở dòng `signature <lý do>` trong `updater.log`. Hiện một thông báo cho mỗi phiên bản; **Cài đặt → Cập nhật → Xem chi tiết** mở hộp cập nhật | Người dùng: đừng cài bản đó; so dấu vân tay với Giới thiệu trước khi tự cài bộ cài nào, hoặc hỏi tác giả. Tác giả: `release:check` nhóm (j); bản đã đăng sai thì đăng bản mới hơn, ký đúng ([SIGNING.md](SIGNING.md)); nếu chính bạn không đăng bản đó, coi như tài khoản GitHub bị chiếm |
-| Chưa kiểm tra được chữ ký số của bản cập nhật (máy đang chặn việc kiểm tra hoặc kiểm tra quá lâu) nên SanoVids chưa cài bản này. Bấm “Thử lại” để kiểm tra lại. | Mã `signature-unverified`: PowerShell bị chính sách (AppLocker / WDAC) / diệt virus chặn, quá 60 s, chuỗi chứng chỉ lạ, hoặc app không có ghim | **Thử lại**; app tự thử lại mỗi ngày. Máy bị khoá chính sách thì nhờ quản trị cho phép PowerShell chạy bình thường |
+| Bản cập nhật này không mang chữ ký số đúng của tác giả hoặc không đúng phiên bản được báo (có thể là file giả mạo) nên đã bị xoá, không cài gì. Đừng tự tải bản này về cài. Chỉ cài bộ cài có dấu vân tay chứng chỉ trùng với Cài đặt → Giới thiệu, hoặc hỏi tác giả. | Mã `signature`: bộ cài tải về không ký, ký bởi chứng chỉ chưa ghim (kể cả trùng tên), bị sửa sau khi ký, không đúng phiên bản / sản phẩm được báo, hoặc bị đổi sau khi xác minh. Lý do ở dòng `signature <lý do>` trong `updater.log`. Hiện một thông báo cho mỗi phiên bản; **Cài đặt → Cập nhật → Xem chi tiết** mở hộp cập nhật | Người dùng: đừng cài bản đó; so dấu vân tay với Giới thiệu trước khi tự cài bộ cài nào, hoặc hỏi tác giả. Tác giả: `release:check` nhóm (j); bản đã đăng sai thì đăng bản mới hơn, ký đúng ([SIGNING.md](SIGNING.md)); nếu chính bạn không đăng bản đó, coi như tài khoản GitHub bị chiếm |
+| Chưa kiểm tra được chữ ký số của bản cập nhật (máy đang chặn việc kiểm tra hoặc kiểm tra quá lâu) nên bản này chưa được cài. Bấm “Thử lại” để kiểm tra lại. | Mã `signature-unverified`: PowerShell bị chính sách (AppLocker / WDAC) / diệt virus chặn, quá 60 s, chuỗi chứng chỉ lạ, hoặc app không có ghim | **Thử lại**; app tự thử lại mỗi ngày. Máy bị khoá chính sách thì nhờ quản trị cho phép PowerShell chạy bình thường |
 | Ổ đĩa không đủ chỗ để tải bản cập nhật. | Ổ C đầy | Dọn ổ đĩa |
 | Không khởi động được trình cài bản cập nhật. | Bộ cài không chạy được khi bấm **Khởi động lại để cập nhật** | Tắt hẳn app (bản mới tự cài khi tắt); hoặc tải Setup ở trang tải về, so dấu vân tay, cài đè |
 | Chưa cài được bản x. SanoVids sẽ thử lại khi bạn tắt app. | Bộ cài không chạy được (diệt virus, quyền ghi) | Tắt hẳn app; hoặc tải Setup ở trang tải về cài đè |

@@ -23,7 +23,7 @@ import {
 } from '../../lib/updateModel'
 import { useUpdatePrefs } from '../../lib/updatePrefs'
 import { checkUpdates, downloadUpdate, openReleasePage, useUpdates } from '../../lib/updates'
-import { UPDATE_RELEASES_PAGE_LABEL } from '../../lib/updateTypes'
+import { PRODUCT_NAME, UPDATE_RELEASES_PAGE_LABEL } from '../../lib/updateTypes'
 import { useRestartWork } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { installNow, setInstallWhenIdle, useInstallUi } from '../../updateActions'
@@ -195,7 +195,7 @@ export function UpdateDialog() {
 
   return (
     <Modal
-      title="Cập nhật SanoVids"
+      title={`Cập nhật ${PRODUCT_NAME}`}
       size="normal"
       onClose={close}
       headerExtra={<span className="badge">{KIND_LABEL[state.kind]}</span>}

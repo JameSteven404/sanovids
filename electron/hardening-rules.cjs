@@ -14,8 +14,9 @@
  * Never accepted by a packaged SanoVids: debuggers, V8 flags, switches that turn Chromium's security off, switches that
  * make the signed SanoVids.exe start ANOTHER program as one of its helper processes (gpu-launcher, *-cmd-prefix,
  * browser-subprocess-path: a known way to abuse signed Chromium apps), and switches that write TLS secrets or full
- * network logs to disk. `disable-features` is the catch-all for turning sandbox / site-isolation features off; the app
- * never passes it (checked on Electron 44: none of these is present on a normal launch, before or after ready).
+ * network logs to disk. `disable-features` is the catch-all for turning sandbox / site-isolation features off; nobody
+ * may pass it (checked on Electron 44: none of these is present on a normal launch, before or after ready). SANO mode
+ * appends its own one (main.cjs, D223) only after this check ran, and the app never relaunches itself with it.
  */
 const ALWAYS_REFUSED = Object.freeze([
   'inspect',
@@ -164,6 +165,37 @@ function permissionAllowed(permission) {
   return typeof permission === 'string' && DEFAULT_SESSION_PERMISSIONS.includes(permission)
 }
 
+/**
+ * The local app document may use the four permissions above, standalone or framed by the configured SANO origin.
+ * The remote SANO page and its Google popups do not inherit the app's permissions. Do not use isMainFrame as a gate:
+ * SANO embeds the app, and Chromium also reports false for a top-level fileSystem check. Require document metadata
+ * instead (workers / missing URLs fail closed), checking both identities when Electron supplies an origin as well.
+ */
+function defaultPermissionAllowed(permission, { requestingUrl, requestingOrigin, topUrl, embeddingOrigin, sanoOrigin } = {}) {
+  if (!permissionAllowed(permission)) return false
+  const parse = (value) => {
+    if (typeof value !== 'string' || !value || value !== value.trim()) return null
+    try {
+      const url = new URL(value)
+      return url.username || url.password ? null : url
+    } catch {
+      return null
+    }
+  }
+  const isApp = (value) => {
+    const url = parse(value)
+    return !!url && url.protocol === 'app:' && url.host === 'bdp'
+  }
+  const isContainer = (value) => {
+    if (isApp(value)) return true
+    const url = parse(value)
+    const sano = parse(sanoOrigin)
+    return !!url && !!sano && ['http:', 'https:'].includes(sano.protocol) && url.origin === sano.origin
+  }
+  return isApp(requestingUrl) && (requestingOrigin === undefined || isApp(requestingOrigin)) && isContainer(topUrl)
+    && (embeddingOrigin === undefined || isContainer(embeddingOrigin))
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Content-Security-Policy of the app's HTML (app://bdp)
 // ---------------------------------------------------------------------------------------------------------------
@@ -288,15 +320,18 @@ function contentSecurityPolicy(html, frameAncestors = "'none'") {
 const GOOGLE_SIGN_IN = /^https:\/\/accounts\.(google|youtube)\.com\//
 
 /**
- * SANO desktop (docs/SANO-DESKTOP.md): from source only, SANO_URL names the SANO web app the window opens; SanoVids then
- * runs as its Dựng phim frame. https, or http on this machine only → { url, origin }; unset or packaged → null; else false.
+ * SANO desktop (docs/SANO-DESKTOP.md): the SANO web app the window opens; SanoVids then runs as its Dựng phim frame. From
+ * source: SANO_URL (`value`). Packaged: only `baked` (Sano Agent's package.json sanoAgent.url, inside the
+ * integrity-checked app.asar), never the environment, which any program could set. https, or http on this machine only →
+ * { url, origin }; nothing to open → null (plain SanoVids); anything else → false.
  */
 function sanoShell(o) {
-  const { isPackaged, value } = o && typeof o === 'object' ? o : {}
-  if (isPackaged !== false || value === undefined || value === '') return null
+  const { isPackaged, value, baked } = o && typeof o === 'object' ? o : {}
+  const chosen = isPackaged === false ? value : baked
+  if (chosen === undefined || chosen === '') return null
   let url
   try {
-    url = new URL(String(value))
+    url = new URL(String(chosen))
   } catch {
     return false
   }
@@ -305,6 +340,19 @@ function sanoShell(o) {
   if (url.username || url.password || !/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(url.hostname)) return false
   if (!(url.protocol === 'https:' || (url.protocol === 'http:' && local))) return false
   return { url: `${url.origin}/`, origin: url.origin }
+}
+
+/**
+ * The SanoVids page(s) of a window's WebContents: its live app://bdp/ frames — the main frame in plain SanoVids, the
+ * Dựng phim frame inside SANO's page. Main → page pushes (updates:state, devAccess:state) go to these only, never to
+ * SANO's own page. Never throws ([] when the window is going away).
+ */
+function appFrames(wc) {
+  try {
+    return wc.mainFrame.framesInSubtree.filter((f) => !f.isDestroyed() && String(f.url).startsWith('app://bdp/'))
+  } catch {
+    return []
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -625,10 +673,12 @@ module.exports = {
   downloadLogLabel,
   DEFAULT_SESSION_PERMISSIONS,
   permissionAllowed,
+  defaultPermissionAllowed,
   sha256Base64,
   inlineScriptHashes,
   contentSecurityPolicy,
   sanoShell,
+  appFrames,
   GOOGLE_SIGN_IN,
   APP_SIGNATURE_STATUSES,
   appSignaturePayload,

@@ -34,6 +34,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { version as APP_VERSION } from '../../../package.json'
+import { PRODUCT_NAME } from '../../lib/updateTypes'
 import { FOLDER_UNLINK_TRASH_WEB_NOTE } from '../../core/folderTrash'
 import type { EdgeMode } from '../../core/types'
 import {
@@ -721,7 +722,7 @@ export function AboutBlock() {
           <Logo size={40} />
         </span>
         <span className="dg-about-name">
-          <b>SanoVids</b>
+          <b>{PRODUCT_NAME}</b>
           <small onClick={onVersionTap}>{versionLine(version, macBuild ? 'mac-manual' : kind, desktop)}{macBuild ? ` · ${MAC_EXPERIMENTAL}` : ''}</small>
         </span>
       </div>

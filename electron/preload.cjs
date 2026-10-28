@@ -16,6 +16,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 const arg = process.argv.find((a) => a.startsWith('--bdp-version='))
 const devAccessArg = process.argv.find((a) => a.startsWith('--bdp-dev-access='))
+const productArg = process.argv.find((a) => a.startsWith('--bdp-product='))
 
 /** Plain data only: a string (or '') — the main process validates everything again. */
 const str = (v) => (typeof v === 'string' ? v : '')
@@ -46,6 +47,8 @@ if (location.origin === 'app://bdp') window.addEventListener('pagehide', () => v
 
 expose('bdpDesktop', {
   version: arg ? arg.slice('--bdp-version='.length) : '',
+  /** 'SanoVids' | 'Sano Agent' (main's app.getName()): which download page the texts name (lib/updateTypes). */
+  product: productArg ? productArg.slice('--bdp-product='.length) : '',
   electron: process.versions.electron,
   platform: process.platform,
   /** Self-check of the app's code signature (Cài đặt → Giới thiệu). */

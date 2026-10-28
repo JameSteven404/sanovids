@@ -3,7 +3,7 @@
 // authenticator secret, Windows only) and the clock.
 //
 // Main decides, the page follows: in a release build the page only learns the access from here (the
-// --bdp-dev-access=… argument of the window, devAccess:getState, the devAccess:state push to the main window). The
+// --bdp-dev-access=… argument of the window, devAccess:getState, the devAccess:state push to its app://bdp frame). The
 // page can ASK to unlock / lock / link, and every handler checks the state itself first (rules.opAllowed): no channel
 // creates an unlocked state except a verified unlock, and none extends it past what the code allowed.
 //
@@ -17,6 +17,7 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
 const rules = require('./devaccess-rules.cjs')
+const hardening = require('./hardening-rules.cjs')
 
 const FILE = 'dev-access.json'
 const BAD_FILE = 'dev-access.bad.json'
@@ -305,10 +306,13 @@ function setupDevAccess({ userDataDir, pkgJsonPath, buildOpen, isAppSender, getM
     const win = getMainWindow && getMainWindow()
     if (!win || win.isDestroyed()) return
     const state = view()
-    try {
-      win.webContents.send('devAccess:state', reason ? { ...state, reason } : state)
-    } catch {
-      /* window going away */
+    // SanoVids' own page only: inside SANO desktop that is a frame of SANO's page, never SANO's page itself.
+    for (const f of hardening.appFrames(win.webContents)) {
+      try {
+        f.send('devAccess:state', reason ? { ...state, reason } : state)
+      } catch {
+        /* frame going away */
+      }
     }
   }
 

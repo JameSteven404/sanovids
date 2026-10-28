@@ -15,7 +15,7 @@
 //
 // Never a dialog or a notification from here: every status reaches the page as an 'updates:state' push, and the page
 // decides what to show (automatic checks stay silent). Files: userData/updater.json (prefs + install attempt),
-// userData/logs/updater.log (+ updater.1.log).
+// userData/logs/updater.log (+ updater.1.log); Sano Agent, which shares the folder: updater-sano-agent.* (updaterStem).
 //
 // Signed updates only: every downloaded installer must carry an Authenticode signature by one of the certificates
 // pinned in package.json `sanovids.signers` (electron/signature.cjs; decision table in updater-rules judgeSignature),
@@ -37,9 +37,8 @@ const fs = require('node:fs')
 const path = require('node:path')
 const rules = require('./updater-rules.cjs')
 const signature = require('./signature.cjs')
+const hardening = require('./hardening-rules.cjs')
 
-/** Pushes go only to the SanoVids page itself (never to the canvasapp login / checkout windows). */
-const APP_URL_PREFIX = 'app://bdp/'
 const FIRST_CHECK_DELAY_MS = 15_000
 const SCHEDULE_TICK_MS = 10 * 60_000
 const PROGRESS_PUSH_MS = 500
@@ -76,10 +75,10 @@ const MSG = {
 const fail = (code, message) => ({ ok: false, code, message })
 const OK = Object.freeze({ ok: true })
 
-/** userData/logs/updater.log — one line per entry, rotated to updater.1.log past 256 KB. Never throws. */
-function createLogger(dir) {
-  const file = path.join(dir, 'updater.log')
-  const previous = path.join(dir, 'updater.1.log')
+/** userData/logs/<stem>.log — one line per entry, rotated to <stem>.1.log past 256 KB. Never throws. */
+function createLogger(dir, stem) {
+  const file = path.join(dir, `${stem}.log`)
+  const previous = path.join(dir, `${stem}.1.log`)
   let dirReady = false
   const text = (m) => (m instanceof Error ? m.stack || m.message : typeof m === 'string' ? m : safeString(m))
   const write = (level, message) => {
@@ -155,7 +154,9 @@ function hashFileSync(file) {
  */
 function setupUpdater({ isAppSender, getMainWindow, profileSource, portableFile, pendingClearRetryMs = PENDING_CLEAR_RETRY_MS }) {
   const userData = app.getPath('userData')
-  const log = createLogger(path.join(userData, 'logs'))
+  const appName = app.getName()
+  const stem = rules.updaterStem(appName)
+  const log = createLogger(path.join(userData, 'logs'), stem)
   const current = app.getVersion()
 
   // 1. Which build is this?
@@ -171,8 +172,7 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource, portableFile,
 
   // 2. Prefs + the install attempt recorded before the last quit → this launch's notice. The attempt is then cleared,
   // unless this launch came while the install on quit may still be running (the next launch decides).
-  const filePath = path.join(userData, 'updater.json')
-  const appName = app.getName()
+  const filePath = path.join(userData, `${stem}.json`)
   let file = readUpdaterFile()
   const startup = rules.startupAttempt(file, current, Date.now())
   const notice = startup.notice
@@ -331,13 +331,21 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource, portableFile,
       win = null
     }
     if (!win || win.isDestroyed()) return
-    const wc = win.webContents
-    if (!wc || wc.isDestroyed() || !String(wc.getURL()).startsWith(APP_URL_PREFIX)) return
+    // Only SanoVids' own page (never the canvasapp windows, nor SANO's page around it); a page that loads later asks
+    // (updates:getState).
+    const frames = hardening.appFrames(win.webContents)
+    if (!frames.length) return
     const key = JSON.stringify(state)
     if (key === lastSentKey) return
     lastSentKey = key
     lastPushAt = Date.now()
-    wc.send('updates:state', { ...state })
+    for (const f of frames) {
+      try {
+        f.send('updates:state', { ...state })
+      } catch {
+        /* frame going away */
+      }
+    }
   }
 
   /** Every change is pushed; download progress at most every 500 ms (the first and the last always go out). */
@@ -748,7 +756,7 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource, portableFile,
     const now = Date.now()
     if (now - lastOpenPageAt < OPEN_PAGE_THROTTLE_MS) return fail('busy', MSG.pageJustOpened)
     lastOpenPageAt = now
-    await shell.openExternal(rules.RELEASES_URL)
+    await shell.openExternal(rules.releasesUrl(appName))
     return OK
   })
 

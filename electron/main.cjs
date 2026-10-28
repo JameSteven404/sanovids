@@ -87,12 +87,11 @@ const DEVTOOLS = hardening.allowDevTools({ isPackaged: PACKAGED, profileSource: 
  */
 const DEV_OPEN_BUILD = require('./devaccess-rules.cjs').devOpenBuild({ devToolsAllowed: DEVTOOLS, testDevLock: readTestDevLock() })
 /**
- * SANO desktop (docs/SANO-DESKTOP.md): from source, SANO_URL makes the window open SANO's web app, with SanoVids
- * (app://bdp/) as its Dựng phim frame: same profile, canvasapp gateway and checks (fromApp) as SanoVids. Packaged: ignored.
- * shortcut: main → page pushes (devAccess:state, updates:state) reach the main frame only, so SanoVids inside SANO gets
- * none; harmless from source (development mode open, no updater) — send them to the app://bdp frame before a packaged SANO build.
+ * SANO desktop (docs/SANO-DESKTOP.md): the window opens SANO's web app, with SanoVids (app://bdp/) as its Dựng phim
+ * frame: same profile, canvasapp gateway and checks (fromApp) as SanoVids. From source: SANO_URL. Packaged: only the
+ * address Sano Agent bakes into its package.json (sano-agent/electron-builder.cjs); plain SanoVids has none.
  */
-const SANO = hardening.sanoShell({ isPackaged: PACKAGED, value: process.env.SANO_URL })
+const SANO = hardening.sanoShell({ isPackaged: PACKAGED, value: process.env.SANO_URL, baked: readBakedSanoUrl() })
 if (SANO === false) {
   console.error('[SanoVids] SANO_URL must be https://… or http://localhost:<port>/')
   process.exit(2)
@@ -116,6 +115,26 @@ function readBakedProfileDir() {
   }
 }
 
+/** `sanoAgent.url` of the app's own package.json (only the Sano Agent build has it), else undefined. */
+function readBakedSanoUrl() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'))
+    return pkg && pkg.sanoAgent && typeof pkg.sanoAgent.url === 'string' ? pkg.sanoAgent.url : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** `name` of the app's own package.json ('sanovids', 'sano-agent'), else undefined. */
+function readPackageName() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'))
+    return pkg && typeof pkg.name === 'string' ? pkg.name : undefined
+  } catch {
+    return undefined
+  }
+}
+
 let portableFileMemo = null
 
 /**
@@ -133,6 +152,7 @@ function portableFile() {
         execPath: process.execPath,
         tmpDir: app.getPath('temp'),
         appName: app.getName(),
+        packageName: readPackageName(),
         exists: fs.existsSync,
         realpath: fs.realpathSync.native,
         pathMod: path,
@@ -172,6 +192,41 @@ protocol.registerSchemesAsPrivileged([
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
+  // D223: before Chromium opens the profile it shares with SanoVids / Sano Agent (updaterRules.profileElectronGate).
+  const seenFile = path.join(profile.dir, 'electron-version')
+  let seen
+  try {
+    seen = fs.readFileSync(seenFile, 'utf8')
+  } catch (e) {
+    // ENOENT = no record yet (a new profile, or one opened only by builds without this check). Any other read error
+    // fails closed like the write below: the unread record may say a newer Electron already opened this profile.
+    if (!e || e.code !== 'ENOENT') {
+      dialog.showErrorBox(app.getName(), `Không đọc được ${seenFile} (${e && e.message}). ${app.getName()} không mở, vì có thể dữ liệu đã được một bản SanoVids hoặc Sano Agent mới hơn mở. Hãy cho phép đọc file đó (bỏ chặn, đóng chương trình đang giữ nó) rồi mở lại.`)
+      process.exit(4)
+    }
+  }
+  const gate = updaterRules.profileElectronGate(seen, process.versions.electron)
+  if (gate === 'invalid') {
+    dialog.showErrorBox(app.getName(), `Số phiên bản trong ${seenFile} trống hoặc không hợp lệ. ${app.getName()} không mở và giữ nguyên dữ liệu vì chưa xác định được phiên bản đã mở thư mục này. Giữ nguyên file đó và liên hệ người quản lý bản cài để kiểm tra bản sao lưu; không xoá hoặc tự sửa số phiên bản.`)
+    process.exit(4)
+  }
+  if (gate === 'refuse') {
+    const name = app.getName()
+    dialog.showErrorBox(name, `Dữ liệu ở ${profile.dir} đã được mở bằng một bản SanoVids hoặc Sano Agent mới hơn (Electron ${seen.trim()}). Bản ${name} này (Electron ${process.versions.electron}) cũ hơn nên không mở, để không làm hỏng dự án. Hãy cài bản ${name} mới nhất: ${updaterRules.releasesUrl(name)}`)
+    process.exit(4)
+  }
+  if (gate === 'write') {
+    try {
+      fs.mkdirSync(profile.dir, { recursive: true })
+      // Replaced in one step: a crash mid-write leaves the old record (or none), never a torn one 'invalid' refuses for good.
+      fs.writeFileSync(`${seenFile}.tmp`, process.versions.electron, { flush: true })
+      fs.renameSync(`${seenFile}.tmp`, seenFile)
+    } catch (e) {
+      // Fail closed: opening anyway would migrate the profile with no record, and an older app would then open it.
+      dialog.showErrorBox(app.getName(), `Không ghi được ${seenFile} (${e && e.message}). ${app.getName()} không mở, vì thiếu số này thì bản SanoVids hoặc Sano Agent cũ hơn có thể mở nhầm dữ liệu rồi làm hỏng dự án. Hãy cho phép ghi file đó (bỏ chỉ đọc, đóng chương trình đang giữ nó) rồi mở lại.`)
+      process.exit(4)
+    }
+  }
   // A second launch brings THE SanoVids window forward (never a canvasapp login / checkout window).
   app.on('second-instance', () => showMainWindow())
   // Every web page SanoVids ever creates (main window, canvasapp login and its popups, checkout): no <webview>, and
@@ -301,13 +356,27 @@ function htmlCsp() {
 
 /**
  * Web permissions of the default session (the SanoVids window): Electron grants every permission by default; the page
- * only needs clipboard writes (copy buttons), the web folder picker API and full-screen video. No device is ever handed out.
+ * only needs clipboard writes (copy buttons), the web folder picker API, full-screen video and persistent storage.
+ * Only the requesting app://bdp document gets these rights, not its remote SANO parent or Google login popups.
  * The canvasapp partition has its own rules (restrictCanvasappPermissions).
  */
 function restrictDefaultSessionPermissions() {
   const ses = session.defaultSession
-  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(hardening.permissionAllowed(permission)))
-  ses.setPermissionCheckHandler((_wc, permission) => hardening.permissionAllowed(permission))
+  const allowed = (wc, permission, details, requestingOrigin, embeddingOrigin) => {
+    try {
+      if (!wc || wc.isDestroyed()) return false
+      return hardening.defaultPermissionAllowed(permission, {
+        requestingUrl: details && details.requestingUrl, requestingOrigin, embeddingOrigin,
+        topUrl: wc.getURL(), sanoOrigin: SANO ? SANO.origin : undefined,
+      })
+    } catch {
+      return false
+    }
+  }
+  ses.setPermissionRequestHandler((wc, permission, callback, details) =>
+    callback(allowed(wc, permission, details, undefined, details && details.embeddingOrigin)))
+  ses.setPermissionCheckHandler((wc, permission, requestingOrigin, details) =>
+    typeof requestingOrigin === 'string' && allowed(wc, permission, details, requestingOrigin, details && details.embeddingOrigin))
   ses.setDevicePermissionHandler(() => false)
 }
 
@@ -318,11 +387,13 @@ function createWindow() {
     minWidth: 1100,
     minHeight: 700,
     show: false,
-    title: SANO ? 'SANO' : TITLE,
+    // SANO's page sets its own <title> once it loads.
+    title: SANO ? 'Sano Agent' : TITLE,
     backgroundColor: '#0f1012',
     autoHideMenuBar: true,
-    // Windows: the multi-size .ico (sharp taskbar / Alt+Tab icon at every scale); elsewhere the 512 px PNG.
-    icon: path.join(DIST, 'icons', process.platform === 'win32' ? 'icon.ico' : 'icon-512.png'),
+    // Windows: the multi-size .ico (sharp taskbar / Alt+Tab icon at every scale); elsewhere the 512 px PNG. SANO mode on
+    // Windows: none, so the window shows the exe's own icon (Sano Agent's, not SanoVids').
+    ...(SANO && process.platform === 'win32' ? {} : { icon: path.join(DIST, 'icons', process.platform === 'win32' ? 'icon.ico' : 'icon-512.png') }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -334,7 +405,7 @@ function createWindow() {
       spellcheck: false,
       // Hover previews / the take viewer may start with sound before any click (the speaker switch decides).
       autoplayPolicy: 'no-user-gesture-required',
-      additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : [])],
+      additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, `--bdp-product=${app.getName()}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : [])],
     },
   })
 
@@ -380,14 +451,20 @@ function createWindow() {
     }
   }
 
-  win.once('ready-to-show', () => {
+  // The window's first show, once: ready-to-show, or SANO desktop's failure dialog, which shows the window before any
+  // page painted (Electron then never fires ready-to-show for it).
+  let shownOnce = false
+  const firstShow = () => {
+    if (shownOnce) return
+    shownOnce = true
     if (mainWindow === win) mainWindowShown = true
     win.maximize()
     win.show()
     if (updater) updater.onWindowReady()
     // Self-check of the app's own code signature, once, a moment after the window shows (cached for 'app:signature').
     setTimeout(() => void appSignature(), 3000)
-  })
+  }
+  win.once('ready-to-show', firstShow)
 
   const { webContents } = win
 
@@ -429,16 +506,43 @@ function createWindow() {
     event.preventDefault()
     if (isExternal(url)) void shell.openExternal(url)
   })
+  // SANO desktop: SANO did not open. Say so in the window (a packaged app has no console), never a blank window or a
+  // silent exit: Thử lại loads SANO again, Thoát quits. The open window keeps the app running meanwhile.
+  let sanoOpened = false
+  if (SANO) webContents.on('did-navigate', (_event, url) => {
+    if (url.startsWith(home)) sanoOpened = true
+  })
+  const sanoFailed = (message, detail) => {
+    firstShow()
+    void dialog
+      .showMessageBox(win, { type: 'error', title: 'Sano Agent', message, detail, buttons: ['Thử lại', 'Thoát'], defaultId: 0, cancelId: 1, noLink: true })
+      .then(({ response }) => {
+        if (response !== 0) return app.quit()
+        sanoOpened = false // a retry is a new first load: a redirect of it is explained too, whatever loaded before
+        void win.loadURL(SANO.url)
+      })
+  }
   // SANO desktop: SANO's page comes from a server now, and a server redirect must not take the window elsewhere either.
   // A redirect is the server's, not the user's click: never opened in the browser. Refused on the very first load, the
-  // window would never show: say why and stop, like a wrong SANO_URL.
+  // window would never show: say why.
   webContents.on('will-redirect', (event, url) => {
     if (!event.isMainFrame || url.startsWith(home)) return
     event.preventDefault()
-    if (mainWindowShown) return
+    // SANO desktop: until SANO's page has opened once (first load, or a Thử lại), a refused redirect is explained.
+    if (SANO ? sanoOpened : mainWindowShown) return
     console.error(`[SanoVids] SANO_URL redirects to ${url}: set SANO_URL to the address it ends at`)
-    app.exit(2)
+    if (SANO) sanoFailed(`SANO tại ${SANO.url} chuyển hướng sang ${url}`, 'Địa chỉ SANO nướng sẵn trong app (từ mã nguồn: SANO_URL) phải là địa chỉ cuối, không chuyển hướng. Sửa máy chủ SANO rồi bấm Thử lại.')
+    else app.exit(2)
   })
+
+  // SANO desktop: SANO's server is not up (or not on that port). -3 = a navigation replaced or refused (will-redirect),
+  // not a failure.
+  if (SANO) {
+    webContents.on('did-fail-load', (_event, errorCode, _description, _url, isMainFrame) => {
+      if (!isMainFrame || errorCode === -3) return
+      sanoFailed(`Không mở được SANO tại ${SANO.url}`, 'Kiểm tra máy chủ SANO đã chạy chưa, rồi bấm Thử lại.')
+    })
+  }
 
   void win.loadURL(SANO ? SANO.url : `${ORIGIN}/index.html`)
   return win

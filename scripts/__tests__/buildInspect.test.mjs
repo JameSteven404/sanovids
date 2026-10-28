@@ -245,6 +245,12 @@ describe('inspectAppUpdateYml', () => {
     expect(r).toHaveLength(1)
     expect(r[0]).toMatchObject({ level: 'ok', group: 'Nguồn cập nhật' })
   })
+  it('Sano Agent: the feed repo and updater cache are its own (passed through to checkAppUpdateYml)', () => {
+    const p = write('sanovids.yml', SIGNED_YML)
+    const r = inspectAppUpdateYml(p, AUTHOR, { repo: 'sano-agent-releases', cacheDir: 'sano-agent-updater' })
+    expect(r.map((x) => x.level)).toEqual(['fail', 'fail'])
+    expect(r.map((x) => x.text).join(' ')).toMatch(/sano-agent-releases.*sano-agent-updater/)
+  })
   it('a decomposed (NFD) name parses equal but is not the exact bytes', () => {
     const r = inspectAppUpdateYml(write('nfd.yml', SIGNED_YML.replace(AUTHOR, AUTHOR.normalize('NFD'))), AUTHOR)
     expect(r.map((x) => x.text)).toEqual(['app-update.yml không chứa đúng chuỗi UTF-8 của publisherName.'])

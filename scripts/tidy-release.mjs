@@ -12,24 +12,28 @@
 // older version's Mac files (SanoVids-Mac-<v>-arm64.*, and the latest-mac.yml / mac-check.json / mac-fetch.json that
 // belong to it) move to release/ban-cu/<v>/mac/.
 // Safe to run any time; files that are locked (e.g. the unpacked app still running) are left where they are.
+// `--sano-agent` (npm run dist:sano-agent): the same for release/sano-agent (SanoAgent-*, its own feed, no Mac build).
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { AUTHOR, SIGNER_THUMBPRINT, releaseFiles } from './releaseLib.mjs'
+import { createRequire } from 'node:module'
+import { AUTHOR, OWNER, SIGNER_THUMBPRINT, effectivePackage, productFromArgv, releaseFiles } from './releaseLib.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const releaseDir = path.join(root, 'release')
-const { version } = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+const product = productFromArgv(process.argv)
+const releaseDir = path.join(root, product.releaseDir)
+const cfg = product.config ? createRequire(import.meta.url)(path.join(root, product.config)) : null
+const { version } = effectivePackage(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')), cfg)
 const OLD_DIR = 'ban-cu'
 const BUILD_DIR = '_build'
-const INSTALLER = /^SanoVids-(Setup|Portable)-(\d+\.\d+\.\d+)\.exe(\.blockmap)?$/
+const INSTALLER = new RegExp(`^${product.fileStem}-(Setup|Portable)-(\\d+\\.\\d+\\.\\d+)\\.exe(\\.blockmap)?$`)
 const BY_PRODUCTS = ['win-unpacked', 'latest.yml', 'builder-debug.yml', 'builder-effective-config.yaml', '.icon-ico']
-const FEED_OWNER = 'JameSteven404'
-const FEED_REPO = 'sanovids-releases'
+const FEED_OWNER = OWNER
+const FEED_REPO = product.publicRepoName
 const RELEASES_URL = `https://github.com/${FEED_OWNER}/${FEED_REPO}/releases/latest`
 
 if (!fs.existsSync(releaseDir)) {
-  console.log('tidy-release: no release/ folder, nothing to do')
+  console.log(`tidy-release: no ${product.releaseDir}/ folder, nothing to do`)
   process.exit(0)
 }
 
@@ -70,7 +74,7 @@ if (fs.existsSync(buildDir)) {
 // The Mac build of an older version: its packaged files (by name) and the reports that belong to it (by mac-check.json).
 const macDir = path.join(releaseDir, 'mac')
 const MAC_ARTIFACT = /^SanoVids-Mac-(\d+\.\d+\.\d+)-arm64\.(dmg|zip|zip\.blockmap)$/
-const macNow = releaseFiles(version)
+const macNow = releaseFiles(version, product)
 if (fs.existsSync(macDir)) {
   let reportVersion = null
   try {
@@ -94,10 +98,10 @@ const hasMacDmg = fs.existsSync(path.join(macDir, macNow.macDmg))
 fs.writeFileSync(
   path.join(releaseDir, 'DOC-TOI.txt'),
   [
-    `SanoVids ${version} — file cài đặt`,
+    `${product.productName} ${version} — file cài đặt`,
     '',
-    `SanoVids-Setup-${version}.exe     Bộ cài (khuyên dùng): tạo icon ở Desktop / Start Menu, cài đè bản cũ được, TỰ CẬP NHẬT các bản sau.`,
-    `SanoVids-Portable-${version}.exe  Bấm là chạy, không cần cài (hợp chép USB). Bản này không tự cập nhật.`,
+    `${macNow.setup}     Bộ cài (khuyên dùng): tạo icon ở Desktop / Start Menu, cài đè bản cũ được, TỰ CẬP NHẬT các bản sau.`,
+    `${macNow.portable}  Bấm là chạy, không cần cài (hợp chép USB). Bản này không tự cập nhật.`,
     ...(hasMacDmg ? [`mac\\${macNow.macDmg}  Bản cho Mac chip Apple (thử nghiệm, chưa có chữ ký Apple, không tự cập nhật).`] : []),
     '',
     `Bộ cài được ký số bởi ${AUTHOR} — vân tay chứng chỉ ${SIGNER_THUMBPRINT}.`,
@@ -105,12 +109,12 @@ fs.writeFileSync(
     `${OLD_DIR}\\<phiên bản>\\   Các bản cũ (để thử lại khi cần).`,
     `${BUILD_DIR}\\              File phụ của quá trình build (win-unpacked…) và file cập nhật (latest.yml, .blockmap) dùng khi đăng bản — không cần đụng tới.`,
     '',
-    `Lịch sử phiên bản: CHANGELOG.md · Tải bản mới: ${RELEASES_URL}`,
-    'Đăng bản mới: npm run release:publish (xem trước: npm run release:check)',
+    `Lịch sử phiên bản: ${product.changelog} · Tải bản mới: ${RELEASES_URL}`,
+    product.config ? 'Đăng bản mới: npm run release:publish:sano-agent (xem trước: npm run release:check:sano-agent)' : 'Đăng bản mới: npm run release:publish (xem trước: npm run release:check)',
     '',
   ].join('\r\n'),
 )
-console.log(`tidy-release: ${moved} item(s) moved; newest installers (${version}) stay in release/`)
+console.log(`tidy-release: ${moved} item(s) moved; newest installers (${version}) stay in ${product.releaseDir}/`)
 
 // The feed baked into the app (package.json build.publish → resources/app-update.yml). A build without it strands
 // everyone who installs it, so shout — but do not fail: test builds may point elsewhere on purpose. publisherName

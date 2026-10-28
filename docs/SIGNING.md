@@ -104,6 +104,15 @@ chuẩn hoá): đừng xoá dòng này. `src/lib/__tests__/buildConfig.test.ts` 
 - **"Ghim trước, ký sau"**: `SIGNER_THUMBPRINT` phải nằm trong `sanovids.signers` của bản công khai mới nhất trước bản này
   (đọc bằng `git show v<bản đó>:package.json`); không thì mọi máy đang dùng bản đó sẽ từ chối bản cập nhật (mục 7).
 
+### Sano Agent
+
+Bản cài **Sano Agent** (`npm run dist:sano-agent`, [SANO-DESKTOP.md](SANO-DESKTOP.md) mục 5–6) ký **đúng như SanoVids**:
+`sano-agent/electron-builder.cjs` giữ nguyên `build.win` (chứng chỉ, SHA-256, timestamp, 4 DLL trong `signExts`, file
+kèm), fuse và `files`, chỉ đổi icon. Ghim `sanovids.signers` nằm ở cấp ngoài cùng của `package.json` nên vào `app.asar`
+của Sano Agent: app tự kiểm chữ ký và kiểm bản cập nhật bằng cùng ghim. Quy tắc "ghim trước, ký sau" (mục 7) đọc
+`package.json` ở tag nguồn `sano-agent-v<bản trước>`. Bản cập nhật của app này phải ghi ProductName `Sano Agent`, nên bộ
+cài SanoVids không bao giờ được nhận thay, và ngược lại.
+
 ## 3. Sao lưu và khôi phục khoá (chỉ tác giả)
 
 Hai script tiếng Việt trong `scripts/signing/`, không cần quyền quản trị:
@@ -315,8 +324,10 @@ màn hình đó, mất những gì chưa kịp tự lưu.
   từ `app://bdp/` như trước).
 - **Tải về**: chỉ nhận `blob:app://bdp/…` với đuôi `mp4 webm mov m4v jpg jpeg png webp svg txt zip json`; còn lại huỷ
   (log chỉ ghi đuôi file, không ghi tên).
-- **Quyền** của phiên mặc định: chỉ `clipboard-sanitized-write`, `fileSystem`, `fullscreen`, `persistent-storage`; thiết bị
-  (USB / HID / serial) luôn từ chối. Không `<webview>`, không chọn thiết bị Bluetooth.
+- **Quyền** của phiên mặc định: chỉ trang `app://bdp` được cấp `clipboard-sanitized-write`, `fileSystem`, `fullscreen`,
+  `persistent-storage`, kể cả khi là khung trong đúng địa chỉ SANO đã cấu hình. Cả bước kiểm tra và xin quyền đều kiểm
+  trang/nguồn yêu cầu; trang SANO bên ngoài, popup Google và khung khác không nhận các quyền này. Thiết bị (USB / HID /
+  serial) luôn từ chối. Không `<webview>`, không chọn thiết bị Bluetooth.
 - Cửa sổ đăng nhập canvasapp và mọi popup con của nó chỉ mở `https:`, cùng cấu hình bảo mật.
 - **CSP** trên mọi trang HTML của `app://bdp/`: `script-src 'self'` + mã băm SHA-256 của đoạn script chọn giao diện
   trong `index.html` (tính từ chính file đó), không `eval`, `object-src 'none'`, không khung, không form.

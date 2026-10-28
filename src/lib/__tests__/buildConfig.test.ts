@@ -392,3 +392,57 @@ describe('license and certificate files', () => {
     expect(pkg.sanovids.signers).toContain(cert.fingerprint.replace(/:/g, ''))
   })
 })
+
+describe('Sano Agent (sano-agent/electron-builder.cjs: SanoVids build, own identity, same signing)', () => {
+  const cfg = nodeRequire('../../../sano-agent/electron-builder.cjs') as Record<string, unknown> & {
+    win: Record<string, unknown>
+    nsis: Record<string, unknown>
+    extraMetadata: Record<string, unknown> & { sanoAgent: { url: string } }
+    publish: Record<string, unknown>[]
+    directories: Record<string, unknown>
+  }
+  const ART = 'sano-agent/brand/build'
+  const rules = nodeRequire('../../../electron/updater-rules.cjs') as { appUserModelId: (n: string) => string }
+
+  it('electron-builder accepts it; identity: one name everywhere (the uninstaller the updater looks for), own appId', async () => {
+    const { validateConfiguration } = nodeRequire('app-builder-lib/out/util/config/config.js') as {
+      validateConfiguration: (config: unknown, debugLogger: unknown) => Promise<void>
+    }
+    await expect(validateConfiguration(structuredClone(cfg), { isEnabled: false, add() {} })).resolves.toBeUndefined()
+    expect([cfg.productName, cfg.executableName, cfg.extraMetadata.productName]).toEqual(['Sano Agent', 'Sano Agent', 'Sano Agent'])
+    expect(cfg.appId).not.toBe(pkg.build.appId)
+    expect(cfg.appId).toBe(rules.appUserModelId('Sano Agent'))
+    expect(cfg.publish).toEqual([{ provider: 'github', owner: 'JameSteven404', repo: 'sano-agent-releases', releaseType: 'release' }])
+    expect(cfg.mac).toBeUndefined()
+    expect(cfg.dmg).toBeUndefined()
+    expect(cfg.directories).toEqual({ ...(pkg.build.directories as object), output: 'release/sano-agent' })
+  })
+
+  it('signed exactly like SanoVids: build.win but the icon, the same fuses, files and copyright', () => {
+    expect(cfg.win).toEqual({ ...pkg.build.win, icon: `${ART}/icon.ico` })
+    for (const key of ['electronFuses', 'files', 'copyright', 'electronLanguages', 'npmRebuild']) expect(cfg[key], key).toEqual(pkg.build[key])
+    const own = ['shortcutName', 'uninstallDisplayName', 'artifactName', 'installerIcon', 'installerSidebar', 'uninstallerSidebar', 'installerHeader']
+    const rest = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).filter(([k]) => !own.includes(k)))
+    expect(rest(cfg.nsis)).toEqual(rest(pkg.build.nsis))
+    expect(cfg.nsis).toMatchObject({ shortcutName: 'Sano Agent', uninstallDisplayName: 'Sano Agent', artifactName: 'SanoAgent-Setup-${version}.${ext}' })
+    for (const f of [cfg.nsis.installerIcon, cfg.nsis.installerSidebar, cfg.nsis.uninstallerSidebar, cfg.nsis.installerHeader, cfg.icon, cfg.win.icon] as string[]) {
+      expect(f.startsWith(`${ART}/`), f).toBe(true)
+      expect(fs.existsSync(path.join(ROOT, f)), f).toBe(true)
+    }
+  })
+
+  it('extraMetadata: no signer / test pins of its own (arrays are unioned), and a SANO address main accepts packaged', () => {
+    expect(Object.keys(cfg.extraMetadata)).toEqual(['author', 'name', 'productName', 'version', 'description', 'homepage', 'sanoAgent'])
+    expect(cfg.extraMetadata.author).toEqual(pkg.build.extraMetadata.author)
+    const hardening = nodeRequire('../../../electron/hardening-rules.cjs') as { sanoShell: (o: unknown) => unknown }
+    expect(hardening.sanoShell({ isPackaged: true, baked: cfg.extraMetadata.sanoAgent.url })).toEqual({ url: 'http://127.0.0.1:8080/', origin: 'http://127.0.0.1:8080' })
+  })
+
+  it('npm scripts: dist:sano-agent has the dist:win guards with this config; release:check / publish take --sano-agent', () => {
+    expect(pkg.scripts['dist:sano-agent']).toBe(
+      'node scripts/update-notes.mjs --sano-agent && node scripts/third-party-notices.mjs --check && vite build && node scripts/electron-build.mjs --config sano-agent/electron-builder.cjs --win nsis portable --publish never && node scripts/tidy-release.mjs --sano-agent',
+    )
+    expect(pkg.scripts['release:check:sano-agent']).toBe('node scripts/publish-release.mjs --sano-agent --dry-run')
+    expect(pkg.scripts['release:publish:sano-agent']).toBe('node scripts/publish-release.mjs --sano-agent')
+  })
+})

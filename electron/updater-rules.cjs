@@ -14,6 +14,11 @@ const RELEASES_URL = 'https://github.com/JameSteven404/sanovids-releases/release
  * package.json build.publish. The app never calls setFeedURL.
  */
 const FEED = Object.freeze({ provider: 'github', owner: 'JameSteven404', repo: 'sanovids-releases' })
+/**
+ * The SANO desktop build of the same code (sano-agent/electron-builder.cjs, D220/D223): its own installer, feed and
+ * taskbar identity, but SanoVids' data folder (the same projects).
+ */
+const SANO_AGENT = 'Sano Agent'
 
 const NOTES_MAX = 8000 // = src/lib/updateTypes.ts UPDATE_NOTES_MAX
 const VERSION_MAX = 64
@@ -47,9 +52,9 @@ const ERROR_TEXT = {
   checksum: 'File cập nhật tải về bị lỗi (sai mã kiểm tra) nên đã bị bỏ.',
   // Never "download it from the release page": that page may be the very place that served the refused file.
   signature:
-    'Bản cập nhật này không mang chữ ký số đúng của tác giả hoặc không đúng phiên bản được báo (có thể là file giả mạo) nên SanoVids đã xoá nó, không cài gì. Đừng tự tải bản này về cài. Chỉ cài bộ cài có dấu vân tay chứng chỉ trùng với Cài đặt → Giới thiệu, hoặc hỏi tác giả.',
+    'Bản cập nhật này không mang chữ ký số đúng của tác giả hoặc không đúng phiên bản được báo (có thể là file giả mạo) nên đã bị xoá, không cài gì. Đừng tự tải bản này về cài. Chỉ cài bộ cài có dấu vân tay chứng chỉ trùng với Cài đặt → Giới thiệu, hoặc hỏi tác giả.',
   'signature-unverified':
-    'Chưa kiểm tra được chữ ký số của bản cập nhật (máy đang chặn việc kiểm tra hoặc kiểm tra quá lâu) nên SanoVids chưa cài bản này. Bấm “Thử lại” để kiểm tra lại.',
+    'Chưa kiểm tra được chữ ký số của bản cập nhật (máy đang chặn việc kiểm tra hoặc kiểm tra quá lâu) nên bản này chưa được cài. Bấm “Thử lại” để kiểm tra lại.',
   disk: 'Ổ đĩa không đủ chỗ để tải bản cập nhật.',
   'install-failed': 'Không khởi động được trình cài bản cập nhật.',
 }
@@ -184,7 +189,8 @@ function profileDirProblem(candidate, real, pathMod, fsMod, platform) {
 }
 
 /**
- * The userData folder. Real users: %APPDATA%\SanoVids (or <appData>\<appName> for another product name).
+ * The userData folder. Real users: %APPDATA%\SanoVids, for Sano Agent too (D223: the same projects); another product
+ * name (a test build) gets <appData>\<appName>.
  * Agent / E2E tests only: SANOVIDS_PROFILE_DIR (env), else `sanovidsTestProfileDir` baked into the packaged
  * package.json by test builds. Such a folder must be absolute, not a root, never the real folder, inside it or one of
  * its parents — also through Windows aliases (UNC / \\?\ paths, trailing dots or spaces, 8.3 names, streams) and, with
@@ -197,7 +203,7 @@ function resolveProfileDir({ env, baked, appData, appName, platform, pathMod, fs
   const fromEnv = typeof env === 'string' && env !== ''
   const candidate = fromEnv ? env : typeof baked === 'string' && baked !== '' ? baked : null
   if (candidate === null) {
-    if (appName === 'SanoVids') return { ok: true, dir: real, source: 'default' }
+    if (appName === 'SanoVids' || appName === SANO_AGENT) return { ok: true, dir: real, source: 'default' }
     let leaf = String(appName || '').replace(/[^A-Za-z0-9._-]/g, '_')
     if (/^\.*$/.test(leaf)) leaf = 'SanoVids-other' // never '', '.' or '..'
     return { ok: true, dir: pathMod.join(appData, leaf), source: 'default' }
@@ -210,7 +216,35 @@ function resolveProfileDir({ env, baked, appData, appName, platform, pathMod, fs
 /** Windows taskbar / notification identity: the real app keeps com.sanovids.app, test builds get their own. */
 function appUserModelId(appName) {
   if (appName === 'SanoVids') return 'com.sanovids.app'
+  if (appName === SANO_AGENT) return 'com.sanoagent.app' // = sano-agent/electron-builder.cjs appId
   return 'com.sanovids.test.' + String(appName || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+/** Name of userData/updater.json and logs/updater(.1).log: Sano Agent shares the folder, never SanoVids' updater files. */
+function updaterStem(appName) {
+  return appName === SANO_AGENT ? 'updater-sano-agent' : 'updater'
+}
+
+/**
+ * D223: SanoVids and Sano Agent share one Chromium profile but update apart, so the older app can be started after the
+ * other moved the profile to a newer Chromium (it cannot open that safely). `seen` = userData/electron-version, the
+ * newest Electron that opened the profile. Only a newer major (= Chromium milestone) migrates the profile; refusing a
+ * newer patch would strand the older app, which cannot update itself without starting.
+ * A missing marker (undefined after ENOENT) can be initialized. An existing invalid marker cannot establish the
+ * profile's version, so preserve it and refuse startup instead of replacing evidence with this app's version.
+ * → 'refuse' | 'invalid' | 'write' (record this Electron) | 'ok'
+ */
+function profileElectronGate(seen, running) {
+  if (seen === undefined) return 'write'
+  const s = typeof seen === 'string' ? seen.trim() : ''
+  if (!isVersion(s)) return 'invalid'
+  const c = compareVersions(s, running)
+  return c > 0 && parseInt(s, 10) > parseInt(running, 10) ? 'refuse' : c < 0 ? 'write' : 'ok'
+}
+
+/** The public download page of this app (opened by main only). */
+function releasesUrl(appName) {
+  return appName === SANO_AGENT ? 'https://github.com/JameSteven404/sano-agent-releases/releases/latest' : RELEASES_URL
 }
 
 /**
@@ -257,11 +291,12 @@ function portableEnvOf(env) {
  * started) would otherwise take that other .exe for itself (kind 'portable', a taskbar pin relaunching it):
  *   packaged win32; the file an absolute path to an existing .exe without '"', CR, LF or NUL (it is quoted into the
  *   relaunch command); no uninstaller next to the running exe (an NSIS install is never the portable); the stub's app
- *   name (PORTABLE_EXECUTABLE_APP_FILENAME) = the running exe's name without '.exe' (case-insensitive); the running exe
- *   inside the Windows temp folder (real paths, as placement: the stub extracts there).
+ *   name (PORTABLE_EXECUTABLE_APP_FILENAME) = the running exe's name without '.exe' or `packageName` (the app's own
+ *   package.json name: electron-builder's stub writes that, 'sano-agent' for 'Sano Agent.exe'), case-insensitive; the
+ *   running exe inside the Windows temp folder (real paths, as placement: the stub extracts there).
  * → the file, or undefined. Never throws.
  */
-function trustedPortableFile({ platform, isPackaged, portable, execPath, tmpDir, appName, exists, realpath, pathMod }) {
+function trustedPortableFile({ platform, isPackaged, portable, execPath, tmpDir, appName, packageName, exists, realpath, pathMod }) {
   try {
     if (platform !== 'win32' || !isPackaged || !portable || typeof portable !== 'object') return undefined
     const file = portable.file
@@ -272,7 +307,8 @@ function trustedPortableFile({ platform, isPackaged, portable, execPath, tmpDir,
     }
     if (exists(pathMod.join(pathMod.dirname(execPath), `Uninstall ${appName}.exe`))) return undefined
     const own = pathMod.basename(execPath).replace(/\.exe$/i, '').toLowerCase()
-    if (typeof portable.appFilename !== 'string' || portable.appFilename.toLowerCase() !== own) return undefined
+    const names = [own, typeof packageName === 'string' ? packageName.toLowerCase() : own]
+    if (typeof portable.appFilename !== 'string' || !names.includes(portable.appFilename.toLowerCase())) return undefined
     if (typeof realpath !== 'function') return undefined
     const realExec = realpath(execPath)
     const realTmp = realpath(tmpDir)
@@ -1083,6 +1119,9 @@ module.exports = {
   compareVersions,
   resolveProfileDir,
   appUserModelId,
+  updaterStem,
+  profileElectronGate,
+  releasesUrl,
   detectKind,
   macPlacement,
   macFeedMissing,

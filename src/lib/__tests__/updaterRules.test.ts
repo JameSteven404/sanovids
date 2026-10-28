@@ -12,6 +12,10 @@ import preloadSource from '../../../electron/preload.cjs?raw'
 import rulesSource from '../../../electron/updater-rules.cjs?raw'
 import updaterSource from '../../../electron/updater.cjs?raw'
 import pkgSource from '../../../package.json?raw'
+import settingsBasicSource from '../../components/dialogs/SettingsBasic.tsx?raw'
+import updateDialogSource from '../../components/dialogs/UpdateDialog.tsx?raw'
+import updateActionsSource from '../../updateActions.ts?raw'
+import { productName, releasesPageLabel } from '../updateTypes'
 
 type PathMod = typeof nodePath.win32
 type Kind = 'installer' | 'portable' | 'mac-manual' | 'dev'
@@ -85,6 +89,9 @@ interface Rules {
   compareVersions(a: string, b: string): -1 | 0 | 1
   resolveProfileDir(o: { env?: string; baked?: string; appData: string; appName: string; platform?: string; pathMod: PathMod; fsMod?: FsMod }): ProfileResult
   appUserModelId(appName: string): string
+  updaterStem(appName: string): string
+  profileElectronGate(seen: string | undefined, running: string): 'refuse' | 'invalid' | 'write' | 'ok'
+  releasesUrl(appName: string): string
   detectKind(o: {
     platform: string
     isPackaged: boolean
@@ -125,6 +132,7 @@ interface Rules {
     execPath: unknown
     tmpDir: unknown
     appName: string
+    packageName?: unknown
     exists: (p: string) => boolean
     realpath?: unknown
     pathMod: PathMod
@@ -342,6 +350,33 @@ describe('updater rules: data folder override (test isolation)', () => {
     expect(mac(`${appData}/SanoVidsMacTest`).ok).toBe(true)
   })
 
+  it('Sano Agent (D223): SanoVids’ own data folder, its own taskbar identity and updater files', () => {
+    expect(resolveWin({ appName: 'Sano Agent' })).toEqual({ ok: true, dir: realWin, source: 'default' })
+    expect(rules.appUserModelId('Sano Agent')).toBe('com.sanoagent.app')
+    expect(rules.updaterStem('Sano Agent')).toBe('updater-sano-agent')
+    for (const name of ['SanoVids', 'SanoVidsUpdTest', 'sano agent', '']) expect(rules.updaterStem(name), name).toBe('updater')
+  })
+
+  it('D223: an older Electron major never opens the shared profile a newer one opened; the newest is recorded', () => {
+    expect(rules.profileElectronGate('45.0.0\r\n', '44.2.1')).toBe('refuse')
+    // same Chromium milestone: the older app still starts (it could not update itself otherwise)
+    for (const seen of ['44.3.0', '44.2.1']) expect(rules.profileElectronGate(seen, '44.2.1'), seen).toBe('ok')
+    for (const seen of [undefined, '43.9.9', '44.2.0']) expect(rules.profileElectronGate(seen, '44.2.1'), String(seen)).toBe('write')
+    for (const seen of ['', ' \r\n', 'garbage', '45.0', '45.0.0\n44.2.1']) expect(rules.profileElectronGate(seen, '44.2.1'), seen).toBe('invalid')
+    // after the lock, before ready (before Chromium opens the profile): refused = an error box and exit, no window
+    const gate = mainSource.indexOf('updaterRules.profileElectronGate(seen, process.versions.electron)')
+    const ready = mainSource.indexOf('app.whenReady()')
+    expect(gate).toBeGreaterThan(mainSource.indexOf('requestSingleInstanceLock'))
+    expect(gate).toBeLessThan(ready)
+    expect(mainSource.slice(gate, ready)).toMatch(/if \(gate === 'refuse'\) \{\n\s+const name = app\.getName\(\)\n\s+dialog\.showErrorBox\([^\n]*\n\s+process\.exit\(4\)\n\s+\}/)
+    // a record that exists but cannot be read is no 'no record': only ENOENT goes on, anything else exits
+    expect(mainSource.slice(mainSource.indexOf("seen = fs.readFileSync(seenFile, 'utf8')"), gate)).toMatch(
+      /\} catch \(e\) \{\n(\s+\/\/[^\n]*\n)+\s+if \(!e \|\| e\.code !== 'ENOENT'\) \{\n\s+dialog\.showErrorBox\([^\n]*\n\s+process\.exit\(4\)\n\s+\}/,
+    )
+    // the newer Electron that cannot record itself never opens (and migrates) the profile either
+    expect(mainSource.slice(gate, ready)).toMatch(/fs\.renameSync\(`\$\{seenFile\}\.tmp`, seenFile\)\n\s+\} catch \(e\) \{\n(\s+\/\/[^\n]*\n)?\s+dialog\.showErrorBox\([^\n]*\n\s+process\.exit\(4\)\n\s+\}/)
+  })
+
   it('AppUserModelId stays com.sanovids.app for the real app only', () => {
     expect(rules.appUserModelId('SanoVids')).toBe('com.sanovids.app')
     expect(rules.appUserModelId('SanoVidsUpdTest')).toBe('com.sanovids.test.sanovidsupdtest')
@@ -534,6 +569,17 @@ describe('updater rules: PORTABLE_EXECUTABLE_FILE is trusted only for a run its 
     expect(rules.trustedPortableFile({ ...base, appName: 'SanoVidsIconTest', execPath: `${temp}\\x\\SanoVidsIconTest.exe`, portable: { ...portable, appFilename: 'SanoVidsIconTest' } })).toBe(file)
   })
 
+  it("Sano Agent: the stub names the app by its package name ('sano-agent'), not its exe ('Sano Agent')", () => {
+    const agent = { ...base, appName: 'Sano Agent', execPath: `${temp}\\x\\Sano Agent.exe`, portable: { ...portable, appFilename: 'sano-agent' } }
+    expect(rules.trustedPortableFile({ ...agent, packageName: 'sano-agent' })).toBe(file)
+    expect(rules.trustedPortableFile({ ...agent, packageName: 'Sano-Agent' })).toBe(file) // case-insensitive
+    expect(rules.trustedPortableFile({ ...agent, portable: { ...portable, appFilename: 'Sano Agent' }, packageName: 'sano-agent' })).toBe(file)
+    expect(rules.trustedPortableFile(agent)).toBeUndefined()
+    expect(rules.trustedPortableFile({ ...agent, packageName: 'sanovids' })).toBeUndefined() // another app's stub
+    expect(mainSource).toContain('packageName: readPackageName(),')
+    expect(mainSource).toContain("return pkg && typeof pkg.name === 'string' ? pkg.name : undefined")
+  })
+
   it('inherited by an installed SanoVids (another portable app, a browser a Portable opened…) → not trusted', () => {
     const uninstaller = installed.replace('SanoVids.exe', 'Uninstall SanoVids.exe')
     expect(rules.trustedPortableFile({ ...base, execPath: installed, exists: (p) => p === file || p === uninstaller })).toBeUndefined()
@@ -674,10 +720,10 @@ describe('updater rules: errors become fixed Vietnamese texts', () => {
     expect(rules.mapUpdaterError({ code: 'HTTP_ERROR_429' }, 'check').message).toBe('Máy chủ cập nhật đang bận.')
     expect(rules.mapUpdaterError({ code: 'ERR_CHECKSUM_MISMATCH' }, 'download').message).toBe('File cập nhật tải về bị lỗi (sai mã kiểm tra) nên đã bị bỏ.')
     expect(rules.mapUpdaterError({ code: 'ERR_UPDATER_INVALID_SIGNATURE' }, 'download').message).toBe(
-      'Bản cập nhật này không mang chữ ký số đúng của tác giả hoặc không đúng phiên bản được báo (có thể là file giả mạo) nên SanoVids đã xoá nó, không cài gì. Đừng tự tải bản này về cài. Chỉ cài bộ cài có dấu vân tay chứng chỉ trùng với Cài đặt → Giới thiệu, hoặc hỏi tác giả.',
+      'Bản cập nhật này không mang chữ ký số đúng của tác giả hoặc không đúng phiên bản được báo (có thể là file giả mạo) nên đã bị xoá, không cài gì. Đừng tự tải bản này về cài. Chỉ cài bộ cài có dấu vân tay chứng chỉ trùng với Cài đặt → Giới thiệu, hoặc hỏi tác giả.',
     )
     expect(rules.mapUpdaterError({ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'sanovids-signature:policy' }, 'download').message).toBe(
-      'Chưa kiểm tra được chữ ký số của bản cập nhật (máy đang chặn việc kiểm tra hoặc kiểm tra quá lâu) nên SanoVids chưa cài bản này. Bấm “Thử lại” để kiểm tra lại.',
+      'Chưa kiểm tra được chữ ký số của bản cập nhật (máy đang chặn việc kiểm tra hoặc kiểm tra quá lâu) nên bản này chưa được cài. Bấm “Thử lại” để kiểm tra lại.',
     )
     for (const code of ['signature', 'signature-unverified']) {
       const text = rules.ERROR_TEXT[code]
@@ -1033,6 +1079,18 @@ describe('updater rules: schedule, prefs, persistence, notices, log', () => {
   it('the feed constants point at the public releases repo', () => {
     expect(rules.RELEASES_URL).toBe('https://github.com/JameSteven404/sanovids-releases/releases/latest')
     expect(rules.FEED).toEqual({ provider: 'github', owner: 'JameSteven404', repo: 'sanovids-releases' })
+    // the page main opens and the label the page shows name the same repo, per app
+    expect(rules.releasesUrl('SanoVids')).toBe(rules.RELEASES_URL)
+    expect(rules.releasesUrl('SanoVidsUpdTest')).toBe(rules.RELEASES_URL)
+    expect(rules.releasesUrl('Sano Agent')).toBe('https://github.com/JameSteven404/sano-agent-releases/releases/latest')
+    for (const name of ['SanoVids', 'Sano Agent', undefined]) expect(rules.releasesUrl(name as string)).toBe(`https://${releasesPageLabel(name)}/releases/latest`)
+  })
+
+  it('the app names itself next to its own version (update toast, update dialog, Giới thiệu): Sano Agent or SanoVids', () => {
+    expect(['Sano Agent', 'SanoVids', 'SanoVidsUpdTest', undefined].map(productName)).toEqual(['Sano Agent', 'SanoVids', 'SanoVids', 'SanoVids'])
+    expect(updateActionsSource).toContain('ready: (v: string) => `Đã tải xong ${PRODUCT_NAME} ${v}.`,')
+    expect(updateDialogSource).toContain('title={`Cập nhật ${PRODUCT_NAME}`}')
+    expect(settingsBasicSource).toContain('<b>{PRODUCT_NAME}</b>')
   })
 })
 

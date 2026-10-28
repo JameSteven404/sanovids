@@ -18,6 +18,10 @@
 //   npm run release:check    (= --dry-run)  read-only: every check, both release notes, the exact plan (gh argv)
 //   npm run release:publish                 checks, then draft → upload → verify → publish (private first, public LAST)
 //   … -- --khong-mac                         allow a release without the Mac build although the previous one had it
+//   … --sano-agent                           Sano Agent instead (npm run release:check:sano-agent / release:publish:sano-agent):
+//                                            release/sano-agent, the public feed JameSteven404/sano-agent-releases only
+//                                            (no private release, no Mac build), source tag sano-agent-vX.Y.Z, and the
+//                                            Electron of the newest public SanoVids (the two apps share one data folder)
 // Idempotent: run it again after any failure. It never deletes a release or an asset, never overwrites a published
 // file and only uses --clobber on drafts. Pure logic lives in scripts/releaseLib.mjs (tested); git / gh run through
 // spawnSync with an args array (no shell). See docs/UPDATES.md.
@@ -27,6 +31,7 @@ import path from 'node:path'
 import zlib from 'node:zlib'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { load as loadYaml } from 'js-yaml'
 import JSZip from 'jszip'
@@ -35,10 +40,11 @@ import { NOTICES_SHIPPED, NOTICES_SOURCE } from './third-party-notices.mjs'
 import {
   AUTHOR,
   COPYRIGHT_BUILD,
+  OWNER,
   PRIVATE_REPO,
-  PUBLIC_REPO,
-  PUBLISH_ENTRY,
+  PUBLISH_ENTRY as SANOVIDS_PUBLISH_ENTRY,
   REQUIRED_ASAR_FILES,
+  SANOVIDS,
   SIGNER_THUMBPRINT,
   SIGNING_CERT_FILE,
   asarDataOffset,
@@ -56,8 +62,11 @@ import {
   checkMacFetch,
   checkPackagedIdentity,
   checkRotation,
+  checkSameCommit,
+  checkSameElectron,
   compareAssets,
   compareVersions,
+  effectivePackage,
   extractChangelogSection,
   formatArgv,
   ghCreateDraftArgs,
@@ -66,12 +75,14 @@ import {
   ghPublishArgs,
   ghUploadArgs,
   inspectMacZip,
+  lockElectronVersion,
   macBuildFiles,
   macReleaseRule,
   newestPublishedVersion,
   offlineEnvSet,
   peeledTagSha,
   planTarget,
+  productFromArgv,
   readAsarHeader,
   releaseFiles,
   releaseTitle,
@@ -80,15 +91,26 @@ import {
 const DRY = process.argv.includes('--dry-run')
 /** --khong-mac: an urgent Windows-only release although the newest public release had a Mac build (⚠ instead of ✗). */
 const WINDOWS_ONLY = process.argv.includes('--khong-mac')
+const PRODUCT = productFromArgv(process.argv)
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const releaseDir = path.join(root, 'release')
+const releaseDir = path.join(root, PRODUCT.releaseDir)
 const buildDir = path.join(releaseDir, '_build')
 /** The Mac build: fixed names only (releaseLib.releaseFiles); ._* / .DS_Store / mac-arm64 / builder-*.yml are ignored. */
 const macDir = path.join(releaseDir, 'mac')
-const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+// Sano Agent: what its build packs (sano-agent/electron-builder.cjs over the repo's package.json) is what it must carry.
+const pkg = effectivePackage(
+  JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')),
+  PRODUCT.config ? createRequire(import.meta.url)(path.join(root, PRODUCT.config)) : null,
+)
 const V = String(pkg.version)
+/** The public feed's tag (electron-updater reads v<semver>); the source repo's tag of a version of this product. */
 const TAG = `v${V}`
-const FILES = releaseFiles(V)
+const tagRef = (version, product = PRODUCT) => `refs/tags/${product.sourceTagPrefix}${version}`
+const SOURCE_TAG = `${PRODUCT.sourceTagPrefix}${V}`
+const PUBLIC_REPO = `${OWNER}/${PRODUCT.publicRepoName}`
+const PUBLISH_ENTRY = { ...SANOVIDS_PUBLISH_ENTRY, repo: PRODUCT.publicRepoName }
+const DIST_CMD = PRODUCT.config ? 'npm run dist:sano-agent' : 'npm run dist:win'
+const FILES = releaseFiles(V, PRODUCT)
 const rel = (p) => path.relative(root, p)
 const exists = (p) => {
   try {
@@ -168,22 +190,22 @@ function sameJson(a, b) {
 // ───────────────────────────── environment ─────────────────────────────
 
 if (offlineEnvSet(process.env)) {
-  fail('Môi trường', 'Biến ELECTRON_BUILDER_OFFLINE đang bật: bản build làm trong môi trường này có thể đã ký số KHÔNG có dấu thời gian. Xoá biến đó, build lại (npm run dist:win) rồi chạy lại.')
+  fail('Môi trường', `Biến ELECTRON_BUILDER_OFFLINE đang bật: bản build làm trong môi trường này có thể đã ký số KHÔNG có dấu thời gian. Xoá biến đó, build lại (${DIST_CMD}) rồi chạy lại.`)
 }
 
 // ───────────────────────────── (a) CHANGELOG ─────────────────────────────
 
 let changelog = ''
 try {
-  changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8')
+  changelog = fs.readFileSync(path.join(root, PRODUCT.changelog), 'utf8')
 } catch {
   changelog = ''
 }
 const section = extractChangelogSection(changelog, V)
-if (section && section.body) ok('Ghi chú', `CHANGELOG.md có mục [${V}] — ${section.date}${section.subtitle ? ` — ${section.subtitle}` : ''}`)
-else fail('Ghi chú', `CHANGELOG.md chưa có mục "## [${V}] — yyyy-mm-dd — tiêu đề" (ghi chú phát hành lấy từ đây).`)
-if (new RegExp(`^\\[${V.replace(/\./g, '\\.')}\\]:\\s*\\S+`, 'm').test(changelog)) ok('Ghi chú', `CHANGELOG.md có dòng liên kết [${V}]`)
-else warn('Ghi chú', `CHANGELOG.md thiếu dòng liên kết cuối file: [${V}]: https://github.com/${PUBLIC_REPO}/releases/tag/${TAG}`)
+if (section && section.body) ok('Ghi chú', `${PRODUCT.changelog} có mục [${V}] — ${section.date}${section.subtitle ? ` — ${section.subtitle}` : ''}`)
+else fail('Ghi chú', `${PRODUCT.changelog} chưa có mục "## [${V}] — yyyy-mm-dd — tiêu đề" (ghi chú phát hành lấy từ đây).`)
+if (new RegExp(`^\\[${V.replace(/\./g, '\\.')}\\]:\\s*\\S+`, 'm').test(changelog)) ok('Ghi chú', `${PRODUCT.changelog} có dòng liên kết [${V}]`)
+else warn('Ghi chú', `${PRODUCT.changelog} thiếu dòng liên kết cuối file: [${V}]: https://github.com/${PUBLIC_REPO}/releases/tag/${TAG}`)
 
 // ───────────────────────────── (b) git ─────────────────────────────
 
@@ -205,16 +227,16 @@ else {
 const head = git(['rev-parse', 'HEAD']).out
 const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']).out
 const commitDate = git(['show', '-s', '--format=%cI', 'HEAD']).out || null
-const tagLocal = git(['rev-parse', '-q', '--verify', `refs/tags/${TAG}^{commit}`])
-if (tagLocal.code !== 0 || !tagLocal.out) fail('Git', `Chưa có tag ${TAG}. Tạo trên commit phát hành: git tag -a ${TAG} -m "SanoVids ${V}" rồi git push origin ${TAG}.`)
-else if (tagLocal.out !== head) fail('Git', `Tag ${TAG} trỏ vào ${short(tagLocal.out)}, không phải commit đang đứng (HEAD ${short(head)}).`)
-else ok('Git', `Tag ${TAG} = HEAD (${short(head)})`)
-const lsRemote = git(['ls-remote', '--tags', 'origin', `refs/tags/${TAG}`, `refs/tags/${TAG}^{}`])
-const remoteTag = lsRemote.code === 0 ? peeledTagSha(lsRemote.out, TAG) : null
-if (lsRemote.code !== 0) fail('Git', `Không hỏi được GitHub về tag ${TAG} (mất mạng?).`)
-else if (!remoteTag) fail('Git', `Chưa push tag ${TAG} lên GitHub: git push origin ${TAG}`)
-else if (remoteTag !== head) fail('Git', `Tag ${TAG} trên GitHub trỏ vào ${short(remoteTag)}, khác HEAD ${short(head)}.`)
-else ok('Git', `Tag ${TAG} đã có trên GitHub`)
+const tagLocal = git(['rev-parse', '-q', '--verify', `${tagRef(V)}^{commit}`])
+if (tagLocal.code !== 0 || !tagLocal.out) fail('Git', `Chưa có tag ${SOURCE_TAG}. Tạo trên commit phát hành: git tag -a ${SOURCE_TAG} -m "${PRODUCT.productName} ${V}" rồi git push origin ${SOURCE_TAG}.`)
+else if (tagLocal.out !== head) fail('Git', `Tag ${SOURCE_TAG} trỏ vào ${short(tagLocal.out)}, không phải commit đang đứng (HEAD ${short(head)}).`)
+else ok('Git', `Tag ${SOURCE_TAG} = HEAD (${short(head)})`)
+const lsRemote = git(['ls-remote', '--tags', 'origin', tagRef(V), `${tagRef(V)}^{}`])
+const remoteTag = lsRemote.code === 0 ? peeledTagSha(lsRemote.out, SOURCE_TAG) : null
+if (lsRemote.code !== 0) fail('Git', `Không hỏi được GitHub về tag ${SOURCE_TAG} (mất mạng?).`)
+else if (!remoteTag) fail('Git', `Chưa push tag ${SOURCE_TAG} lên GitHub: git push origin ${SOURCE_TAG}`)
+else if (remoteTag !== head) fail('Git', `Tag ${SOURCE_TAG} trên GitHub trỏ vào ${short(remoteTag)}, khác HEAD ${short(head)}.`)
+else ok('Git', `Tag ${SOURCE_TAG} đã có trên GitHub`)
 const anc = git(['merge-base', '--is-ancestor', 'HEAD', 'origin/main'])
 if (anc.code === 0) ok('Git', 'Commit phát hành đã nằm trong origin/main')
 else if (anc.code === 1) fail('Git', 'Commit phát hành chưa có trong origin/main: merge vào main (và push) trước.')
@@ -234,7 +256,7 @@ const paths = {
 for (const [name, p] of Object.entries(paths)) {
   if (p) ok('File', `${rel(p)} (${size(fs.statSync(p).size)})`)
   else if (name === SIGNING_CERT_FILE) fail('File', `Thiếu ${rel(certPath)} (chứng chỉ công khai, đăng kèm mỗi bản; xem docs/SIGNING.md).`)
-  else fail('File', `Thiếu ${name} trong release/ (hoặc release/_build/). Chạy npm run dist:win.`)
+  else fail('File', `Thiếu ${name} trong ${PRODUCT.releaseDir}/ (hoặc ${PRODUCT.releaseDir}/_build/). Chạy ${DIST_CMD}.`)
 }
 // The Mac build in release/mac: the four packaged files + mac-check.json (uploaded), mac-fetch.json (checked only).
 const MAC_FILES = [...macBuildFiles(V), FILES.macCheck]
@@ -285,10 +307,10 @@ if (paths[FILES.blockmap]) {
 const resourcesDir = [path.join(buildDir, 'win-unpacked', 'resources'), path.join(releaseDir, 'win-unpacked', 'resources')].find((d) =>
   exists(path.join(d, 'app-update.yml')),
 )
-if (!resourcesDir) fail('Nguồn cập nhật', 'Không thấy win-unpacked/resources/app-update.yml trong release/_build. Chạy npm run dist:win.')
+if (!resourcesDir) fail('Nguồn cập nhật', `Không thấy win-unpacked/resources/app-update.yml trong ${PRODUCT.releaseDir}/_build. Chạy ${DIST_CMD}.`)
 else {
   // public feed, no token / private / channel, publisherName REQUIRED and byte-exact (releaseLib.checkAppUpdateYml)
-  const feedResults = inspectAppUpdateYml(path.join(resourcesDir, 'app-update.yml'), EXPECT.publisherName)
+  const feedResults = inspectAppUpdateYml(path.join(resourcesDir, 'app-update.yml'), EXPECT.publisherName, { repo: PRODUCT.publicRepoName, cacheDir: PRODUCT.cacheDir })
   for (const r of feedResults) {
     if (r.level === 'fail') fail('Nguồn cập nhật', `${r.text} Không được đăng bản này: sửa package.json rồi build lại.`)
     else ok('Nguồn cập nhật', `app-update.yml trỏ vào ${PUBLIC_REPO} (công khai, không token), publisherName "${EXPECT.publisherName}"`)
@@ -407,8 +429,10 @@ else {
       else ok('GitHub', `Bản công khai mới nhất hiện tại: ${newest ?? 'chưa có'} (< ${V})`)
     }
   }
-  privateReleases = readReleases(PRIVATE_REPO)
-  if (!privateReleases) fail('GitHub', `Không đọc được Releases của ${PRIVATE_REPO}.`)
+  if (PRODUCT.privateRelease) {
+    privateReleases = readReleases(PRIVATE_REPO)
+    if (!privateReleases) fail('GitHub', `Không đọc được Releases của ${PRIVATE_REPO}.`)
+  }
 }
 
 // ───────────────────────────── (j) signatures (hard fail) ─────────────────────────────
@@ -441,22 +465,44 @@ if (!publicReleases) {
   const prevVersion = newestPublishedVersion(publicReleases, V)
   let prevPkg = null
   if (prevVersion) {
-    const shown = git(['show', `refs/tags/v${prevVersion}:package.json`])
+    const shown = git(['show', `${tagRef(prevVersion)}:package.json`])
     try {
       prevPkg = shown.code === 0 ? JSON.parse(shown.out) : null
     } catch {
       prevPkg = null
     }
   }
-  const rotation = checkRotation({ prevVersion, prevPkg, signer: SIGNER_THUMBPRINT })
+  const rotation = checkRotation({ prevVersion, prevPkg, signer: SIGNER_THUMBPRINT, tagPrefix: PRODUCT.sourceTagPrefix })
   results.push({ level: rotation.level, group: 'Chữ ký số', text: rotation.text })
+}
+
+// ───────────────────────────── Sano Agent: SanoVids' data folder ─────────────────────────────
+
+// Both apps open %APPDATA%\SanoVids (D223): Sano Agent ships the commit and Electron of the newest public SanoVids.
+if (PRODUCT.config) {
+  const sanovidsReleases = ghReady ? readReleases(`${OWNER}/${SANOVIDS.publicRepoName}`) : null
+  const sanovidsVersion = sanovidsReleases ? newestPublishedVersion(sanovidsReleases) : null
+  const theirs = sanovidsVersion ? git(['show', `${tagRef(sanovidsVersion, SANOVIDS)}:package-lock.json`]) : null
+  let ours = null
+  try {
+    ours = lockElectronVersion(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'))
+  } catch {
+    ours = null
+  }
+  const same = checkSameElectron({ ours, theirs: theirs && theirs.code === 0 ? lockElectronVersion(theirs.out) : null, sanovidsVersion })
+  results.push({ level: same.level, group: 'Dữ liệu chung với SanoVids', text: same.text })
+  if (sanovidsVersion) {
+    const sanovidsCommit = git(['rev-parse', '-q', '--verify', `${tagRef(sanovidsVersion, SANOVIDS)}^{commit}`])
+    const sameCommit = checkSameCommit({ head, theirs: sanovidsCommit.code === 0 ? sanovidsCommit.out : null, sanovidsVersion })
+    results.push({ level: sameCommit.level, group: 'Dữ liệu chung với SanoVids', text: sameCommit.text })
+  }
 }
 
 // ───────────────────────────── (k) Bản Mac ─────────────────────────────
 
 /** The Mac build passed every check of (k): it is uploaded with the release (and named in the notes). */
 let macOk = false
-{
+if (PRODUCT.mac) {
   const group = 'Bản Mac'
   const newest = publicReleases ? newestPublishedVersion(publicReleases) : null
   const newestRelease = newest ? publicReleases.find((r) => r && r.tag_name === `v${newest}`) : null
@@ -519,14 +565,14 @@ let macOk = false
     }
   }
   const checks = [
-    { name: 'README.md' },
+    { name: 'README.md', dir: path.join(root, PRODUCT.releasesRepoDir) },
     { name: 'LICENSE.txt', twin: path.join(root, 'LICENSE.txt') },
     { name: SIGNING_CERT_FILE, twin: certPath },
     { name: 'tin-cay-chung-chi.ps1', twin: path.join(root, 'scripts', 'signing', 'tin-cay-chung-chi.ps1') },
   ]
   let missing = 0
   for (const c of checks) {
-    const p = path.join(releasesRepoDir, c.name)
+    const p = path.join(c.dir ?? releasesRepoDir, c.name)
     if (!exists(p)) {
       missing += 1
       warn('Repo công khai', `Thiếu ${rel(p)} (file này đẩy tay lên nhánh main của ${PUBLIC_REPO}).`)
@@ -535,7 +581,7 @@ let macOk = false
       warn('Repo công khai', `${rel(p)} khác ${rel(c.twin)}: chép lại cho giống rồi đẩy tay lên ${PUBLIC_REPO}.`)
     }
   }
-  if (!missing) ok('Repo công khai', `scripts/releases-repo đủ README, giấy phép, chứng chỉ, script tin cậy (nhớ đẩy tay lên ${PUBLIC_REPO} khi có thay đổi)`)
+  if (!missing) ok('Repo công khai', `${PRODUCT.releasesRepoDir === SANOVIDS.releasesRepoDir ? '' : `${PRODUCT.releasesRepoDir} (README) + `}scripts/releases-repo đủ README, giấy phép, chứng chỉ, script tin cậy (nhớ đẩy tay lên ${PUBLIC_REPO} khi có thay đổi)`)
 }
 
 // ───────────────────────────── notes + plan ─────────────────────────────
@@ -543,25 +589,26 @@ let macOk = false
 const notesDir = DRY ? path.join(os.tmpdir(), 'sanovids-release-check') : path.join(buildDir, 'publish')
 const notesFiles = { private: path.join(notesDir, 'notes-private.md'), public: path.join(notesDir, 'notes-public.md') }
 const notesText = { private: null, public: null }
-const title = releaseTitle(V, section?.subtitle ?? null)
+const title = releaseTitle(V, section?.subtitle ?? null, PRODUCT)
+const AUDIENCES = PRODUCT.privateRelease ? ['private', 'public'] : ['public']
 const haveSums = Boolean(hashes[FILES.setup] && hashes[FILES.portable])
 // The Mac files are uploaded (and named in the notes) only when check (k) passed.
 if (macOk) for (const name of MAC_FILES) paths[name] = macPaths[name]
 if (section?.body && haveSums) {
   const sha256 = Object.fromEntries(Object.entries(hashes).map(([n, h]) => [n, h.sha256]))
   fs.mkdirSync(notesDir, { recursive: true })
-  for (const audience of ['private', 'public']) {
-    notesText[audience] = buildReleaseNotes({ version: V, body: section.body, sha256, audience, mac: macOk })
+  for (const audience of AUDIENCES) {
+    notesText[audience] = buildReleaseNotes({ version: V, body: section.body, sha256, audience, mac: macOk, product: PRODUCT })
     fs.writeFileSync(notesFiles[audience], notesText[audience], 'utf8')
   }
-  ok('Ghi chú GitHub', `${DRY ? notesFiles.private : rel(notesFiles.private)} · ${DRY ? notesFiles.public : rel(notesFiles.public)}`)
+  ok('Ghi chú GitHub', AUDIENCES.map((a) => (DRY ? notesFiles[a] : rel(notesFiles[a]))).join(' · '))
 } else fail('Ghi chú GitHub', 'Chưa tạo được ghi chú GitHub (thiếu mục CHANGELOG hoặc file cài đặt).')
 
 const targets = [
   { audience: 'private', repo: PRIVATE_REPO, releases: privateReleases, target: 'main' },
   { audience: 'public', repo: PUBLIC_REPO, releases: publicReleases, target: publicBranch },
-].map((t) => {
-  const expected = assetsFor(t.audience, V, { mac: macOk }).map((name) => ({ name, path: paths[name], size: hashes[name]?.size ?? -1, sha256: hashes[name]?.sha256 ?? '' }))
+].filter((t) => AUDIENCES.includes(t.audience)).map((t) => {
+  const expected = assetsFor(t.audience, V, { mac: macOk, product: PRODUCT }).map((name) => ({ name, path: paths[name], size: hashes[name]?.size ?? -1, sha256: hashes[name]?.sha256 ?? '' }))
   const matching = (t.releases ?? []).filter((r) => r && r.tag_name === TAG)
   const plan = planTarget({ repo: t.repo, tag: TAG, releases: matching, expected, notes: notesText[t.audience] ?? undefined })
   return { ...t, expected, plan, known: Array.isArray(t.releases), notesFile: DRY ? notesFiles[t.audience] : rel(notesFiles[t.audience]) }
@@ -571,7 +618,7 @@ for (const t of targets) if (t.plan.action === 'stop') fail('Kế hoạch', t.pl
 // ───────────────────────────── report ─────────────────────────────
 
 const SYMBOL = { ok: '✓', warn: '⚠', fail: '✗' }
-console.log(`\nSanoVids ${V} — kiểm tra trước khi đăng${DRY ? ' (XEM TRƯỚC: không đăng, không sửa gì)' : ''}\n`)
+console.log(`\n${PRODUCT.productName} ${V} — kiểm tra trước khi đăng${DRY ? ' (XEM TRƯỚC: không đăng, không sửa gì)' : ''}\n`)
 let lastGroup = ''
 for (const r of results) {
   if (r.group !== lastGroup) {
@@ -760,5 +807,5 @@ if (!anon.ok) {
   )
   process.exit(1)
 }
-console.log(`\n✓ Đã đăng SanoVids ${V}. Máy đã cài bản Setup sẽ tự nhận bản này trong vòng vài giờ (khi mở app hoặc 4 giờ một lần).`)
+console.log(`\n✓ Đã đăng ${PRODUCT.productName} ${V}. Máy đã cài bản Setup sẽ tự nhận bản này trong vòng vài giờ (khi mở app hoặc 4 giờ một lần).`)
 console.log(`  Trang tải về: https://github.com/${PUBLIC_REPO}/releases/latest`)
