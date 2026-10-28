@@ -1,6 +1,6 @@
 // Publishes the build in release/ as GitHub releases, in two repos:
-//   1. private JameSteven404/sanovids           source repo: both installers + the public signing certificate (the tag
-//                                               vX.Y.Z must already be pushed)
+//   1. public  JameSteven404/sanovids           source repo (public since 2026-10-27, D251): both installers + the public
+//                                               signing certificate (the tag vX.Y.Z must already be pushed)
 //   2. public  JameSteven404/sanovids-releases  the auto-update feed: Setup, Setup blockmap, latest.yml, Portable,
 //                                               SanoVids-NguyenGiangMinh.cer (build/signing/, public part only)
 // Every installer must be signed by the release's certificate (SIGNER_THUMBPRINT, one of package.json sanovids.signers)

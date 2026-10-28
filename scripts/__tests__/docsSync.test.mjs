@@ -39,6 +39,12 @@ describe('no overstated or stale claims', () => {
     }
   })
 
+  it('the source repo is not described as private (public since 2026-10-27, D251)', () => {
+    for (const rel of [...USER_DOCS, 'scripts/publish-release.mjs']) {
+      expect(read(rel), rel).not.toMatch(/Repo `JameSteven404\/sanovids` vẫn \*\*riêng tư\*\*|private JameSteven404\/sanovids\s/)
+    }
+  })
+
   it('SmartScreen is not explained as a new-release effect that goes away', () => {
     for (const rel of USER_DOCS) expect(read(rel), rel).not.toMatch(/ít lượt tải|ít người tải/)
   })
