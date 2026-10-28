@@ -49,11 +49,33 @@ Có hai cách, đều từ mã nguồn:
 - Thông báo main gửi tới trang (`devAccess:state`, `updates:state`) đi tới khung `app://bdp` (`hardening-rules.appFrames`),
   không bao giờ tới trang SANO.
 - Cửa sổ chính mở trang SANO và chỉ ở origin đó, kể cả khi máy chủ chuyển hướng; link ngoài mở trình duyệt.
-- Riêng popup `https://accounts.google.com/` (“Đăng nhập bằng Google” của SANO) mở thành cửa sổ con. Popup chỉ đi trong các
-  trang đăng nhập của Google (`accounts.google.com`, `accounts.youtube.com`); link và popup con của nó mở trình duyệt. Đóng
-  popup thì cookie tài khoản Google nó để lại trong thư mục dữ liệu bị xoá (SANO đã nhận token).
-- Trang SANO thấy `window.sanoDesktop = { sanovidsUrl: 'app://bdp/' }` và đặt khung Dựng phim vào địa chỉ đó: bản SanoVids
-  nằm trong app (`dist/`), không tải từ máy chủ SANO.
+- Trang SANO thấy `window.sanoDesktop = { sanovidsUrl: 'app://bdp/', google: { signIn, token, signOut } }` và đặt khung
+  Dựng phim vào `sanovidsUrl`: bản SanoVids nằm trong app (`dist/`), không tải từ máy chủ SANO. Chỉ khung chính của trang
+  SANO nhận `sanoDesktop` (preload kiểm `process.isMainFrame`); main kiểm lại khung gửi của mọi lời gọi Google (`fromSano`:
+  khung chính của cửa sổ chính, đúng origin SANO). Kiểm hai cổng này trong Electron thật (không chạy trong CI, không đăng
+  nhập): `npx electron scripts/sano-desktop-probe.cjs`.
+- **Đăng nhập bằng Google** (TH-36) chạy trong trình duyệt mặc định, không trong cửa sổ app (Google chặn trình duyệt nhúng):
+  - `google.signIn()`: main lấy client ID từ `googleDesktopClientId` của `/api/assistant/status` trên máy chủ SANO (trang
+    không đưa được client ID hay địa chỉ nào vào), mở trang đăng nhập Google (địa chỉ cố định trong
+    `electron/google-signin-rules.cjs`) bằng trình duyệt và chờ Google chuyển về `http://127.0.0.1:<cổng ngẫu nhiên>/`, có
+    PKCE S256 và `state`. Request sai đường trả 404; thiếu hoặc sai `state` trả 400 và vẫn chờ; 5 phút không xong thì hết giờ;
+    bấm lại thì lượt cũ bị hủy. Đổi code xong, trình duyệt hiện trang tĩnh (không chứa token) và cửa sổ app được gọi lên.
+    Kết quả: `{ ok: true, idToken }` hoặc `{ ok: false, code, message }` (`cancelled`, `timeout`, `superseded`,
+    `not-configured`, `failed`, `not-allowed`).
+  - `google.token()`: ID token đang giữ; còn dưới 5 phút thì main gia hạn bằng refresh token (nhiều lời gọi dùng chung một
+    lần). Google từ chối (4xx trừ 408/429: `invalid_grant`, `invalid_client`, `unauthorized_client`…) hoặc không trả ID
+    token: `null`, trang hiện lại nút đăng nhập. Google không trả lời (mất mạng, lỗi máy chủ, 408, 429, quá 15 giây):
+    giữ token cũ khi còn hạn; hết hạn thì lời gọi báo lỗi (không phải `null`, vẫn đăng nhập), trang chỉ hỏng request đó.
+    Lần gọi sau thử lại.
+  - `google.signOut()`: xoá token trong bộ nhớ, không thu hồi ở Google (Google thu hồi theo cả project). Lượt đăng nhập
+    đang chờ trình duyệt kết thúc với `cancelled`, kết quả về muộn bị bỏ.
+  - Lấy client ID từ máy chủ SANO cũng dừng sau 15 giây (coi như chưa bật: `not-configured`).
+  - Refresh token chỉ nằm trong bộ nhớ của main, không xuống đĩa và không qua cầu sang trang. Token có scope ngoài đăng nhập
+    (`openid`, `email`, `profile`) bị bỏ.
+  - `SANO_GOOGLE_DESKTOP_CLIENT_SECRET` (tuỳ chọn): chỉ đặt trên máy chạy SANO desktop nếu Google bắt client Desktop gửi secret
+    (bài test T1 của TH-36).
+- Link `accounts.google.com` trên trang SANO mở trình duyệt như mọi link ngoài. Cookie tài khoản Google mà popup đăng nhập
+  trong app của các bản cũ để lại vẫn được xoá mỗi lần khởi động.
 - Preload chạy ở mọi khung (`nodeIntegrationInSubFrames`), nhưng chỉ trang `app://bdp` nhận `window.bdpDesktop`. Mọi lời gọi
   cổng vẫn bị main kiểm khung gửi (`fromApp`: chỉ `app://bdp/…`). SANO và SanoVids khác origin: trang SANO không đọc hay
   điều khiển được trang SanoVids.
@@ -68,8 +90,11 @@ Có hai cách, đều từ mã nguồn:
 ## 4. Giới hạn
 
 - Không mở cùng lúc SanoVids và SANO desktop (cùng thư mục dữ liệu: lần mở thứ hai chỉ đưa cửa sổ đang mở lên trước).
-- Google có thể từ chối đăng nhập trong cửa sổ app. Khi đó SANO ở chế độ demo; Dựng phim với canvasapp vẫn chạy vì không cần
-  đăng nhập SANO. Tài khoản Google Workspace đăng nhập qua nhà cung cấp riêng (SSO) bị chặn ở bước chuyển hướng đó.
+- Đăng nhập Google cần máy chủ SANO có `SANO_GOOGLE_DESKTOP_CLIENT_ID` và trang SANO bản gọi `sanoDesktop.google` (TH-36:
+  web và máy chủ cập nhật trước, desktop sau). Thiếu thì SANO ở chế độ demo; Dựng phim với canvasapp vẫn chạy vì không cần
+  đăng nhập SANO.
+- Token chỉ ở bộ nhớ: mỗi lần mở app phải bấm đăng nhập một lần (trình duyệt thường đã nhớ tài khoản, chỉ cần chọn).
+- Trên Windows, sau khi đăng nhập cửa sổ app có thể chỉ nhấp nháy ở taskbar; trang trong trình duyệt nhắc quay lại app.
 - Địa chỉ SANO (`SANO_URL`, hoặc địa chỉ nướng sẵn của Sano Agent) phải là địa chỉ cuối: máy chủ chuyển hướng ngay lần mở
   đầu thì cửa sổ báo "SANO tại … chuyển hướng sang …" với **Thử lại / Mở Canvas / Thoát** (từ mã nguồn: in cả lỗi ra
   console).

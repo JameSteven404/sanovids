@@ -37,10 +37,27 @@ const trashItems = (items) =>
     ? items.slice(0, 256).map((i) => ({ takeId: str(i && i.takeId), groupIds: Array.isArray(i && i.groupIds) ? i.groupIds.slice(0, 32).map(str) : [] }))
     : []
 
-// SANO desktop (main.cjs SANO): this preload runs in every frame of SANO's page. SANO's own page only learns where
-// SanoVids is; the bridge below goes to SanoVids' page alone (main checks the sending frame again: fromApp).
+// SANO desktop (main.cjs SANO): this preload runs in every frame of SANO's page. SANO's own page (its top frame only)
+// learns where SanoVids is and gets "Đăng nhập bằng Google" (main checks the sending frame again: fromSano); the
+// bridge below goes to SanoVids' page alone (fromApp).
 const sanoArg = process.argv.find((a) => a.startsWith('--bdp-sano-origin='))
-if (sanoArg && location.origin === sanoArg.slice('--bdp-sano-origin='.length)) contextBridge.exposeInMainWorld('sanoDesktop', { sanovidsUrl: 'app://bdp/' })
+if (sanoArg && process.isMainFrame && location.origin === sanoArg.slice('--bdp-sano-origin='.length)) {
+  contextBridge.exposeInMainWorld('sanoDesktop', {
+    sanovidsUrl: 'app://bdp/',
+    /** Sign-in in the default browser (main.cjs registerGoogleSignIn). Only the ID token crosses, never the refresh token. */
+    google: {
+      /** → { ok: true, idToken } | { ok: false, code: 'cancelled'|'timeout'|'superseded'|'not-configured'|'failed'|'not-allowed', message } */
+      signIn: () => ipcRenderer.invoke('sano:googleSignIn'),
+      /**
+       * → the ID token (renewed when under 5 minutes are left), or null: signed out, show "Đăng nhập" again.
+       * Rejects when Google did not answer the renewal: still signed in, fail only this request.
+       */
+      token: () => ipcRenderer.invoke('sano:googleToken'),
+      /** Forgets the tokens in main's memory (no revoke); a sign-in still waiting ends 'cancelled'. → true */
+      signOut: () => ipcRenderer.invoke('sano:googleSignOut'),
+    },
+  })
+}
 const expose = location.origin === 'app://bdp' ? (key, api) => contextBridge.exposeInMainWorld(key, api) : () => undefined
 // SANO removing SanoVids' frame (or sending it elsewhere) gives main no event of its own: the page ends its downloads as it goes.
 if (location.origin === 'app://bdp') window.addEventListener('pagehide', () => void ipcRenderer.invoke('canvasapp:downloadCloseAll').catch(() => undefined))

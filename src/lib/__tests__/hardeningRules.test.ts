@@ -50,7 +50,6 @@ interface Hardening {
   sanoFailedDialog(message: string, detail: string): { buttons: string[]; defaultId: number; cancelId: number; detail: string } & Record<string, unknown>
   sanoFailedAction(response: unknown): 'retry' | 'canvas' | 'quit'
   appFrames(wc: unknown): { url: string }[]
-  GOOGLE_SIGN_IN: RegExp
   appSignaturePayload(verdict: unknown, opts: { packaged: boolean }): Payload
   SIGNED_DLLS: readonly string[]
   MICROSOFT_DLLS: readonly string[]
@@ -375,7 +374,7 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     }
   })
 
-  it('wiring: refused before anything is written; subframe preload, SANO origin home, Google popup only in SANO', () => {
+  it('wiring: refused before anything is written; subframe preload, SANO origin home, no in-app Google popup', () => {
     const at = (s: string) => {
       const i = mainSource.indexOf(s)
       expect(i, s).toBeGreaterThan(-1)
@@ -389,11 +388,16 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(shared).toBeLessThan(at('app.whenReady()'))
     expect(mainSource.split('commandLine.appendSwitch(').length - 1).toBe(1)
     expect(mainSource.split('nodeIntegrationInSubFrames').length - 1).toBe(1)
+    // TH-36: no Google sign-in in an app window — an accounts.google.com link opens the default browser like any other
+    expect(mainSource).toMatch(/\n {2}webContents\.setWindowOpenHandler\(\(\{ url \}\) => \{\s+if \(isExternal\(url\)\) void shell\.openExternal\(url\)\s+return \{ action: 'deny' \}\s+\}\)/)
+    expect(mainSource).not.toContain('accounts.google.com')
+    expect(mainSource).not.toContain('guardGooglePopup')
+    expect(mainSource).not.toContain("if (SANO) webContents.on('did-create-window'")
+    expect(hardeningSource).not.toContain('GOOGLE_SIGN_IN')
     expect(mainSource).toContain('const stays = (url) => hardening.mainWindowAllows(url, { sanoUrl: SANO ? SANO.url : undefined, canvas })')
     expect(mainSource).toContain('if (stays(url)) return')
-    expect(mainSource).toContain("if (SANO && url.startsWith('https://accounts.google.com/')) return { action: 'allow', overrideBrowserWindowOptions: { parent: win, autoHideMenuBar: true } }")
     expect(mainSource).toContain('void win.loadURL(SANO ? SANO.url : `${ORIGIN}/index.html`)')
-    // server redirects of SANO's page are held to the same home; the Google popup is guarded, its cookies dropped on close
+    // server redirects of SANO's page are held to the same home
     // refused on the first load: plain SanoVids prints and exits; SANO mode prints too (from source) and asks in the window
     expect(mainSource).toMatch(/webContents\.on\('will-redirect', \(event, url\) => \{\s+if \(!event\.isMainFrame \|\| stays\(url\)\) return\s+event\.preventDefault\(\)\s+(?:\/\/[^\n]*\n\s+)+if \(canvas \|\| \(SANO \? sanoOpened : mainWindowShown\)\) return\s+console\.error\([^\n]*\)\s+if \(SANO\) sanoFailed\(`SANO tại \$\{SANO\.url\} chuyển hướng sang \$\{url\}`, '[^'\n]*địa chỉ cuối[^'\n]*'\)\s+else app\.exit\(2\)\s+\}\)/)
     // a redirect is the server's, never opened in the browser (only will-navigate, the user's click, is)
@@ -401,16 +405,6 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(redirect.slice(0, redirect.indexOf('\n  })'))).not.toContain('openExternal')
     // every start, either mode (same data folder): leftover Google account cookies of the default session go
     expect(mainSource).toMatch(/\n {4}void keepLoginRules\.removeGoogleAccountCookies\(session\.defaultSession\.cookies\)\n/)
-    expect(mainSource).toContain("if (SANO) webContents.on('did-create-window', (child) => guardGooglePopup(child))")
-    const [gs, ge] = [mainSource.indexOf('function guardGooglePopup(child)'), mainSource.indexOf('function showMainWindow()')]
-    const google = mainSource.slice(gs, ge)
-    expect(gs).toBeGreaterThan(-1)
-    expect(google).toContain("return { action: 'deny' }")
-    expect(google).toContain("wc.on('will-navigate', (event, url) => stay(event, url, true))")
-    expect(google).toMatch(/wc\.on\('will-redirect', \(event, url\) => \{\s+if \(event\.isMainFrame\) stay\(event, url, false\)/)
-    expect(google).toContain('if (open && isExternal(url)) void shell.openExternal(url)')
-    expect(google).toContain('if (hardening.GOOGLE_SIGN_IN.test(url)) return')
-    expect(google).toContain('keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies)')
   })
 
   it('SANO mode window: Sano Agent title, the exe icon on Windows, and a retry / quit dialog when SANO does not load', () => {
@@ -569,14 +563,14 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
   })
 
   it('D237 preload run: app://bdp gets bdpDesktop, never sanoDesktop; SANO’s page gets sanoDesktop only', () => {
-    const run = (origin: string, sano: boolean, sanoOrigin = 'http://127.0.0.1:8080') => {
+    const run = (origin: string, sano: boolean, sanoOrigin = 'http://127.0.0.1:8080', isMainFrame = true) => {
       const exposed: string[] = []
       const electron = {
         contextBridge: { exposeInMainWorld: (key: string) => void exposed.push(key) },
         ipcRenderer: { invoke: () => Promise.resolve(), on: () => undefined, removeListener: () => undefined },
       }
       const argv = ['--bdp-version=1.0.0', '--bdp-product=Sano Agent', ...(sano ? [`--bdp-sano-origin=${sanoOrigin}`] : [])]
-      const proc = { argv, versions: { electron: '44.0.0' }, platform: 'win32' }
+      const proc = { argv, versions: { electron: '44.0.0' }, platform: 'win32', isMainFrame }
       new Function('require', 'process', 'location', 'window', preloadSource)(() => electron, proc, { origin }, { addEventListener: () => undefined })
       return exposed
     }
@@ -590,6 +584,8 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(run('app://bdp', true, 'app://sano')).toEqual(['bdpDesktop'])
     expect(run('null', true, 'app://sano')).toEqual([])
     expect(run('app://sano', true)).toEqual([])
+    // TH-36: a frame inside SANO's page at SANO's origin gets nothing
+    expect(run('app://sano', true, 'app://sano', false)).toEqual([])
   })
 
   it('appFrames: the live app://bdp frames of a window (main frame or SANO’s Dựng phim frame), never SANO’s page', () => {
@@ -602,21 +598,41 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(h.appFrames(null)).toEqual([])
   })
 
-  it('GOOGLE_SIGN_IN: Google sign-in hosts over https only', () => {
-    for (const ok of ['https://accounts.google.com/o/oauth2/v2/auth?x=1', 'https://accounts.google.com/gsi/select', 'https://accounts.youtube.com/accounts/SetSID']) expect(h.GOOGLE_SIGN_IN.test(ok), ok).toBe(true)
-    for (const bad of ['http://accounts.google.com/', 'https://accounts.google.com.evil.vn/', 'https://accounts.google.com@evil.vn/', 'https://evil.vn/https://accounts.google.com/', 'https://myaccount.google.com/', 'https://sites.google.com/x', 'https://accounts.google.com', 'about:blank']) {
-      expect(h.GOOGLE_SIGN_IN.test(bad), bad).toBe(false)
+  it("Google sign-in IPC (TH-36): SANO mode only; SANO's top frame in the main window only (fromSano, not fromApp)", () => {
+    expect(mainSource).toContain('\n    if (SANO) registerGoogleSignIn()\n')
+    for (const handler of [
+      "ipcMain.handle('sano:googleSignIn', (event) => (fromSano(event) ? google.signIn() : gatewayError('not-allowed', 'Nguồn gọi không hợp lệ.')))",
+      "ipcMain.handle('sano:googleToken', (event) => (fromSano(event) ? google.token() : null))",
+      "ipcMain.handle('sano:googleSignOut', (event) => (fromSano(event) ? google.signOut() : false))",
+    ]) {
+      expect(mainSource).toContain(handler)
+      expect(mainSource.split(handler.slice(0, handler.indexOf(','))).length - 1, handler).toBe(1)
     }
+    const from = mainSource.slice(mainSource.indexOf('function fromSano(event) {'), mainSource.indexOf('async function sanoDesktopClientId()'))
+    expect(from).toContain('event.senderFrame === win.webContents.mainFrame && event.senderFrame.origin === SANO.origin')
+    // the client id comes from SANO's server; Google's endpoints are constants of google-signin-rules.cjs
+    expect(mainSource).toContain('await net.fetch(`${SANO.origin}/api/assistant/status`, { signal: AbortSignal.timeout(15_000) })')
+    expect(mainSource).not.toMatch(/googleapis|oauth2/)
     // the gateway still answers app://bdp frames only
     expect(mainSource).toContain("return url.startsWith(ORIGIN + '/')")
   })
 
-  it('preload: the bridge goes to app://bdp only; SANO learns nothing but where SanoVids is', () => {
+  it("preload: the bridge goes to app://bdp only; SANO's top frame learns where SanoVids is and gets Google sign-in", () => {
     expect(preloadSource).toContain("const expose = location.origin === 'app://bdp' ? (key, api) => contextBridge.exposeInMainWorld(key, api) : () => undefined")
     expect(preloadSource).toContain("expose('bdpDesktop', {")
     const direct = [...preloadSource.matchAll(/contextBridge\.exposeInMainWorld\('(\w+)'/g)].map((m) => m[1])
     expect(direct).toEqual(['sanoDesktop'])
-    expect(preloadSource).toContain("if (sanoArg && location.origin === sanoArg.slice('--bdp-sano-origin='.length)) contextBridge.exposeInMainWorld('sanoDesktop', { sanovidsUrl: 'app://bdp/' })")
+    expect(preloadSource).toContain("if (sanoArg && process.isMainFrame && location.origin === sanoArg.slice('--bdp-sano-origin='.length)) {")
+    const sano = /\n {2}contextBridge\.exposeInMainWorld\('sanoDesktop', \{\n([\s\S]*?)\n {2}\}\)\n/.exec(preloadSource)
+    expect(sano).not.toBeNull()
+    expect([...sano![1].matchAll(/^ {4}(\w+): /gm)].map((m) => m[1])).toEqual(['sanovidsUrl', 'google'])
+    expect(sano![1]).toContain("sanovidsUrl: 'app://bdp/',")
+    // no argument crosses: main decides the client, the endpoints and where the tokens go
+    expect([...sano![1].matchAll(/^ {6}(\w+): (.*)$/gm)].map((m) => `${m[1]}: ${m[2]}`)).toEqual([
+      "signIn: () => ipcRenderer.invoke('sano:googleSignIn'),",
+      "token: () => ipcRenderer.invoke('sano:googleToken'),",
+      "signOut: () => ipcRenderer.invoke('sano:googleSignOut'),",
+    ])
   })
 
   it('sano-desktop.bat: SANO_URL expands inside quotes only (cmd runs & | > of a query string as operators)', () => {
