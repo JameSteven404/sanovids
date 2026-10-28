@@ -203,7 +203,7 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
   `scripts/build-sano.mjs` trước electron-builder:
   - Lấy đúng commit ghim trong `sano-agent/sano.json` (`{ repo, commit }`) từ một checkout SANO trên máy: biến môi
     trường `SANO_REPO`, mặc định `E:/SANO-AGENT-wt-docker` (một worktree của repo SANO; worktree nào cũng đọc được commit
-    ghim). Hiện TẠM ghim a4de06e, đầu nhánh SANO `claude/dang-nhap-trong-app-20261028` chưa merge (nối sau PR SANO #80, D253: trang đăng nhập trong app); trước khi merge PR này phải ghim lại commit SANO đã lên main (trước đó ghim 03089b2, đầu #70). Sau khi Minh merge các
+    ghim). Hiện TẠM ghim b62623d, đầu nhánh SANO `claude/dang-nhap-trong-app-20261028` chưa merge (nối sau PR SANO #80, D253: trang đăng nhập trong app); trước khi merge PR này phải ghim lại commit SANO đã lên main (trước đó ghim 03089b2, đầu #70). Sau khi Minh merge các
     PR SANO bằng "Create a merge commit", giữ nguyên ghim nếu
     `git -C "$SANO_REPO" merge-base --is-ancestor <commit trong sano.json> origin/main` trả 0; chỉ đổi ghim (rồi dựng
     và thử lại) khi #70 không vào main nguyên vẹn (squash, rebase). Có thể trỏ `SANO_REPO` vào checkout `main`.
