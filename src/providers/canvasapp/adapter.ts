@@ -435,9 +435,13 @@ export function accountKeyOf(me: unknown): string | null {
   const email = me && typeof me === 'object' && !Array.isArray(me) ? (me as { email?: unknown }).email : undefined
   if (typeof email !== 'string') return null
   const norm = email.trim().toLowerCase()
-  if (!norm) return null
+  return norm ? accountKey(norm) : null
+}
+
+/** An account id as a key (FNV-1a 64, hex): what SanoVids stores instead of the id itself (also SANO's token sub). */
+export function accountKey(id: string): string {
   let h = 0xcbf29ce484222325n
-  for (const byte of new TextEncoder().encode(norm)) h = ((h ^ BigInt(byte)) * 0x100000001b3n) & 0xffffffffffffffffn
+  for (const byte of new TextEncoder().encode(id)) h = ((h ^ BigInt(byte)) * 0x100000001b3n) & 0xffffffffffffffffn
   return h.toString(16).padStart(16, '0')
 }
 

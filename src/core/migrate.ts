@@ -98,7 +98,7 @@ export { cleanForeignSettings, FOREIGN_ID_MAX, FOREIGN_SETTINGS_MAX_BYTES, FOREI
 /** Error of a take a newer build was still running (parked as 'failed' here, see migrateTake). */
 export const FOREIGN_RUNNING_ERROR = 'Video này đang tạo bằng SanoVids bản mới hơn — mở bằng bản đó để theo dõi.'
 
-const KNOWN_PROVIDERS: readonly string[] = ['mock', 'canvasapp', 'dev'] satisfies TakeProvider[]
+const KNOWN_PROVIDERS: readonly string[] = ['mock', 'canvasapp', 'dev', 'sano-gateway'] satisfies TakeProvider[]
 
 /** Settings + newer-build marker of a scene or preset, as migrate keeps them. */
 interface ModelMark {
@@ -386,7 +386,7 @@ export function migrateTake(raw: unknown): Take {
     videoRefsSnapshot: [],
     ...(legacyVideoRefsSnapshot ? { legacyVideoRefsSnapshot } : {}),
     position: t.position ?? null,
-    provider: knownNow ?? (t.provider === 'canvasapp' || t.provider === 'dev' ? t.provider : 'mock'),
+    provider: knownNow ?? (KNOWN_PROVIDERS.includes(String(t.provider)) ? (t.provider as TakeProvider) : 'mock'),
     remoteId: typeof t.remoteId === 'string' && t.remoteId ? t.remoteId : null,
     charged: newer ? false : knownNow && typeof t.foreignCharged === 'boolean' ? t.foreignCharged : t.charged !== false,
   }
@@ -419,6 +419,14 @@ export function migrateTake(raw: unknown): Take {
   }
   if (t.submitUnknown === true) out.submitUnknown = true
   else delete out.submitUnknown
+  if (t.simulated === true) out.simulated = true
+  else delete out.simulated
+  if (t.expectSimulated === true) out.expectSimulated = true
+  else delete out.expectSimulated
+  if (typeof t.account === 'string' && t.account) out.account = t.account
+  else delete out.account
+  if (t.accountBindingPending === true) out.accountBindingPending = true
+  else delete out.accountBindingPending
   // Custom file name: sanitized again (a file from elsewhere may hold separators, "..", reserved names…).
   const fileName = cleanTakeFileName(t.fileName)
   if (fileName) out.fileName = fileName

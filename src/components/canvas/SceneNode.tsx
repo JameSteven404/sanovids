@@ -31,6 +31,7 @@ import { PlaceholderBar } from '../inspector/PlaceholderBar'
 import { segmentForScene } from '../inspector/tokens'
 import { AssetPicker } from '../inspector/shared'
 import { useSettingsRunBlock, useTakeCost } from '../runs/shared'
+import { jobRefCount } from '../../providers/limits'
 import { appliedPresetId } from '../sidebar/shared'
 import {
   countScenes,
@@ -310,7 +311,7 @@ function useSceneRun(scene: Scene) {
     return compileScene(project, scene)
   }, [assets, scene])
   const spec = MODELS[scene.settings.model]
-  const settingsBlock = useSettingsRunBlock(scene.settings)
+  const settingsBlock = useSettingsRunBlock(scene.settings, jobRefCount(scene, compiled))
   const block = runBlock({ scene, assets, compiled, settingsBlock, spec })
   return { assets, compiled, reason: block?.reason ?? null, red: isRedTextBlock(block), spec }
 }

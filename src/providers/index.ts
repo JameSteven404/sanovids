@@ -5,11 +5,14 @@
 //                                          (providers/devAccess devAllowed()) → 'canvasapp' when chosen in Settings AND
 //                                          the desktop bridge exists, else 'dev'; development mode LOCKED (release
 //                                          builds) → always 'canvasapp' (blocked until the user turns the gateway on).
-//                                          Never 'mock'.
+//                                          The SANO build (providers/sano sanoBuild(), also in a plain tab where
+//                                          providerBlockedReason refuses it): 'sano-gateway' when chosen, and always
+//                                          while locked on the web. Never 'mock'.
 //   providerOf(take): ProviderId            provider a take ran on (take.provider, 'mock' for old takes). Re-exported here.
-//   PROVIDER_LABEL[id]                      'dev' "Phát triển (giả lập)" | 'canvasapp' "canvasapp.io.vn" | 'mock' "Demo cũ".
+//   PROVIDER_LABEL[id]                      'dev' "Phát triển (giả lập)" | 'canvasapp' "canvasapp.io.vn" | 'mock' "Demo cũ"
+//                                          | 'sano-gateway' "SANO".
 //   selectableProviders()                   the Settings choices now: ['dev', 'canvasapp'] open, ['canvasapp'] locked
-//                                          (SELECTABLE_PROVIDERS: the open list, deprecated).
+//                                          (SELECTABLE_PROVIDERS: the open list, deprecated), + 'sano-gateway' in the SANO build.
 //   useProviderPrefs                        { provider, active, setProvider } — `provider` = the saved Settings choice
 //                                          (persisted, never rewritten by locking / unlocking: unlocking again brings it
 //                                          back); `active` = activeProviderId() kept in the store so selectors re-render
@@ -20,7 +23,9 @@
 //   canvasappEnabled()                      the canvasapp gateway may be used for new takes now.
 //   providerBlockedReason(id)               Vietnamese reason new takes cannot use `id` right now, or null: 'dev' while
 //                                          locked (DEV_LOCKED_REASON — also blocks "Thử lại" of a DEV take), 'canvasapp'
-//                                          outside the desktop app (WEB_UNAVAILABLE) or turned off (CANVASAPP_OFF_REASON).
+//                                          outside the desktop app (WEB_UNAVAILABLE) or turned off (CANVASAPP_OFF_REASON),
+//                                          'sano-gateway' outside SANO (SANO_UNAVAILABLE), without a usable SANO token
+//                                          (SANO_LOGIN_TEXT) or, given a take's `account`, under another SANO account.
 //   gatewayFor(id) / activeGateway()        { id, label, simulated, api, bridge(), provider() } of the dev or the real
 //                                          canvasapp gateway (null for 'mock'). EVERYTHING that talks to "canvasapp"
 //                                          (balance, login, top-up, credit history) goes through activeGateway(): in
@@ -59,6 +64,7 @@ import { browserStorage, createCanvasappProvider, JOBS_KEY, STATE_KEY, type Canv
 import { canvasappBridge, createDesktopTransport, hasCanvasappBridge, WEB_UNAVAILABLE, type CanvasappBridge } from './canvasapp/transport'
 import { DEV_JOB_LIST_CACHE_MS, devBridge, devResult, resetDevServer, withDevWording } from './dev'
 import { devAllowed, useDevAccess, type DevAccessKind } from './devAccess'
+import { createBrowserSanoGateway, SANO_LABEL, sanoBuild, type SanoGatewayProvider } from './sano'
 import { NO_LIMITS, NO_LIMITS_INFO, type LimitsInfo, type ProviderId, type RefreshLimitsOptions, type RefreshLimitsResult, type SettingsLimits, type VideoProvider } from './types'
 
 export type { LimitsInfo, ProviderId, RefreshLimitsOptions, RefreshLimitsResult, SettingsLimits, VideoProvider } from './types'
@@ -67,15 +73,16 @@ export { devAllowed, useDevAllowed } from './devAccess'
 
 const PREF_KEY = 'bdp:pref:provider'
 
-/** Providers the user can choose for new takes. */
-export type SelectableProviderId = 'dev' | 'canvasapp'
+/** Providers the user can choose for new takes ('sano-gateway' only in the SANO build). */
+export type SelectableProviderId = 'dev' | 'canvasapp' | 'sano-gateway'
 /** @deprecated the choices while development mode is open — use selectableProviders(). */
 export const SELECTABLE_PROVIDERS: readonly SelectableProviderId[] = ['dev', 'canvasapp']
 const LOCKED_PROVIDERS: readonly SelectableProviderId[] = ['canvasapp']
 
-/** The Settings choices now: development mode is offered only while it is open (devAllowed()). */
+/** The Settings choices now: development mode only while it is open (devAllowed()), SANO only in the SANO build. */
 export function selectableProviders(): readonly SelectableProviderId[] {
-  return devAllowed() ? SELECTABLE_PROVIDERS : LOCKED_PROVIDERS
+  const list = devAllowed() ? SELECTABLE_PROVIDERS : LOCKED_PROVIDERS
+  return sanoBuild() ? [...list, 'sano-gateway'] : list
 }
 
 /**
@@ -88,16 +95,21 @@ export const DEV_LOCKED_REASON = 'Take giả lập chỉ gửi được khi ch�
 export const CANVASAPP_OFF_REASON = 'Chưa bật cổng canvasapp.io.vn — mở Cài đặt → Nhà cung cấp video để bật.'
 
 /**
- * Pure: the provider new takes use. Open (build / unlocked): the saved choice, 'canvasapp' only with the desktop
+ * Pure: the provider new takes use. In the SANO build (`sano`): 'sano-gateway' when chosen, and always while locked without
+ * the desktop bridge (the SANO web app). Open (build / unlocked): the saved choice, 'canvasapp' only with the desktop
  * bridge (else development mode, like before the lock existed). Locked: always 'canvasapp' — never development mode.
  */
-export function effectiveProvider({ access, saved, bridge }: { access: DevAccessKind; saved: ProviderId; bridge: boolean }): SelectableProviderId {
+export function effectiveProvider({ access, saved, bridge, sano = false }: { access: DevAccessKind; saved: ProviderId; bridge: boolean; sano?: boolean }): SelectableProviderId {
+  if (sano && (saved === 'sano-gateway' || (access === 'locked' && !bridge))) return 'sano-gateway'
   if (access === 'locked') return 'canvasapp'
   return saved === 'canvasapp' && bridge ? 'canvasapp' : 'dev'
 }
 
-/** A saved / requested choice → a selectable provider: 'canvasapp' stays, anything else (old 'mock' included) is 'dev'. */
-export const normalizeProviderChoice = (v: unknown): SelectableProviderId => (v === 'canvasapp' ? 'canvasapp' : 'dev')
+/**
+ * A saved / requested choice → a selectable provider: 'canvasapp' and 'sano-gateway' stay (the latter only takes
+ * effect in the SANO build, effectiveProvider), anything else (old 'mock' included) is 'dev'.
+ */
+export const normalizeProviderChoice = (v: unknown): SelectableProviderId => (v === 'canvasapp' || v === 'sano-gateway' ? v : 'dev')
 
 function savedProvider(): SelectableProviderId {
   try {
@@ -119,7 +131,8 @@ interface ProviderPrefs {
   setProvider: (p: ProviderId) => void
 }
 
-const effectiveNow = (saved: ProviderId): ProviderId => effectiveProvider({ access: useDevAccess.getState().state.access, saved, bridge: hasCanvasappBridge() })
+const effectiveNow = (saved: ProviderId): ProviderId =>
+  effectiveProvider({ access: useDevAccess.getState().state.access, saved, bridge: hasCanvasappBridge(), sano: sanoBuild() })
 
 export const useProviderPrefs = create<ProviderPrefs>()((set) => {
   const provider = savedProvider()
@@ -156,6 +169,7 @@ let canvasapp: CanvasappProvider | null = null
 let canvasappClient: CanvasappApi | null = null
 let dev: CanvasappProvider | null = null
 let devClient: CanvasappApi | null = null
+let sano: SanoGatewayProvider | null = null
 
 export function registerProvider(p: VideoProvider): void {
   registry.set(p.id, p)
@@ -175,6 +189,12 @@ export function canvasappProvider(): CanvasappProvider {
     canvasapp = createCanvasappProvider({ api: canvasappApi(), getBlob, storage: browserStorage(), onLimitsChange: () => bumpProviderLimits('canvasapp') })
   }
   return canvasapp
+}
+
+/** The SANO gateway provider (created on first use; only ever sends inside the SANO app). */
+export function sanoGatewayProvider(): SanoGatewayProvider {
+  if (!sano) sano = createBrowserSanoGateway(() => bumpProviderLimits('sano-gateway'))
+  return sano
 }
 
 // ---- development mode ----
@@ -238,6 +258,11 @@ export function getProvider(id: ProviderId): VideoProvider {
     registry.set('dev', p)
     return p
   }
+  if (id === 'sano-gateway') {
+    const p = sanoGatewayProvider()
+    registry.set('sano-gateway', p)
+    return p
+  }
   throw new Error(`Chưa đăng ký nhà cung cấp video “${id}”.`)
 }
 
@@ -258,9 +283,13 @@ export function activeProviderId(): ProviderId {
   return effectiveNow(useProviderPrefs.getState().provider)
 }
 
-/** Synchronous pre-check used by enqueue / retry (login is checked when the job is submitted). Null = OK. */
-export function providerBlockedReason(id: ProviderId): string | null {
+/**
+ * Synchronous pre-check used by enqueue / retry (canvasapp's login is checked when the job is submitted). Null = OK.
+ * 'sano-gateway' also needs a usable SANO token, and `account` (a take's Take.account) must be the one signed in.
+ */
+export function providerBlockedReason(id: ProviderId, account?: string): string | null {
   if (id === 'dev' && !devAllowed()) return DEV_LOCKED_REASON
+  if (id === 'sano-gateway') return (getProvider(id) as SanoGatewayProvider).blockedReason(account)
   if (id === 'canvasapp') {
     if (!hasCanvasappBridge()) return WEB_UNAVAILABLE
     if (!canvasappEnabled()) return CANVASAPP_OFF_REASON
@@ -273,7 +302,7 @@ export function canvasappOff(): boolean {
   return hasCanvasappBridge() && !canvasappEnabled()
 }
 
-export const PROVIDER_LABEL: Record<ProviderId, string> = { dev: DEV_PROVIDER_LABEL, canvasapp: 'canvasapp.io.vn', mock: 'Demo cũ' }
+export const PROVIDER_LABEL: Record<ProviderId, string> = { dev: DEV_PROVIDER_LABEL, canvasapp: 'canvasapp.io.vn', mock: 'Demo cũ', 'sano-gateway': SANO_LABEL }
 
 // ---- gateways ----
 
@@ -299,11 +328,12 @@ export function gatewayFor(id: ProviderId): Gateway | null {
 }
 
 /**
- * The gateway of the provider new takes use (activeProviderId() is never 'mock', so never null). Locked: always the
- * real canvasapp gateway — development mode is never the fallback.
+ * The gateway of the provider new takes use (activeProviderId() is never 'mock'). Locked: always the real canvasapp
+ * gateway — development mode is never the fallback. SANO ('sano-gateway') has no canvasapp account: the canvasapp
+ * gateway stands in, which in the SANO web app has no bridge and reads nothing (its transport refuses at once).
  */
 export function activeGateway(): Gateway {
-  return gatewayFor(activeProviderId())!
+  return gatewayFor(activeProviderId()) ?? gatewayFor('canvasapp')!
 }
 
 /**
@@ -324,7 +354,7 @@ export async function resetDevMode(): Promise<void> {
 // ---- what the gateways run right now (/api/video-profiles) ----
 
 /** Revision of what each provider's limits are (see the API notes at the top). Select `s.rev[id]` — a number. */
-export const useProviderLimits = create<{ rev: Record<ProviderId, number> }>()(() => ({ rev: { dev: 0, canvasapp: 0, mock: 0 } }))
+export const useProviderLimits = create<{ rev: Record<ProviderId, number> }>()(() => ({ rev: { dev: 0, canvasapp: 0, mock: 0, 'sano-gateway': 0 } }))
 
 /** While watched, a firm read is renewed this long before it expires (no moment where it reads as a guess). */
 export const LIMITS_RENEW_EARLY_MS = 30_000
@@ -347,7 +377,7 @@ function armLimitsTimer(id: ProviderId) {
   if (old !== undefined) clearTimeout(old)
   limitsTimers.delete(id)
   // the provider in use (it may be built through gatewayFor(…).provider() without being registered yet)
-  const p = registry.get(id) ?? (id === 'dev' ? dev : id === 'canvasapp' ? canvasapp : null)
+  const p = registry.get(id) ?? (id === 'dev' ? dev : id === 'canvasapp' ? canvasapp : id === 'sano-gateway' ? sano : null)
   let until: number | null = null
   try {
     until = p?.limitsInfo?.().firmUntil ?? null
@@ -417,3 +447,7 @@ export async function refreshProviderLimits(id: ProviderId, opts: RefreshLimitsO
     return 'failed'
   }
 }
+
+// The SANO build makes its gateway at load: inside SANO it starts reading SANO's token then, so the first ▶ and the
+// queue already know whether the user is signed in.
+if (sanoBuild()) getProvider('sano-gateway')

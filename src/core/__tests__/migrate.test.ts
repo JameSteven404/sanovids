@@ -13,6 +13,7 @@ import {
 } from '../migrate'
 import { costOf, isModelId, normalizeSettings, settingsLabel } from '../models'
 import { foreignConfigReason } from '../runRules'
+import { isUncertainSubmit } from '../../store/runs'
 
 const v1 = {
   id: 'p',
@@ -146,6 +147,22 @@ describe('migrateTake provider fields', () => {
     expect(migrateTake({ id: 't', provider: 'dev', remoteId: 'p:j', charged: false })).toMatchObject({ provider: 'dev', remoteId: 'p:j', charged: false })
     expect(migrateTake({ id: 't', provider: 'other' })).toMatchObject({ provider: 'mock', foreignProvider: 'other', charged: false })
     expect(migrateTake({ id: 't', provider: 'other', charged: true })).toMatchObject({ provider: 'mock', foreignProvider: 'other', charged: false })
+  })
+  it('keeps SANO takes as sano-gateway (a reload never turns a paid SANO job into a demo one)', () => {
+    expect(migrateTake({ id: 't', provider: 'sano-gateway', status: 'processing', remoteId: 'job_1' })).toMatchObject({
+      provider: 'sano-gateway',
+      remoteId: 'job_1',
+      status: 'processing',
+    })
+    const unknown = migrateTake({ id: 't', provider: 'sano-gateway', status: 'failed', remoteId: null, submitUnknown: true, error: 'x' })
+    expect(unknown.provider).toBe('sano-gateway')
+    expect(isUncertainSubmit(unknown)).toBe(true)
+    // SANO's simulator mark: only a real `true` is kept
+    expect(migrateTake({ id: 't', provider: 'sano-gateway', simulated: true }).simulated).toBe(true)
+    expect(migrateTake({ id: 't', provider: 'sano-gateway', simulated: 'yes' }).simulated).toBeUndefined()
+    // the SANO account its job belongs to: only a real key is kept (a bad one would park the take for good)
+    expect(migrateTake({ id: 't', provider: 'sano-gateway', account: 'ab12' }).account).toBe('ab12')
+    expect(migrateTake({ id: 't', provider: 'sano-gateway', account: 7 }).account).toBeUndefined()
   })
 })
 

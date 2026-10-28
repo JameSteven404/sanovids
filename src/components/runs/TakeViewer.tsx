@@ -567,8 +567,13 @@ function Stage({
   // Old demo credits were refunded by SanoVids on failure / cancel; canvasapp — and its simulation in development mode —
   // bills (and refunds) the account itself.
   const demoPaid = chargedDemo(take)
-  // Where to check an uncertain charge: the real site, or the dev panel for the simulation.
-  const checkWhere = provider !== 'dev' ? 'kiểm tra trên canvasapp.io.vn' : devOpen ? 'kiểm tra trong Bảng phát triển' : 'mở khoá chế độ Phát triển để kiểm tra'
+  // Where to check an uncertain charge: the SANO app, the real site, or the dev panel for the simulation.
+  const checkWhere =
+    provider === 'sano-gateway'
+      ? 'kiểm tra lịch sử job trong app SANO'
+      : provider !== 'dev'
+        ? 'kiểm tra trên canvasapp.io.vn'
+        : devOpen ? 'kiểm tra trong Bảng phát triển' : 'mở khoá chế độ Phát triển để kiểm tra'
   // The site and its credits by name (development mode: "canvasapp giả lập", "credit dev").
   const siteName = provider === 'dev' ? 'canvasapp giả lập' : PROVIDER_LABEL[provider]
   const creditWord = provider === 'dev' ? 'credit dev' : 'credit'
@@ -797,7 +802,10 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
         <dt>Tạo bằng</dt>
         <dd className="rq-info-provider">
           <ProviderBadge take={take} />
-          <span className="faint">{take.foreignProvider ? NEWER_BUILD_TITLE : PROVIDER_LABEL[provider]}</span>
+          <span className="faint">
+            {take.foreignProvider ? NEWER_BUILD_TITLE : PROVIDER_LABEL[provider]}
+            {take.simulated && ' · Giả lập — clip mẫu'}
+          </span>
         </dd>
         <dt>Chi phí</dt>
         <dd className={`rq-info-cost ${cost.foreign ? '' : cost.kind}`}>

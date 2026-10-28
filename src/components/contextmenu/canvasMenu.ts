@@ -32,7 +32,7 @@ import {
 } from '../../actions'
 import { sceneCode, tokenForAsset } from '../../core/compile'
 import { MODELS } from '../../core/models'
-import { sceneRunBlockReason } from '../../core/runRules'
+import { compiledOf, sceneRunBlockReason } from '../../core/runRules'
 import type { Asset, Project, Scene, Take, VideoSettings, XY } from '../../core/types'
 import { openFilmPlayer } from '../../filmActions'
 import { chooseFolderPlace, createFolderNode, grantFolderAccess, linkScenesToFolder, linkTakesToFolder, openFolderNode, removeFolderNode } from '../../folderActions'
@@ -43,7 +43,7 @@ import { useDownloadPrefs } from '../../lib/downloads'
 import { canTrashSaved, folderRuntime } from '../../lib/saveFolders'
 import { hideAssets, linkedPairs, scenesUsingAsset, unlinkAllFromScene, unlinkAssetsFromScenes, unlinkSelection } from '../../menuActions'
 import { activeProviderId, PROVIDER_LABEL, providerBlockedReason, providerLimits } from '../../providers'
-import { settingsRunBlock, takeCost } from '../../providers/limits'
+import { jobRefCount, settingsRunBlock, takeCost } from '../../providers/limits'
 import { freeSpotFrom, LAYOUT, refImageCount, undoToastAction, useProject } from '../../store/project'
 import { isParkedTake, isUncertainSubmit, useRuns } from '../../store/runs'
 import { useSceneEditor } from '../../store/sceneEditor'
@@ -123,7 +123,8 @@ export function linkPreviewToken(project: Project, scene: Scene, asset: Asset): 
 /** The image fits in the scene's model limit (same rule as store addRefs). */
 const fits = (project: Project, scene: Scene, assetId: string) => refImageCount(project, [...scene.refs, assetId]) <= MODELS[scene.settings.model].maxRefImages
 /** Why the scene cannot run: the one rule list of every one-scene Run button, with the gateway's sure refusal of its settings. */
-const runBlockOf = (s: Snap, scene: Scene) => sceneRunBlockReason(s.project.assets, scene, settingsRunBlock(providerLimits(activeProviderId()), scene.settings))
+const runBlockOf = (s: Snap, scene: Scene) =>
+  sceneRunBlockReason(s.project.assets, scene, settingsRunBlock(providerLimits(activeProviderId()), scene.settings, jobRefCount(scene, compiledOf(s.project.assets, scene))))
 
 /** Node editor off (Settings): the prompt is typed in the right panel — opened, its prompt field focused. */
 function editInPanel(sceneId: string) {

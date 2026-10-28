@@ -12,6 +12,9 @@ vi.mock('../../../lib/imageStore', () => ({
 }))
 
 import type { Take } from '../../../core/types'
+import { getProvider } from '../../../providers'
+import { SANO_LOGIN_WAIT, SANO_OTHER_ACCOUNT_WAIT, SANO_UNAVAILABLE } from '../../../providers/sano/gateway'
+import { jwt, stubInsideSano } from '../../../providers/__tests__/insideSano'
 import { UNKNOWN_SUBMIT_ERROR } from '../../../store/runs'
 import { cancelQuestion, cancelToastText, runCostPreview, takeCostLabel, takeCostLine, takeCreditKind, type CancelFacts } from '../creditText'
 
@@ -40,6 +43,66 @@ describe('takeCostLine / takeCostLabel — a newer build\'s provider (migrate: m
     expect(takeCostLine(parked).note).toBe('có thể vẫn đang chạy và tính credit ở bản SanoVids mới hơn (newsite) — xem chi phí ở bản đó')
     // an ordinary old demo take keeps its demo line
     expect(takeCostLine(take({ provider: 'mock' })).foreign).toBeUndefined()
+  })
+})
+
+describe('takeCostLine / takeCostLabel — a take sent through the SANO gateway', () => {
+  it('names SANO, never canvasapp, as the site that accepts and bills the job', async () => {
+    const done = takeCostLine(take({ provider: 'sano-gateway', charged: false, remoteId: 'job_1' }))
+    expect(done).toMatchObject({ amount: '—', note: 'chi phí chưa được SANO xác nhận — kiểm tra trong app SANO', struck: false })
+    const queued = take({ provider: 'sano-gateway', status: 'queued' })
+    stubInsideSano() // inside SANO, not signed in: it waits for that (once the token was read)
+    await vi.waitFor(() => expect(takeCostLine(queued).note).toBe(SANO_LOGIN_WAIT))
+    stubInsideSano({ __SANO_GATEWAY__: { token: () => jwt({ sub: 'A' }) } })
+    getProvider('sano-gateway').reset?.() // forgets the unsigned look (its next look reads the token)
+    // once the token was read (its account known): another SANO account's take waits, an own one goes
+    await vi.waitFor(() => expect(takeCostLine({ ...queued, account: 'another' }).note).toBe(SANO_OTHER_ACCOUNT_WAIT))
+    expect(takeCostLine(queued).note).toBe('credit SANO · trừ trên máy chủ SANO khi job được nhận')
+    getProvider('sano-gateway').reset?.()
+    vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
+    expect(takeCostLabel(take({ provider: 'sano-gateway' }))).toBe('20 credit SANO')
+    for (const status of ['completed', 'failed', 'cancelled', 'queued'] as const) {
+      expect(takeCostLine(take({ provider: 'sano-gateway', remoteId: 'job_1', status })).note).not.toContain('canvasapp')
+    }
+  })
+
+  it('outside the SANO app a waiting take says it only runs inside SANO', () => {
+    expect(takeCostLine(take({ provider: 'sano-gateway', status: 'queued' }))).toMatchObject({ note: SANO_UNAVAILABLE, struck: false })
+    // what is (maybe) billed stays said: running with its job id (poll gets no news here either), an unknown earlier send
+    expect(takeCostLine(take({ provider: 'sano-gateway', status: 'processing', remoteId: 'job_1' }))).toMatchObject({
+      note: 'Nhà cung cấp SANO chỉ dùng được khi mở SanoVids bên trong app SANO · chi phí chưa được SANO xác nhận — kiểm tra trong app SANO',
+      struck: false,
+    })
+    expect(takeCostLine({ ...take({ provider: 'sano-gateway', status: 'queued' }), submitUnknown: true }).note).toBe(
+      'Nhà cung cấp SANO chỉ dùng được khi mở SanoVids bên trong app SANO · credit SANO · lần gửi trước không rõ đã bị trừ chưa — SanoVids tìm job cũ trước khi gửi lại',
+    )
+  })
+
+  it("a take of SANO's simulator is shown unbilled, never paid", () => {
+    const sim = takeCostLine({ ...take({ provider: 'sano-gateway', remoteId: 'job_1' }), simulated: true })
+    expect(sim).toMatchObject({ amount: '≈ 20 credit', note: 'giả lập — clip mẫu, không phát sinh phí', struck: true })
+    // queued under the simulator, not sent yet: unbilled too (SANO refuses it once it runs live), still saying why it waits
+    expect(takeCostLine({ ...take({ provider: 'sano-gateway', status: 'queued' }), expectSimulated: true })).toMatchObject({
+      note: 'Nhà cung cấp SANO chỉ dùng được khi mở SanoVids bên trong app SANO · giả lập — clip mẫu, không phát sinh phí',
+      struck: true,
+    })
+    // its answer lost, or cancelled on the way: SANO made a sample clip at most (expectMode), never a billed job
+    for (const status of ['failed', 'cancelled'] as const) {
+      expect(takeCostLine({ ...take({ provider: 'sano-gateway', status }), expectSimulated: true, submitUnknown: true, startedAt: 1 })).toMatchObject({
+        note: 'giả lập — clip mẫu, không phát sinh phí',
+        struck: true,
+      })
+    }
+  })
+
+  it.each(['completed', 'failed', 'cancelled', 'processing', 'queued'] as const)('SANO %s: a job id and the local demo charge flag are not a fee receipt', (status) => {
+    for (const charged of [false, true, undefined]) {
+      const line = takeCostLine(take({ provider: 'sano-gateway', remoteId: 'job_1', status, charged }))
+      expect(line).toMatchObject({ amount: '—', struck: false })
+      expect(line.note).toContain('chi phí chưa được SANO xác nhận')
+      expect(line.note).not.toMatch(/đã trả|đã trừ|không phát sinh phí/)
+    }
   })
 })
 
@@ -184,5 +247,19 @@ describe('cancel wording (actions.cancelTake)', () => {
       warning: true,
     })
     expect(cancelToastText(facts({ sentAway: false, status: 'queued' }))).toEqual({ text: 'Đã huỷ S03·T2.', warning: false })
+  })
+
+  it('a SANO cancellation never promises the next run will be billed (it may use the simulator)', () => {
+    const text = cancelQuestion(facts({ provider: 'sano-gateway', videoReady: true }))!
+    expect(text).toContain('vẫn lấy được trong app SANO')
+    expect(text).toContain('chi phí lượt chạy mới theo chế độ SANO xác nhận khi chạy')
+    expect(text).not.toMatch(/đã trả|đã trừ|sẽ tính phí|sẽ trừ credit|canvasapp/)
+  })
+
+  it('cancelling a SANO send with no reply reports unknown delivery rather than a charge (also valid for simulator takes)', () => {
+    const text = cancelToastText(facts({ provider: 'sano-gateway', sentAway: false })).text
+    expect(text).toContain('chưa rõ máy chủ đã nhận job chưa')
+    expect(text).toContain('kiểm tra trong app SANO')
+    expect(text).not.toMatch(/trừ credit|tính phí|canvasapp/)
   })
 })
