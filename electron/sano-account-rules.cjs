@@ -119,13 +119,27 @@ async function envelope(run, log) {
 /**
  * fx: { apiUrl (accountApiUrl's origin, or null), fetch(url, init), file, fs: fs.promises-like { readFile, writeFile,
  * rename, rm }, safeStorage: { isEncryptionAvailable, encryptString, decryptString }, now(), random(n) → bytes,
- * google: a createGoogleSignIn of its own { signIn, signOut }, log(line) }. Every method answers an envelope.
+ * google: a createGoogleSignIn of its own { signIn, signOut }, log(line), onSessionEnd() (optional: main's chat Google
+ * sign-out) }. Every method answers an envelope.
+ *
+ * Invariant (SANO TH-44, docs/SANO-DESKTOP.md §3a): whenever the SANO session ends or changes hands — a sign-out, a
+ * session dropped (401/403, expired, a damaged or foreign file), a sign-in for another user than the last one —
+ * onSessionEnd runs first, so the chat's Google token of the previous user never serves the next one.
  */
 function createAccount(fx) {
   let held = null // { token, expiresAt, user }
   let loaded = null // the session file, read once
   let epoch = 0 // signOut bumps it: a sign-in that finishes after it is dropped
   let cancels = 0 // cancelGoogle bumps it: a Google sign-in still exchanging its token is dropped
+  let lastUser = null // id of the last user held: a sign-in for anyone else ends the chat's Google session
+  /** fx.onSessionEnd, best effort: its failure never blocks or fails an account call. */
+  const endChat = () => {
+    try {
+      Promise.resolve(fx.onSessionEnd && fx.onSessionEnd()).catch(() => fx.log('[SanoVids] account: chat sign-out failed'))
+    } catch {
+      fx.log('[SanoVids] account: chat sign-out failed')
+    }
+  }
   const persistent = () => {
     try {
       return fx.safeStorage.isEncryptionAvailable() === true
@@ -188,7 +202,10 @@ function createAccount(fx) {
     } catch {
       // another computer's key, a damaged file: signed out
     }
-    if (!s) await remove()
+    if (!s) {
+      endChat()
+      await remove()
+    } else lastUser = s.user.id
     return s
   }
 
@@ -216,6 +233,8 @@ function createAccount(fx) {
   }
 
   async function save(s) {
+    if (s.user.id !== lastUser) endChat()
+    lastUser = s.user.id
     held = s
     if (!persistent()) return
     try {
@@ -232,6 +251,7 @@ function createAccount(fx) {
   async function clear(s) {
     if (held !== s) return true // signed in again meanwhile
     held = null
+    endChat()
     return persistent() ? remove() : true
   }
 
@@ -308,6 +328,7 @@ function createAccount(fx) {
       fx.google.signOut() // a sign-in waiting on the browser ends 'cancelled'
     },
     async signOut() {
+      endChat() // first, and even with no session held or a sign-out that fails: ending the chat is always safe
       epoch++
       const s = await current()
       fx.google.signOut()

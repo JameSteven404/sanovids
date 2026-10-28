@@ -151,7 +151,7 @@ function fakeGoogle(result: () => Promise<GoogleResult> = async () => ({ ok: tru
 }
 
 const logs: string[] = []
-function setup(o: { server?: ReturnType<typeof fakeServer>; m?: ReturnType<typeof machine>; google?: ReturnType<typeof fakeGoogle>; apiUrl?: string | null; now?: number } = {}) {
+function setup(o: { server?: ReturnType<typeof fakeServer>; m?: ReturnType<typeof machine>; google?: ReturnType<typeof fakeGoogle>; apiUrl?: string | null; now?: number; onSessionEnd?: () => unknown } = {}) {
   const server = o.server ?? fakeServer()
   const m = o.m ?? machine()
   const google = o.google ?? fakeGoogle()
@@ -166,6 +166,7 @@ function setup(o: { server?: ReturnType<typeof fakeServer>; m?: ReturnType<typeo
     random: (n: number) => Uint8Array.from({ length: n }, () => (seed = (seed * 31 + 7) % 251)),
     google,
     log: (line: string) => void logs.push(line),
+    onSessionEnd: o.onSessionEnd,
   })
   return { account, server, m, google }
 }
@@ -529,6 +530,83 @@ describe('createAccount (fake SANO account server)', () => {
     expect(value(await slow.google()).signedIn).toBe(true)
   })
 
+  it("the chat's Google session ends with the SANO session: sign-out, /me 401, expiry, a damaged file, another user", async () => {
+    // main's chat Google (#18's sanoDesktop.google): holds a token for whoever signed it in last
+    const chat = () => {
+      const c = { token: null as string | null, ends: 0 }
+      return Object.assign(c, { onSessionEnd: () => void ((c.token = null), c.ends++) })
+    }
+    const signIn = async (a: ReturnType<typeof setup>, c: ReturnType<typeof chat>, id: string) => {
+      Object.assign(a.server.user, { id, username: 'minh' })
+      value(await a.account.login({ identifier: 'minh', password: a.server.password }))
+      c.token = `google-of-${id}` // the user signs the chat in after the account
+    }
+    // A signs out: ended (also with nothing held, also when the sign-out itself fails)
+    let c = chat()
+    let a = setup({ onSessionEnd: c.onSessionEnd })
+    await signIn(a, c, 'u-a')
+    value(await a.account.signOut())
+    expect(c.token).toBeNull()
+    c.token = 'stale'
+    value(await a.account.signOut())
+    expect(c.token).toBeNull()
+    // /me 401 (revoked elsewhere): A's session dropped → ended
+    c = chat()
+    a = setup({ onSessionEnd: c.onSessionEnd })
+    await signIn(a, c, 'u-a')
+    a.server.sessions.clear()
+    expect(value(await a.account.status()).signedIn).toBe(false)
+    expect(c.token).toBeNull()
+    // expired by expiresAt at the next start: ended; B then signs in (no sign-out between) → ended again before B's chat
+    const server = fakeServer()
+    const m = machine()
+    c = chat()
+    await signIn(setup({ server, m, onSessionEnd: c.onSessionEnd }), c, 'u-a')
+    c = chat()
+    c.token = 'google-of-u-a' // shortcut: stands for a chat token surviving into this run, as main's memory would within one
+    const later = setup({ server, m, now: NOW + 31 * 86_400_000, onSessionEnd: c.onSessionEnd })
+    expect(value(await later.account.status()).signedIn).toBe(false)
+    expect(c.token).toBeNull()
+    // B signs in while A's expired session is still held (status never asked): switching users ends A's chat
+    c = chat()
+    const m2 = machine()
+    await signIn(setup({ server, m: m2, onSessionEnd: c.onSessionEnd }), c, 'u-a')
+    const restart = setup({ server, m: m2, now: NOW + 31 * 86_400_000, onSessionEnd: c.onSessionEnd })
+    c.ends = 0
+    await signIn(restart, c, 'u-b')
+    expect(c.ends).toBeGreaterThan(0)
+    // …but the same user signing in again (B after B) keeps the chat signed in
+    c.ends = 0
+    expect(value(await restart.account.login({ identifier: 'minh', password: server.password })).user?.id).toBe('u-b')
+    expect(c).toMatchObject({ token: 'google-of-u-b', ends: 0 })
+    // a damaged (or another computer's) file: ended
+    c = chat()
+    const m3 = machine()
+    m3.files.set(FILE, Buffer.from('garbage'))
+    c.token = 'stale'
+    expect(value(await setup({ m: m3, onSessionEnd: c.onSessionEnd }).account.status()).signedIn).toBe(false)
+    expect(c.token).toBeNull()
+  })
+
+  it('a chat sign-out that throws (or rejects) never blocks or fails an account call', async () => {
+    for (const onSessionEnd of [
+      () => {
+        throw new Error('boom')
+      },
+      () => Promise.reject(new Error('boom')),
+    ]) {
+      const { account, server, m } = setup({ onSessionEnd })
+      expect(value(await account.login({ identifier: 'minh', password: server.password })).signedIn).toBe(true)
+      server.sessions.clear()
+      expect(value(await account.status()).signedIn).toBe(false)
+      value(await account.login({ identifier: 'minh', password: server.password }))
+      expect(value(await account.signOut()).signedIn).toBe(false)
+      expect(m.files.size).toBe(0)
+    }
+    await Promise.resolve()
+    expect(logs).toContain('[SanoVids] account: chat sign-out failed')
+  })
+
   it('logs: never a password, token, code or verifier', async () => {
     const { account, server } = setup()
     await account.login({ identifier: 'minh', password: server.password })
@@ -562,6 +640,10 @@ describe('IPC: every account:* call checks the sender (fromSano), and the preloa
     expect(body).not.toContain('net.fetch')
     expect(body).toContain("file: path.join(profile.dir, 'sano-account.bin'),")
     expect(body).toContain('google: newGoogleSignIn(),')
+    // the chat's Google (registerGoogleSignIn's instance, not the account's own) ends with the SANO session
+    expect(body).toContain('onSessionEnd: () => chatGoogle && chatGoogle.signOut(),')
+    expect(mainSource).toContain('  const google = (chatGoogle = newGoogleSignIn())\n')
+    expect(mainSource).toContain('\n    if (SANO) registerGoogleSignIn()\n')
     expect(body).toContain("safeStorage.getSelectedStorageBackend() === 'basic_text'") // Linux plain text: memory only
     expect(mainSource.split("ipcMain.handle('account:").length - 1).toBe(0) // only through registerAccountIpc
     expect(mainSource).toContain("const SANO_API_RAW = PACKAGED ? readBakedSanoAgent('apiUrl') : process.env.SANO_API_URL")

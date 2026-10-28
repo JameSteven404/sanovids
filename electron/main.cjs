@@ -803,8 +803,9 @@ function appPlacement() {
  * never in an app window (Google refuses embedded browsers); the answer comes back on 127.0.0.1 and the tokens stay in
  * this process's memory. Only SANO's page itself may ask (fromSano). The client id comes from SANO's server.
  */
+let chatGoogle = null // the page bridge's Google sign-in (Chat → Máy chủ): the account ends it with its session
 function registerGoogleSignIn() {
-  const google = newGoogleSignIn()
+  const google = (chatGoogle = newGoogleSignIn())
   ipcMain.handle('sano:googleSignIn', (event) => (fromSano(event) ? google.signIn() : gatewayError('not-allowed', 'Nguồn gọi không hợp lệ.')))
   ipcMain.handle('sano:googleToken', (event) => (fromSano(event) ? google.token() : null))
   ipcMain.handle('sano:googleSignOut', (event) => (fromSano(event) ? google.signOut() : false))
@@ -850,6 +851,8 @@ function registerAccount() {
     random: (n) => crypto.randomBytes(n),
     google: newGoogleSignIn(),
     log: (line) => console.error(line),
+    // the SANO session ended or changed hands: the previous user's chat Google token must not serve the next one
+    onSessionEnd: () => chatGoogle && chatGoogle.signOut(),
   })
   accountRules.registerAccountIpc(ipcMain, account, fromSano)
 }

@@ -132,6 +132,12 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
   Agent rồi mở lại.", không bao giờ giả vờ đã đăng xuất. Trong lúc chờ máy chủ, `status()` và lần bấm đăng xuất thứ hai
   vẫn thấy người dùng đang đăng nhập. Phiên đăng xuất giữa lúc đang ghi file (đăng nhập, cập nhật hồ sơ) thì file vừa
   ghi bị xoá ngay, token không nằm lại trên đĩa.
+- **Phiên Google của chat đi theo phiên SANO (bất biến):** mỗi khi phiên tài khoản SANO kết thúc hoặc đổi chủ, main
+  đăng xuất luôn phiên Google của chat (`sanoDesktop.google` của TH-36, "Chat → Máy chủ"; `onSessionEnd` →
+  `chatGoogle.signOut()`), trước mọi việc khác: mỗi lần `signOut()` (cả khi không còn phiên, cả khi trả
+  `sign-out-failed`), khi `status()`/lần đọc file bỏ phiên (401/403, quá `expiresAt`, file hỏng hoặc của máy khác), và
+  khi đăng nhập lưu phiên của người dùng khác người dùng cuối cùng. Nhờ vậy người dùng sau không dùng lại token Google
+  (và quyền) của người trước. Lỗi của bước này chỉ ghi log, không bao giờ chặn hay làm hỏng lời gọi tài khoản.
 - **Cầu nối** (khớp SANO web, TH-44 bước 3):
   ```ts
   type AccountUser = { id: string; name: string; email: string; username: string | null; admin: boolean }
