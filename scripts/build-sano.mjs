@@ -20,7 +20,7 @@ export const SANO_PIN = 'sano-agent/sano.json'
 export const SANO_DIST = 'sano-dist'
 export const SANO_NOTICES = 'build/license-third-party-sano-agent.txt'
 /** Everything `npm ci && npm run build` (tsc -b && vite build) of SANO reads. */
-export const SANO_BUILD_FILES = Object.freeze(['package.json', 'package-lock.json', 'tsconfig.json', 'vite.config.ts', 'index.html', 'public', 'web', 'shared'])
+export const SANO_BUILD_FILES = Object.freeze(['package.json', 'package-lock.json', 'tsconfig.json', 'vite.config.ts', 'index.html', 'login.html', 'public', 'web', 'shared'])
 /** SANO folders the page bundles: their bare imports are the licence roots. */
 const SANO_WEB_DIRS = ['web', 'shared']
 /** Bundler packages whose runtime helpers end up in SANO's build (Vite 7 and its Rollup). */

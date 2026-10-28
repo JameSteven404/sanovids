@@ -204,7 +204,8 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
     `git -C "$SANO_REPO" merge-base --is-ancestor <commit trong sano.json> origin/main` trả 0; chỉ đổi ghim (rồi dựng
     và thử lại) khi #70 không vào main nguyên vẹn (squash, rebase). Có thể trỏ `SANO_REPO` vào checkout `main`.
   - `git archive` chỉ lấy file cần để build web (`package.json`, lockfile, `tsconfig.json`, `vite.config.ts`,
-    `index.html`, `public/`, `web/`, `shared/`). Không lấy `knowledge/`, `context/`, máy chủ.
+    `index.html`, `login.html` (trang đăng nhập web TH-44, từ PR SANO #80), `public/`, `web/`, `shared/`). Không lấy
+    `knowledge/`, `context/`, máy chủ.
   - Build trong thư mục tạm bằng lockfile của SANO (`npm ci --ignore-scripts`, `npm run build`), vì SANO dùng Vite 7 và
     lucide-react 0.577. Có source map thì dừng (repo SANO là private).
   - Chép kết quả ra `sano-dist/` (không đưa vào Git) kèm `BUILD.json` `{ commit, version }`. Không bao giờ ghi vào `dist/`.

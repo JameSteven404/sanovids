@@ -12,7 +12,7 @@ const src = fs.readFileSync(path.join(root, 'scripts', 'build-sano.mjs'), 'utf8'
 
 describe('build-sano', () => {
   it('takes only the files of SANO’s web build: never knowledge/, context/, the server or secrets', () => {
-    expect([...SANO_BUILD_FILES]).toEqual(['package.json', 'package-lock.json', 'tsconfig.json', 'vite.config.ts', 'index.html', 'public', 'web', 'shared'])
+    expect([...SANO_BUILD_FILES]).toEqual(['package.json', 'package-lock.json', 'tsconfig.json', 'vite.config.ts', 'index.html', 'login.html', 'public', 'web', 'shared'])
     expect(src).toContain("'archive', '--format=zip', '-o', zipFile, pin.commit, '--', ...SANO_BUILD_FILES]")
     // its own lockfile, no install scripts; a source map would ship the private source
     expect(src).toContain("'npm ci --ignore-scripts --no-audit --no-fund', 'npm run build'")
