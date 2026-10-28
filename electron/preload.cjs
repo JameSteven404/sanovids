@@ -36,7 +36,15 @@ const trashItems = (items) =>
     ? items.slice(0, 256).map((i) => ({ takeId: str(i && i.takeId), groupIds: Array.isArray(i && i.groupIds) ? i.groupIds.slice(0, 32).map(str) : [] }))
     : []
 
-contextBridge.exposeInMainWorld('bdpDesktop', {
+// SANO desktop (main.cjs SANO): this preload runs in every frame of SANO's page. SANO's own page only learns where
+// SanoVids is; the bridge below goes to SanoVids' page alone (main checks the sending frame again: fromApp).
+const sanoArg = process.argv.find((a) => a.startsWith('--bdp-sano-origin='))
+if (sanoArg && location.origin === sanoArg.slice('--bdp-sano-origin='.length)) contextBridge.exposeInMainWorld('sanoDesktop', { sanovidsUrl: 'app://bdp/' })
+const expose = location.origin === 'app://bdp' ? (key, api) => contextBridge.exposeInMainWorld(key, api) : () => undefined
+// SANO removing SanoVids' frame (or sending it elsewhere) gives main no event of its own: the page ends its downloads as it goes.
+if (location.origin === 'app://bdp') window.addEventListener('pagehide', () => void ipcRenderer.invoke('canvasapp:downloadCloseAll').catch(() => undefined))
+
+expose('bdpDesktop', {
   version: arg ? arg.slice('--bdp-version='.length) : '',
   electron: process.versions.electron,
   platform: process.platform,

@@ -261,8 +261,11 @@ function inlineScriptHashes(html) {
   return out
 }
 
-/** The policy sent with every HTML page of app://bdp: only the app's own files, plus its inline theme script by hash. */
-function contentSecurityPolicy(html) {
+/**
+ * The policy sent with every HTML page of app://bdp: only the app's own files, plus its inline theme script by hash.
+ * frameAncestors: in SANO desktop (sanoShell) SANO's page may frame SanoVids; otherwise no page may.
+ */
+function contentSecurityPolicy(html, frameAncestors = "'none'") {
   const hashes = inlineScriptHashes(html).map((h) => `'${h}'`)
   return [
     "default-src 'self'",
@@ -277,8 +280,31 @@ function contentSecurityPolicy(html) {
     "base-uri 'none'",
     "form-action 'none'",
     "frame-src 'none'",
-    "frame-ancestors 'none'",
+    `frame-ancestors ${frameAncestors}`,
   ].join('; ')
+}
+
+/** SANO desktop: Google's sign-in pages, the only places its Google sign-in popup may go (main.cjs guardGooglePopup). */
+const GOOGLE_SIGN_IN = /^https:\/\/accounts\.(google|youtube)\.com\//
+
+/**
+ * SANO desktop (docs/SANO-DESKTOP.md): from source only, SANO_URL names the SANO web app the window opens; SanoVids then
+ * runs as its Dựng phim frame. https, or http on this machine only → { url, origin }; unset or packaged → null; else false.
+ */
+function sanoShell(o) {
+  const { isPackaged, value } = o && typeof o === 'object' ? o : {}
+  if (isPackaged !== false || value === undefined || value === '') return null
+  let url
+  try {
+    url = new URL(String(value))
+  } catch {
+    return false
+  }
+  const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1'
+  // Plain host names only: the origin goes into the page CSP (frame-ancestors), where '[::1]', '*' or ';' do not work.
+  if (url.username || url.password || !/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(url.hostname)) return false
+  if (!(url.protocol === 'https:' || (url.protocol === 'http:' && local))) return false
+  return { url: `${url.origin}/`, origin: url.origin }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -602,6 +628,8 @@ module.exports = {
   sha256Base64,
   inlineScriptHashes,
   contentSecurityPolicy,
+  sanoShell,
+  GOOGLE_SIGN_IN,
   APP_SIGNATURE_STATUSES,
   appSignaturePayload,
   SIGNED_DLLS,

@@ -1578,7 +1578,9 @@ describe('keep-login wiring (electron/main.cjs)', () => {
       'canvasappGoogleCleaned = true',
       'void keepLoginRules.removeGoogleAccountCookies(canvasappSession().cookies)',
     ])
-    expect(count(mainCode, 'removeGoogleAccountCookies(')).toBe(2)
+    // + SANO desktop's Google sign-in popup, on the default session when it closes (guardGooglePopup) and at start
+    expect(count(mainCode, 'removeGoogleAccountCookies(')).toBe(4)
+    expect(mainCode).toContain("child.once('closed', () => void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies))")
     expect(mainCode).not.toMatch(/cookies\.remove\(/) // only through the rules (Google cookies only)
   })
 

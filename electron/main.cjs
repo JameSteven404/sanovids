@@ -86,6 +86,20 @@ const DEVTOOLS = hardening.allowDevTools({ isPackaged: PACKAGED, profileSource: 
  * (electron/devaccess.cjs). Computed after DEVTOOLS and never feeds back into it: unlocking changes no protection.
  */
 const DEV_OPEN_BUILD = require('./devaccess-rules.cjs').devOpenBuild({ devToolsAllowed: DEVTOOLS, testDevLock: readTestDevLock() })
+/**
+ * SANO desktop (docs/SANO-DESKTOP.md): from source, SANO_URL makes the window open SANO's web app, with SanoVids
+ * (app://bdp/) as its Dựng phim frame: same profile, canvasapp gateway and checks (fromApp) as SanoVids. Packaged: ignored.
+ * shortcut: main → page pushes (devAccess:state, updates:state) reach the main frame only, so SanoVids inside SANO gets
+ * none; harmless from source (development mode open, no updater) — send them to the app://bdp frame before a packaged SANO build.
+ */
+const SANO = hardening.sanoShell({ isPackaged: PACKAGED, value: process.env.SANO_URL })
+if (SANO === false) {
+  console.error('[SanoVids] SANO_URL must be https://… or http://localhost:<port>/')
+  process.exit(2)
+}
+// D223: SanoVids inside SANO opens the same projects as SanoVids itself (same profile, same app://bdp storage), not a
+// copy Chromium would keep apart under SANO's page.
+if (SANO) app.commandLine.appendSwitch('disable-features', 'ThirdPartyStoragePartitioning')
 if (profile.source !== 'default') fs.mkdirSync(profile.dir, { recursive: true })
 app.setPath('userData', profile.dir)
 // The taskbar / notification identity exists on Windows only (app.setAppUserModelId is not defined on macOS: calling it
@@ -188,6 +202,9 @@ if (!app.requestSingleInstanceLock()) {
     registerCanvasappGateway()
     registerFileBridge()
     registerAppBridge()
+    // A SANO desktop run that quit with the Google sign-in popup open left its Google account cookies (guardGooglePopup);
+    // nothing in the default session needs them, in either mode (same data folder).
+    void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies)
     try {
       updater = setupUpdater({ isAppSender: fromApp, getMainWindow: () => mainWindow, profileSource: profile.source, portableFile: portableFile() })
     } catch (e) {
@@ -272,10 +289,10 @@ let htmlCspPromise = null
 function htmlCsp() {
   if (!htmlCspPromise) {
     htmlCspPromise = fs.promises.readFile(path.join(DIST, 'index.html')).then(
-      (bytes) => hardening.contentSecurityPolicy(bytes),
+      (bytes) => hardening.contentSecurityPolicy(bytes, SANO ? SANO.origin : undefined),
       () => {
         htmlCspPromise = null
-        return hardening.contentSecurityPolicy('')
+        return hardening.contentSecurityPolicy('', SANO ? SANO.origin : undefined)
       },
     )
   }
@@ -301,7 +318,7 @@ function createWindow() {
     minWidth: 1100,
     minHeight: 700,
     show: false,
-    title: TITLE,
+    title: SANO ? 'SANO' : TITLE,
     backgroundColor: '#0f1012',
     autoHideMenuBar: true,
     // Windows: the multi-size .ico (sharp taskbar / Alt+Tab icon at every scale); elsewhere the 512 px PNG.
@@ -311,11 +328,13 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // SANO desktop: the preload also runs in SANO's frames and gives the bridge only to app://bdp (preload.cjs).
+      nodeIntegrationInSubFrames: !!SANO,
       devTools: DEVTOOLS,
       spellcheck: false,
       // Hover previews / the take viewer may start with sound before any click (the speaker switch decides).
       autoplayPolicy: 'no-user-gesture-required',
-      additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`],
+      additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : [])],
     },
   })
 
@@ -396,19 +415,56 @@ function createWindow() {
     })
   }
 
-  // External links open in the default browser; the window itself never leaves the app origin.
+  // External links open in the default browser; the window itself never leaves the app origin (SANO desktop: SANO's).
+  const home = SANO ? SANO.url : ORIGIN + '/'
   webContents.setWindowOpenHandler(({ url }) => {
+    // SANO desktop: "Đăng nhập bằng Google" (Google Identity Services) needs its popup as a child window.
+    if (SANO && url.startsWith('https://accounts.google.com/')) return { action: 'allow', overrideBrowserWindowOptions: { parent: win, autoHideMenuBar: true } }
     if (isExternal(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
+  if (SANO) webContents.on('did-create-window', (child) => guardGooglePopup(child))
   webContents.on('will-navigate', (event, url) => {
-    if (url.startsWith(ORIGIN + '/')) return
+    if (url.startsWith(home)) return
     event.preventDefault()
     if (isExternal(url)) void shell.openExternal(url)
   })
+  // SANO desktop: SANO's page comes from a server now, and a server redirect must not take the window elsewhere either.
+  // A redirect is the server's, not the user's click: never opened in the browser. Refused on the very first load, the
+  // window would never show: say why and stop, like a wrong SANO_URL.
+  webContents.on('will-redirect', (event, url) => {
+    if (!event.isMainFrame || url.startsWith(home)) return
+    event.preventDefault()
+    if (mainWindowShown) return
+    console.error(`[SanoVids] SANO_URL redirects to ${url}: set SANO_URL to the address it ends at`)
+    app.exit(2)
+  })
 
-  void win.loadURL(`${ORIGIN}/index.html`)
+  void win.loadURL(SANO ? SANO.url : `${ORIGIN}/index.html`)
   return win
+}
+
+/**
+ * SANO desktop: the Google sign-in popup stays on Google's sign-in pages; its links and popups open in the default
+ * browser. When it closes, the Google account cookies it left in the profile (plaintext, ~2 years) go: SANO has its token.
+ */
+function guardGooglePopup(child) {
+  const wc = child.webContents
+  wc.setWindowOpenHandler(({ url }) => {
+    if (isExternal(url)) void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+  const stay = (event, url, open) => {
+    if (hardening.GOOGLE_SIGN_IN.test(url)) return
+    event.preventDefault()
+    if (open && isExternal(url)) void shell.openExternal(url)
+  }
+  wc.on('will-navigate', (event, url) => stay(event, url, true))
+  // A redirect is Google's own hop (e.g. a Workspace account's sign-in provider), not the user's click: never opened.
+  wc.on('will-redirect', (event, url) => {
+    if (event.isMainFrame) stay(event, url, false)
+  })
+  child.once('closed', () => void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies))
 }
 
 /**
@@ -1702,6 +1758,10 @@ function watchDownloadOwner(wc) {
   // an in-page one). Not when a navigation only starts — that event fires before will-navigate can cancel it (a link
   // dropped on the window, opened in the browser instead), and the page that stays would lose every download.
   wc.on('did-navigate', closeAll)
+  // SANO desktop: SanoVids is a frame of SANO's page, so its own reload is a frame navigation.
+  wc.on('did-frame-navigate', (_event, url, _code, _status, isMainFrame) => {
+    if (!isMainFrame && url.startsWith(ORIGIN + '/')) closeAll()
+  })
 }
 
 async function canvasappStatus() {
@@ -2308,6 +2368,8 @@ function registerCanvasappGateway() {
   )
   ipcMain.handle('canvasapp:downloadRead', guard((event, args) => canvasappDownloads.read(event.sender.id, args)))
   ipcMain.handle('canvasapp:downloadClose', guard((event, args) => canvasappDownloads.close(event.sender.id, args)))
+  // the page's pagehide (preload.cjs): SanoVids' frame left SANO's page, which watchDownloadOwner sees no event for
+  ipcMain.handle('canvasapp:downloadCloseAll', guard((event) => (canvasappDownloads.closeAll(event.sender.id), { ok: true })))
   ipcMain.handle('canvasapp:checkout', guard((event, args) => canvasappCheckout(BrowserWindow.fromWebContents(event.sender), args)))
   ipcMain.handle('canvasapp:keepLogin', guard(() => canvasappKeepLoginState()))
   ipcMain.handle('canvasapp:setKeepLogin', guard((_event, on) => canvasappSetKeepLogin(on)))

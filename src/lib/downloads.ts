@@ -127,8 +127,17 @@ export const useDownloadPrefs = create<DownloadPrefs & { set: (patch: Partial<Do
   },
 }))
 
-/** Folder writing is available (Chromium browsers and the desktop app). */
-export const canPickFolder = () => typeof window !== 'undefined' && 'showDirectoryPicker' in window
+/** Folder writing is available (Chromium browsers and the desktop app), except in a frame of another origin (SANO desktop): the picker is refused there. */
+export const canPickFolder = () => typeof window !== 'undefined' && 'showDirectoryPicker' in window && !crossOriginFrame()
+
+const crossOriginFrame = () => {
+  try {
+    void window.top?.location.href
+    return false
+  } catch {
+    return true
+  }
+}
 
 /** File System Access writer (Chromium). */
 export interface FsWritable {
