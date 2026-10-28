@@ -10,15 +10,14 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 
 Từ bản này, Sano Agent là app duy nhất được phát hành. SanoVids gộp vào đây thành khu **Canvas**.
 
-✨ **SANO trong cửa sổ riêng**
-- Mở app SANO ở `http://127.0.0.1:8080` (máy chủ SANO chạy bằng Docker trên chính máy này).
-- Không mở được SANO (máy chủ chưa chạy, hoặc chuyển hướng sang địa chỉ khác) thì app báo rõ, với ba nút **Thử lại**, **Mở Canvas** và **Thoát**.
-- SANO chạy ở chế độ demo, chưa có đăng nhập Google.
+✨ **SANO có sẵn trong app**
+- Cài xong là mở được SANO. Không cần Docker, không cần máy chủ: trang SANO nằm ngay trong bộ cài.
+- SANO chạy ở chế độ demo, chưa có đăng nhập Google. Tab **Máy chủ** ghi "Chưa kết nối được API" vì bản này chưa có máy chủ.
+- Dữ liệu SANO (bảng sản xuất, nháp, giao diện) lưu trên máy này.
 
 ✨ **Canvas: SanoVids toàn màn hình**
 - **Canvas** là SanoVids bản desktop, mở toàn màn hình trong SANO: tạo video thật bằng tài khoản canvasapp.io.vn của bạn.
 - Nút **Trợ lý** ở góc phải trên cùng mở trợ lý dự án của SANO.
-- **Mở Canvas** khi chưa mở được SANO: Canvas chạy riêng như SanoVids trước đây, không cần Docker.
 
 ✨ **Dùng chung dự án với SanoVids**
 - Cùng thư mục dữ liệu với SanoVids (`%APPDATA%\SanoVids`): dự án, video và đăng nhập canvasapp làm trong SanoVids có sẵn trong Canvas.

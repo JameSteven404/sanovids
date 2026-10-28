@@ -573,7 +573,7 @@ describe('signed build checks', () => {
     // the lock modules are in the one shared list of files app.asar must hold (Windows group (g) and the Mac zip check)
     expect(lib.REQUIRED_ASAR_FILES).toContain('electron/devaccess.cjs')
     expect(lib.REQUIRED_ASAR_FILES).toContain('electron/devaccess-rules.cjs')
-    expect(src).toContain('for (const p of REQUIRED_ASAR_FILES) {')
+    expect(src).toContain('for (const p of [...REQUIRED_ASAR_FILES, ...(PRODUCT.asarFiles ?? [])]) {')
   })
 
   it('checkVersionInfo: CompanyName = author (with "(Jame Steven)"), LegalCopyright = build.copyright', () => {
@@ -641,8 +641,11 @@ describe('release scripts (source guarantees)', () => {
     for (const f of ['electron/main.cjs', 'electron/preload.cjs', 'electron/updater.cjs', 'electron/updater-rules.cjs', 'electron/signature.cjs', 'electron/hardening-rules.cjs', 'electron/keeplogin-rules.cjs']) {
       expect(lib.REQUIRED_ASAR_FILES).toContain(f)
     }
-    expect(src).toContain('for (const p of REQUIRED_ASAR_FILES) {')
+    expect(src).toContain('for (const p of [...REQUIRED_ASAR_FILES, ...(PRODUCT.asarFiles ?? [])]) {')
     expect(src).toContain('checkPackagedIdentity(inner, pkg)')
+    // D240: Sano Agent's SANO web app is in app.asar and built from the pinned SANO commit (SanoVids has neither)
+    expect(src).toMatch(/if \(PRODUCT\.sanoPin\) \{[\s\S]{0,400}const problem = checkSanoBuild\(built, pin\)\s+if \(problem\) fail\('app\.asar', problem\)/)
+    expect(src.indexOf('checkSanoBuild(built, pin)')).toBeLessThan(src.indexOf("console.log('\\nĐang thực hiện…')"))
     expect(src).toContain("inspectAppUpdateYml(path.join(resourcesDir, 'app-update.yml'), EXPECT.publisherName, { repo: PRODUCT.publicRepoName, cacheDir: PRODUCT.cacheDir })")
     expect(src).toContain('await inspectWindowsBuild(')
     expect(src).toContain('offlineEnvSet(process.env)')
@@ -656,7 +659,8 @@ describe('release scripts (source guarantees)', () => {
     expect(src).toContain("git(['show', `${tagRef(prevVersion)}:package.json`])")
     expect(src.indexOf('checkRotation({')).toBeLessThan(src.indexOf("console.log('\\nĐang thực hiện…')"))
     expect(src).toContain("{ name: 'LICENSE.txt', source: path.join(root, 'LICENSE.txt') }")
-    expect(src).toContain('{ name: NOTICES_SHIPPED, source: path.join(root, ...NOTICES_SOURCE.split(\'/\')) }')
+    expect(src).toContain('{ name: NOTICES_SHIPPED, source: path.join(root, ...(PRODUCT.notices ?? NOTICES_SOURCE).split(\'/\')) }')
+    expect(lib.SANOVIDS.notices).toBeUndefined() // SanoVids: build/license-third-party.txt (NOTICES_SOURCE)
   })
 
   it('publish-release (k): the Mac files by fixed names only, checked before any gh write, uploaded only when every check passed', () => {
@@ -1264,6 +1268,25 @@ describe('Sano Agent (--sano-agent: SANO_AGENT, sano-agent/electron-builder.cjs)
       config: 'sano-agent/electron-builder.cjs',
     })
     expect(cfg.portable.artifactName).toBe(`${A.fileStem}-Portable-\${version}.\${ext}`)
+    // D240: the packed SANO web app (scripts/build-sano.mjs) and its notices, the ones the config ships
+    expect(A.url).toBe('app://sano/')
+    expect(A.asarFiles).toEqual(['sano-dist/index.html', 'sano-dist/BUILD.json'])
+    expect(lib.SANOVIDS.asarFiles).toBeUndefined()
+    expect(cfg.files).toContain('sano-dist/**/*')
+    expect(cfg.win.extraFiles).toContainEqual({ from: A.notices, to: 'THIRD-PARTY-NOTICES.txt' })
+    expect(A.sanoPin).toBe('sano-agent/sano.json')
+  })
+
+  it('checkSanoBuild: sano-dist/BUILD.json is built from exactly the pinned SANO commit', () => {
+    const pin = JSON.parse(fs.readFileSync(path.join(root, A.sanoPin), 'utf8'))
+    expect(pin).toEqual({ repo: 'JameSteven404/SANO-AGENT', commit: expect.stringMatching(/^[0-9a-f]{40}$/) })
+    const other = 'a'.repeat(40)
+    expect(lib.checkSanoBuild({ commit: pin.commit, version: '1.0.0' }, pin)).toBeNull()
+    expect(lib.checkSanoBuild({ commit: other, version: '1.0.0' }, pin)).toMatch(new RegExp(`commit aaaaaaa, cần ${pin.commit.slice(0, 7)}`))
+    for (const bad of [null, undefined, {}, { commit: pin.commit.slice(0, 7) }, { commit: pin.commit.toUpperCase() }, 'x', []]) {
+      expect(lib.checkSanoBuild(bad, pin), JSON.stringify(bad)).toMatch(/BUILD\.json trong app không có commit SANO/)
+      expect(lib.checkSanoBuild({ commit: pin.commit }, bad), JSON.stringify(bad)).toMatch(/sano\.json không có commit SANO hợp lệ/)
+    }
   })
 
   it('picks the product from the command line; its package is the config over the repo package.json', () => {

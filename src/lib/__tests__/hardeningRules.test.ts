@@ -42,6 +42,8 @@ interface Hardening {
   sha256Base64(bytes: Uint8Array): string
   inlineScriptHashes(html: unknown): string[]
   contentSecurityPolicy(html: unknown, frameAncestors?: string): string
+  SANO_IN_APP_URL: string
+  SANO_PAGE_CSP: string
   sanoShell(o: unknown): { url: string; origin: string } | null | false
   mainWindowAllows(url: unknown, o: unknown): boolean
   SANO_FAILED_RESTART: string
@@ -341,12 +343,26 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
   })
 
   it('packaged: only the address baked into app.asar (Sano Agent), never the environment; from source: never the baked one', () => {
-    const SANO_AGENT = { url: 'http://127.0.0.1:8080/', origin: 'http://127.0.0.1:8080' }
-    expect(h.sanoShell({ isPackaged: true, value: 'https://evil.example.vn', baked: 'http://127.0.0.1:8080/' })).toEqual(SANO_AGENT)
+    // D240: Sano Agent bakes app://sano/ (its packed SANO page); a baked server address works the same way
+    const SANO_AGENT = { url: 'app://sano/', origin: 'app://sano' }
+    expect(h.SANO_IN_APP_URL).toBe(SANO_AGENT.url)
+    expect(h.sanoShell({ isPackaged: true, value: 'https://evil.example.vn', baked: 'app://sano/' })).toEqual(SANO_AGENT)
+    expect(h.sanoShell({ isPackaged: true, value: 'app://sano/' })).toBeNull()
+    expect(h.sanoShell({ isPackaged: true, value: 'app://sano/', baked: 'http://127.0.0.1:8080/' })).toEqual({ url: 'http://127.0.0.1:8080/', origin: 'http://127.0.0.1:8080' })
     expect(h.sanoShell({ isPackaged: true, value: 'https://evil.example.vn' })).toBeNull()
     expect(h.sanoShell({ isPackaged: true, baked: 'http://sano.example.vn/' })).toBe(false)
+    expect(h.sanoShell({ isPackaged: false, baked: 'app://sano/' })).toBeNull()
     expect(h.sanoShell({ isPackaged: false, baked: 'http://127.0.0.1:8080/' })).toBeNull()
     expect(mainSource).toMatch(/return pkg && pkg\.sanoAgent && typeof pkg\.sanoAgent\.url === 'string' \? pkg\.sanoAgent\.url : undefined/)
+  })
+
+  it('D240 app://sano: exactly that address, origin hard-coded (Node’s URL says "null" for a custom scheme)', () => {
+    expect(new URL('app://sano/api/x').origin).toBe('null')
+    expect(shell('app://sano/')).toEqual({ url: 'app://sano/', origin: 'app://sano' })
+    expect(shell('app://sano/', true)).toBeNull() // packaged: the environment never counts
+    for (const bad of ['app://sano', 'app://sano/index.html', 'app://sano/?x=1', 'APP://SANO/', 'app://Sano/', ' app://sano/', 'app://sano/ ', 'app://sano.evil.vn/', 'app://u@sano/', 'app://sano:1/', 'app://bdp/', 'app:sano']) {
+      expect(shell(bad), bad).toBe(false)
+    }
   })
 
   it('unset or packaged → null (plain SanoVids); anything else → false (main refuses to start)', () => {
@@ -441,6 +457,72 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     }
   })
 
+  it('D240 app://sano: the window stays on app://sano (app://bdp only via Mở Canvas); its page policy; Canvas framed by it', () => {
+    const sanoUrl = h.SANO_IN_APP_URL
+    expect(h.mainWindowAllows('app://sano/', { sanoUrl })).toBe(true)
+    expect(h.mainWindowAllows('app://sano/index.html#/x', { sanoUrl })).toBe(true)
+    for (const bad of ['app://bdp/index.html', 'app://sanox/', 'app://sano.evil.vn/', 'app://other/', 'http://127.0.0.1:8080/', 'https://accounts.google.com/', 'about:blank', 'APP://SANO/']) {
+      expect(h.mainWindowAllows(bad, { sanoUrl }), bad).toBe(false)
+    }
+    expect(h.mainWindowAllows('app://bdp/index.html', { sanoUrl, canvas: true })).toBe(true)
+    expect(h.mainWindowAllows('app://sano/', { sanoUrl, canvas: true })).toBe(false)
+    // SANO's page: its own files only, no inline script, SanoVids (app://bdp) its only frame, never framed itself
+    const sano = h.SANO_PAGE_CSP.split('; ')
+    expect(sano).toEqual([
+      "default-src 'self'",
+      "script-src 'self'",
+      "style-src 'self' 'unsafe-inline'",
+      "connect-src 'self'",
+      'frame-src app://bdp',
+      "object-src 'none'",
+      "base-uri 'none'",
+      "form-action 'none'",
+      "frame-ancestors 'none'",
+    ])
+    expect(h.SANO_PAGE_CSP).not.toMatch(/unsafe-eval|\*|https?:|data:|blob:/)
+    // SanoVids' policy: only frame-ancestors changes, to SANO's page
+    expect(h.contentSecurityPolicy(indexBytes, 'app://sano')).toBe(h.contentSecurityPolicy(indexBytes).replace("frame-ancestors 'none'", 'frame-ancestors app://sano'))
+    // Canvas keeps its permissions inside app://sano (clipboard, fullscreen, folders, persistent storage); SANO's page gets none
+    const perm = { requestingUrl: 'app://bdp/index.html', requestingOrigin: 'app://bdp', topUrl: 'app://sano/', embeddingOrigin: 'app://sano', sanoOrigin: 'app://sano' }
+    for (const p of h.DEFAULT_SESSION_PERMISSIONS) expect(h.defaultPermissionAllowed(p, perm), p).toBe(true)
+    expect(h.defaultPermissionAllowed('fileSystem', { ...perm, embeddingOrigin: undefined })).toBe(true)
+    expect(h.defaultPermissionAllowed('media', perm)).toBe(false)
+    expect(h.defaultPermissionAllowed('fileSystem', { ...perm, requestingUrl: 'app://sano/', requestingOrigin: 'app://sano' })).toBe(false)
+    for (const top of ['app://sanox/', 'app://sano.evil.vn/', 'app://u@sano/', 'app://sano:1/', 'http://127.0.0.1:8080/', 'https://sano.example.vn/']) {
+      expect(h.defaultPermissionAllowed('fileSystem', { ...perm, topUrl: top, embeddingOrigin: undefined }), top).toBe(false)
+    }
+    expect(h.defaultPermissionAllowed('fileSystem', { ...perm, embeddingOrigin: 'app://sano.evil.vn' })).toBe(false)
+    // without app://sano configured (plain SanoVids, a server SANO) that page is no container
+    expect(h.defaultPermissionAllowed('fileSystem', { ...perm, sanoOrigin: undefined })).toBe(false)
+    expect(h.defaultPermissionAllowed('fileSystem', { ...perm, sanoOrigin: 'http://127.0.0.1:8080' })).toBe(false)
+  })
+
+  it('D240 wiring: app://sano is served from sano-dist only in that mode, its API is a JSON 404, a missing build stops the start', () => {
+    const at = (s: string) => {
+      const i = mainSource.indexOf(s)
+      expect(i, s).toBeGreaterThan(-1)
+      return i
+    }
+    expect(mainSource).toContain("const SANO_DIST = path.join(__dirname, '..', 'sano-dist')")
+    expect(mainSource).toContain('const SANO_IN_APP = !!SANO && SANO.url === hardening.SANO_IN_APP_URL')
+    // checked before the profile is touched: a clear dialog, never a blank window
+    const missing = at("if (SANO_IN_APP && !fs.existsSync(path.join(SANO_DIST, 'index.html'))) {")
+    expect(missing).toBeLessThan(at('fs.mkdirSync(profile.dir'))
+    expect(mainSource.slice(missing, missing + 500)).toMatch(/dialog\.showErrorBox\('Sano Agent', '[^'\n]*sano-dist\/index\.html[^'\n]*'\)\s+process\.exit\(2\)/)
+    const [s, e] = [at('async function serveDist(request) {'), at('let htmlCspPromise = null')]
+    const serve = mainSource.slice(s, e)
+    // plain SanoVids and a server SANO: every host but bdp stays 404
+    expect(serve).toContain("const sano = SANO_IN_APP && url.host === 'sano'")
+    expect(serve).toContain("if (url.host !== HOST && !sano) return new Response('Not found', { status: 404 })")
+    // /api and /api/… : JSON 404 before any file or index.html fallback
+    expect(serve).toMatch(/if \(sano && \/\^\\\/api\(\?:\\\/\|\$\)\/\.test\(rel\)\) \{\s+return new Response\(JSON\.stringify\(\{ error: '[^']+' \}\), \{ status: 404, headers: \{ 'content-type': MIME\['\.json'\]/)
+    expect(serve.indexOf('/^\\/api(?:\\/|$)/.test(rel)')).toBeLessThan(serve.indexOf('const root = sano ? SANO_DIST : DIST'))
+    expect(serve).toContain('const csp = () => (sano ? hardening.SANO_PAGE_CSP : htmlCsp())')
+    expect(serve).toContain("if (file !== root && !file.startsWith(root + path.sep)) return new Response('Forbidden', { status: 403 })")
+    expect(serve).toContain("const index = await fs.promises.readFile(path.join(root, 'index.html')).catch(() => null)")
+    expect(serve.match(/\bDIST\b/g)).toEqual(['DIST']) // files only through `root`
+  })
+
   it('D237 failure dialog: Thử lại / Mở Canvas / Thoát; Enter retries, Esc quits (never Mở Canvas); one restart sentence', () => {
     const d = h.sanoFailedDialog('Không mở được SANO tại http://127.0.0.1:8080/', 'Kiểm tra máy chủ SANO đã chạy chưa, rồi bấm Thử lại.')
     expect(d).toEqual({
@@ -487,13 +569,13 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
   })
 
   it('D237 preload run: app://bdp gets bdpDesktop, never sanoDesktop; SANO’s page gets sanoDesktop only', () => {
-    const run = (origin: string, sano: boolean) => {
+    const run = (origin: string, sano: boolean, sanoOrigin = 'http://127.0.0.1:8080') => {
       const exposed: string[] = []
       const electron = {
         contextBridge: { exposeInMainWorld: (key: string) => void exposed.push(key) },
         ipcRenderer: { invoke: () => Promise.resolve(), on: () => undefined, removeListener: () => undefined },
       }
-      const argv = ['--bdp-version=1.0.0', '--bdp-product=Sano Agent', ...(sano ? ['--bdp-sano-origin=http://127.0.0.1:8080'] : [])]
+      const argv = ['--bdp-version=1.0.0', '--bdp-product=Sano Agent', ...(sano ? [`--bdp-sano-origin=${sanoOrigin}`] : [])]
       const proc = { argv, versions: { electron: '44.0.0' }, platform: 'win32' }
       new Function('require', 'process', 'location', 'window', preloadSource)(() => electron, proc, { origin }, { addEventListener: () => undefined })
       return exposed
@@ -503,6 +585,11 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(run('http://127.0.0.1:8080', true)).toEqual(['sanoDesktop'])
     expect(run('https://accounts.google.com', true)).toEqual([])
     expect(run('http://127.0.0.1:8080', false)).toEqual([])
+    // D240: Sano Agent's packed page (Chromium's origin for the standard app scheme is 'app://sano')
+    expect(run('app://sano', true, 'app://sano')).toEqual(['sanoDesktop'])
+    expect(run('app://bdp', true, 'app://sano')).toEqual(['bdpDesktop'])
+    expect(run('null', true, 'app://sano')).toEqual([])
+    expect(run('app://sano', true)).toEqual([])
   })
 
   it('appFrames: the live app://bdp frames of a window (main frame or SANO’s Dựng phim frame), never SANO’s page', () => {
@@ -996,7 +1083,8 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(idx("'select-bluetooth-device'")).toBeGreaterThan(idx("app.on('web-contents-created'"))
     // CSP on every HTML response of serveDist (file + SPA fallback), from hardening-rules
     expect(count("'content-security-policy'")).toBe(2)
-    expect(mainSource).toContain("if (ext === '.html') headers['content-security-policy'] = await htmlCsp()")
+    // D240: app://sano pages get SANO_PAGE_CSP, app://bdp pages htmlCsp()
+    expect(mainSource).toContain("if (ext === '.html') headers['content-security-policy'] = await csp()")
     expect(mainSource).toContain('hardening.contentSecurityPolicy(bytes, SANO ? SANO.origin : undefined)')
     // canvasapp login popups: every level gets the https-only handler
     expect(mainSource).toContain("w.webContents.on('did-create-window', (child) => guardPopups(child))")

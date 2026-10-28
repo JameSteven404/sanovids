@@ -19,7 +19,7 @@ Repo này chỉ chứa **bản cài đặt** và **tệp cập nhật** của Sa
 | `latest.yml`, `*.blockmap` | Dành cho trình tự cập nhật của app | Không cần tải |
 | `SanoVids-NguyenGiangMinh.cer` | Chứng chỉ công khai để kiểm tra / tin cậy chữ ký số (cùng chứng chỉ với SanoVids) | — |
 
-Cần **Windows 10 hoặc 11, 64-bit** và máy chủ SANO đang chạy ở `http://127.0.0.1:8080`. Máy chủ chưa chạy thì app báo **Không mở được SANO**; bấm **Mở Canvas** để vẫn dùng SanoVids như trước.
+Cần **Windows 10 hoặc 11, 64-bit**. Không cần Docker hay máy chủ SANO: trang SANO có sẵn trong app.
 
 ### Trước khi cài
 

@@ -17,6 +17,8 @@ module.exports = {
   // `Uninstall ${app.getName()}.exe` to know it runs from an install.
   executableName: NAME,
   directories: { ...base.directories, output: 'release/sano-agent' },
+  // D240: SANO's web app (scripts/build-sano.mjs), served at app://sano/. Never in SanoVids' build.
+  files: [...base.files, 'sano-dist/**/*'],
   extraMetadata: {
     ...base.extraMetadata,
     name: 'sano-agent',
@@ -24,11 +26,17 @@ module.exports = {
     version,
     description: 'Sano Agent — app SANO trên máy tính, khu Canvas là SanoVids',
     homepage: 'https://github.com/JameSteven404/sano-agent-releases',
-    // The SANO web app the window opens (electron/hardening-rules sanoShell): inside the integrity-checked app.asar.
-    sanoAgent: { url: 'http://127.0.0.1:8080/' },
+    // The SANO web app the window opens (electron/hardening-rules sanoShell): inside the integrity-checked app.asar,
+    // and since D240 the page itself too (sano-dist/), so no SANO server is needed.
+    sanoAgent: { url: 'app://sano/' },
   },
   icon: `${ART}/icon.png`,
-  win: { ...base.win, icon: `${ART}/icon.ico` },
+  // THIRD-PARTY-NOTICES.txt also lists SANO's packages (scripts/build-sano.mjs writes that file).
+  win: {
+    ...base.win,
+    icon: `${ART}/icon.ico`,
+    extraFiles: base.win.extraFiles.map((f) => (f.to === 'THIRD-PARTY-NOTICES.txt' ? { ...f, from: 'build/license-third-party-sano-agent.txt' } : f)),
+  },
   nsis: {
     ...base.nsis,
     shortcutName: NAME,

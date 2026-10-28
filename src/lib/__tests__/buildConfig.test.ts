@@ -418,9 +418,17 @@ describe('Sano Agent (sano-agent/electron-builder.cjs: SanoVids build, own ident
     expect(cfg.directories).toEqual({ ...(pkg.build.directories as object), output: 'release/sano-agent' })
   })
 
-  it('signed exactly like SanoVids: build.win but the icon, the same fuses, files and copyright', () => {
-    expect(cfg.win).toEqual({ ...pkg.build.win, icon: `${ART}/icon.ico` })
-    for (const key of ['electronFuses', 'files', 'copyright', 'electronLanguages', 'npmRebuild']) expect(cfg[key], key).toEqual(pkg.build[key])
+  it('signed exactly like SanoVids: build.win but the icon and notices, the same fuses, files (+ SANO) and copyright', () => {
+    // D240: its THIRD-PARTY-NOTICES.txt also lists SANO's packages (scripts/build-sano.mjs writes that file)
+    const notices = (from: string) => ({ from, to: 'THIRD-PARTY-NOTICES.txt' })
+    const extraFiles = (pkg.build.win.extraFiles as { from: string; to: string }[]).map((f) => (f.to === notices('').to ? notices('build/license-third-party-sano-agent.txt') : f))
+    expect(extraFiles).toContainEqual(notices('build/license-third-party-sano-agent.txt'))
+    expect(cfg.win).toEqual({ ...pkg.build.win, icon: `${ART}/icon.ico`, extraFiles })
+    expect(pkg.build.win.extraFiles).toContainEqual(notices('build/license-third-party.txt'))
+    for (const key of ['electronFuses', 'copyright', 'electronLanguages', 'npmRebuild']) expect(cfg[key], key).toEqual(pkg.build[key])
+    // the SANO web app ships in Sano Agent only, never in SanoVids
+    expect(cfg.files).toEqual([...(pkg.build.files as string[]), 'sano-dist/**/*'])
+    expect(JSON.stringify(pkg.build)).not.toContain('sano-dist')
     const own = ['shortcutName', 'uninstallDisplayName', 'artifactName', 'installerIcon', 'installerSidebar', 'uninstallerSidebar', 'installerHeader']
     const rest = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).filter(([k]) => !own.includes(k)))
     expect(rest(cfg.nsis)).toEqual(rest(pkg.build.nsis))
@@ -436,13 +444,17 @@ describe('Sano Agent (sano-agent/electron-builder.cjs: SanoVids build, own ident
     expect(cfg.extraMetadata.author).toEqual(pkg.build.extraMetadata.author)
     expect(cfg.extraMetadata.version).toBe(pkg.version) // one version for both apps (D235)
     const hardening = nodeRequire('../../../electron/hardening-rules.cjs') as { sanoShell: (o: unknown) => unknown }
-    expect(hardening.sanoShell({ isPackaged: true, baked: cfg.extraMetadata.sanoAgent.url })).toEqual({ url: 'http://127.0.0.1:8080/', origin: 'http://127.0.0.1:8080' })
+    // D240: SANO's page is packed in the app (sano-dist/), no server
+    expect(hardening.sanoShell({ isPackaged: true, baked: cfg.extraMetadata.sanoAgent.url })).toEqual({ url: 'app://sano/', origin: 'app://sano' })
   })
 
-  it('npm scripts: dist:sano-agent has the dist:win guards with this config; release:check / publish take --sano-agent', () => {
+  it('npm scripts: dist:sano-agent has the dist:win guards with this config and builds SANO first; release:check / publish take --sano-agent', () => {
     expect(pkg.scripts['dist:sano-agent']).toBe(
-      'node scripts/update-notes.mjs --sano-agent && node scripts/third-party-notices.mjs --check && vite build && node scripts/electron-build.mjs --config sano-agent/electron-builder.cjs --win nsis portable --publish never && node scripts/tidy-release.mjs --sano-agent',
+      'node scripts/update-notes.mjs --sano-agent && node scripts/third-party-notices.mjs --check && vite build && node scripts/build-sano.mjs && node scripts/electron-build.mjs --config sano-agent/electron-builder.cjs --win nsis portable --publish never && node scripts/tidy-release.mjs --sano-agent',
     )
+    expect(pkg.scripts['build:sano']).toBe('node scripts/build-sano.mjs')
+    // SanoVids' own build never builds SANO
+    expect(pkg.scripts['dist:win']).not.toContain('build-sano')
     expect(pkg.scripts['release:check:sano-agent']).toBe('node scripts/publish-release.mjs --sano-agent --dry-run')
     expect(pkg.scripts['release:publish:sano-agent']).toBe('node scripts/publish-release.mjs --sano-agent')
   })

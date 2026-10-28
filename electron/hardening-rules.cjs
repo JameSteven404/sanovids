@@ -189,6 +189,8 @@ function defaultPermissionAllowed(permission, { requestingUrl, requestingOrigin,
   const isContainer = (value) => {
     if (isApp(value)) return true
     const url = parse(value)
+    // Sano Agent's own SANO page (D240): Node's URL gives a custom scheme the origin 'null', so scheme + host here.
+    if (sanoOrigin === SANO_IN_APP_ORIGIN) return !!url && url.protocol === 'app:' && url.host === 'sano'
     const sano = parse(sanoOrigin)
     return !!url && !!sano && ['http:', 'https:'].includes(sano.protocol) && url.origin === sano.origin
   }
@@ -319,16 +321,40 @@ function contentSecurityPolicy(html, frameAncestors = "'none'") {
 /** SANO desktop: Google's sign-in pages, the only places its Google sign-in popup may go (main.cjs guardGooglePopup). */
 const GOOGLE_SIGN_IN = /^https:\/\/accounts\.(google|youtube)\.com\//
 
+/** Sano Agent (D240): SANO's web app packed in the app (sano-dist/), served by main.cjs serveDist at this address. */
+const SANO_IN_APP_URL = 'app://sano/'
+const SANO_IN_APP_ORIGIN = 'app://sano'
+
+/**
+ * The policy of SANO's packed page (app://sano), from what its build loads: its own files only (index.html has no
+ * inline script, no data: / blob: URL, no font; React sets inline styles), its fetches to itself (the JSON 404 of
+ * /api/), and the app's SanoVids (app://bdp) as its only frame.
+ */
+const SANO_PAGE_CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "connect-src 'self'",
+  'frame-src app://bdp',
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join('; ')
+
 /**
  * SANO desktop (docs/SANO-DESKTOP.md): the SANO web app the window opens; SanoVids then runs as its Dựng phim frame. From
  * source: SANO_URL (`value`). Packaged: only `baked` (Sano Agent's package.json sanoAgent.url, inside the
- * integrity-checked app.asar), never the environment, which any program could set. https, or http on this machine only →
- * { url, origin }; nothing to open → null (plain SanoVids); anything else → false.
+ * integrity-checked app.asar), never the environment, which any program could set. Exactly app://sano/ (the page packed
+ * in the app, D240), https, or http on this machine only → { url, origin }; nothing to open → null (plain SanoVids);
+ * anything else → false.
  */
 function sanoShell(o) {
   const { isPackaged, value, baked } = o && typeof o === 'object' ? o : {}
   const chosen = isPackaged === false ? value : baked
   if (chosen === undefined || chosen === '') return null
+  // Hard-coded: Node's URL gives app://sano the origin 'null'.
+  if (chosen === SANO_IN_APP_URL) return { url: SANO_IN_APP_URL, origin: SANO_IN_APP_ORIGIN }
   let url
   try {
     url = new URL(String(chosen))
@@ -704,6 +730,8 @@ module.exports = {
   sha256Base64,
   inlineScriptHashes,
   contentSecurityPolicy,
+  SANO_IN_APP_URL,
+  SANO_PAGE_CSP,
   sanoShell,
   mainWindowAllows,
   SANO_FAILED_RESTART,

@@ -110,10 +110,10 @@ renderer: lib/updates.ts ⇄ src/updateActions.ts ⇄ UpdatePill · UpdateDialog
    4. đăng bản riêng, rồi **cuối cùng** mới đăng bản công khai (`--draft=false --prerelease=false --latest`) — từ giây này máy người dùng thấy bản mới;
    5. kiểm tra như một máy lạ (không đăng nhập): `/releases/latest` = tag mới, `latest.yml` tải về giống hệt file trên máy, `releases.atom` có tag mới (5 lần, cách 10 giây).
 7. Mở trang tải về xem lại bằng mắt. Máy đã cài bản Setup sẽ nhận bản mới trong vòng vài giờ.
-8. **Bản này đổi Electron** (hoặc định dạng dữ liệu): phát hành luôn **Sano Agent** từ đúng commit này (tăng `version` trong
-   `sano-agent/electron-builder.cjs` ngay ở bước 1; [SANO-DESKTOP.md](SANO-DESKTOP.md) mục 6). Hai app dùng chung
-   `%APPDATA%\SanoVids`: Sano Agent còn Electron cũ sẽ mở thư mục mà Electron mới đã nâng cấp. Commit phát hành mang cả hai
-   lần tăng version và cả hai mục CHANGELOG (`CHANGELOG.md` và `sano-agent/CHANGELOG.md`).
+8. **Bản này đổi Electron** (hoặc định dạng dữ liệu): phát hành luôn **Sano Agent** từ đúng commit này
+   ([SANO-DESKTOP.md](SANO-DESKTOP.md) mục 6). `version` trong `package.json` là chung cho cả hai app (D235), tăng ở bước 1.
+   Hai app dùng chung `%APPDATA%\SanoVids`: Sano Agent còn Electron cũ sẽ mở thư mục mà Electron mới đã nâng cấp. Commit
+   phát hành mang cả hai mục CHANGELOG (`CHANGELOG.md` và `sano-agent/CHANGELOG.md`).
 
 **`release:check` kiểm tra gì**:
 - (a) mục CHANGELOG (thiếu dòng liên kết chỉ ⚠);
@@ -153,7 +153,8 @@ Ghi chú GitHub được lưu ở `release/_build/publish/notes-private.md` và 
 (tag `vX.Y.Z` ở đó; repo nguồn chỉ có tag `sano-agent-vX.Y.Z`, không có release riêng tư, không có bản Mac), cache
 `%LOCALAPPDATA%\sano-agent-updater`. Sano Agent dùng chung thư mục dữ liệu với SanoVids nhưng file riêng:
 `updater-sano-agent.json`, `logs\updater-sano-agent.log`. Sano Agent build từ commit của bản SanoVids công khai mới nhất,
-hoặc của tag SanoVids cùng phiên bản đã push nhưng chưa đăng (Sano Agent đăng trước, SanoVids ngay sau). Cổng kiểm tra
+hoặc của tag SanoVids cùng phiên bản đã push nhưng chưa đăng (Sano Agent đăng trước, SanoVids sau,
+[SANO-DESKTOP.md](SANO-DESKTOP.md) mục 6 bước 10). Cổng kiểm tra
 báo ✗ khi không tag nào như vậy là HEAD, hoặc Electron khác bản SanoVids công khai mới nhất: đổi Electron hoặc định dạng dữ liệu thì phát hành cả hai
 (bước 8 ở trên).
 

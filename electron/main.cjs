@@ -15,6 +15,8 @@ const SCHEME = 'app'
 const HOST = 'bdp'
 const ORIGIN = `${SCHEME}://${HOST}`
 const DIST = path.join(__dirname, '..', 'dist')
+/** Sano Agent (D240): SANO's web app built by scripts/build-sano.mjs, served at app://sano/ (packed by Sano Agent only). */
+const SANO_DIST = path.join(__dirname, '..', 'sano-dist')
 const TITLE = 'SanoVids'
 
 const MIME = {
@@ -93,7 +95,14 @@ const DEV_OPEN_BUILD = require('./devaccess-rules.cjs').devOpenBuild({ devToolsA
  */
 const SANO = hardening.sanoShell({ isPackaged: PACKAGED, value: process.env.SANO_URL, baked: readBakedSanoUrl() })
 if (SANO === false) {
-  console.error('[SanoVids] SANO_URL must be https://… or http://localhost:<port>/')
+  console.error('[SanoVids] SANO_URL must be https://…, http://localhost:<port>/ or app://sano/')
+  process.exit(2)
+}
+/** D240: SANO's page comes from the app itself (sano-dist/ at app://sano/), not from a server. */
+const SANO_IN_APP = !!SANO && SANO.url === hardening.SANO_IN_APP_URL
+if (SANO_IN_APP && !fs.existsSync(path.join(SANO_DIST, 'index.html'))) {
+  console.error('[SanoVids] sano-dist/index.html is missing: run npm run build:sano')
+  dialog.showErrorBox('Sano Agent', 'Bản cài này thiếu trang SANO (sano-dist/index.html), nên app không mở. Hãy cài lại Sano Agent từ trang tải về. Chạy từ mã nguồn: chạy npm run build:sano trước.')
   process.exit(2)
 }
 // D223: SanoVids inside SANO opens the same projects as SanoVids itself (same profile, same app://bdp storage), not a
@@ -297,7 +306,10 @@ if (!app.requestSingleInstanceLock()) {
   app.on('quit', (_event, exitCode) => updater && updater.onQuit(exitCode))
 }
 
-/** app://bdp/<path> → dist/<path>. Unknown paths without an extension fall back to index.html (SPA). */
+/**
+ * app://bdp/<path> → dist/<path>; Sano Agent (D240, SANO_IN_APP only): app://sano/<path> → sano-dist/<path>, with its
+ * own CSP. Every other host is 404. Unknown paths without an extension fall back to index.html (SPA).
+ */
 async function serveDist(request) {
   let url
   try {
@@ -305,17 +317,24 @@ async function serveDist(request) {
   } catch {
     return new Response('Bad request', { status: 400 })
   }
-  if (url.host !== HOST) return new Response('Not found', { status: 404 })
+  const sano = SANO_IN_APP && url.host === 'sano'
+  if (url.host !== HOST && !sano) return new Response('Not found', { status: 404 })
   let rel
   try {
     rel = decodeURIComponent(url.pathname)
   } catch {
     return new Response('Bad request', { status: 400 })
   }
+  // No SANO server in the app (1.0 has no API): its API answers like nginx's /api/ 404, never index.html parsed as JSON.
+  if (sano && /^\/api(?:\/|$)/.test(rel)) {
+    return new Response(JSON.stringify({ error: 'Bản Sano Agent này chưa có máy chủ SANO.' }), { status: 404, headers: { 'content-type': MIME['.json'], 'cache-control': 'no-store' } })
+  }
+  const root = sano ? SANO_DIST : DIST
+  const csp = () => (sano ? hardening.SANO_PAGE_CSP : htmlCsp())
   if (rel === '/' || rel === '') rel = '/index.html'
-  const file = path.normalize(path.join(DIST, rel))
-  // never serve anything outside dist/
-  if (file !== DIST && !file.startsWith(DIST + path.sep)) return new Response('Forbidden', { status: 403 })
+  const file = path.normalize(path.join(root, rel))
+  // never serve anything outside dist/ (sano-dist/)
+  if (file !== root && !file.startsWith(root + path.sep)) return new Response('Forbidden', { status: 403 })
 
   const ext = path.extname(file).toLowerCase()
   try {
@@ -325,12 +344,12 @@ async function serveDist(request) {
       // hashed assets never change; index.html must always be fresh after an app update
       'cache-control': rel.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache',
     }
-    if (ext === '.html') headers['content-security-policy'] = await htmlCsp()
+    if (ext === '.html') headers['content-security-policy'] = await csp()
     return new Response(body, { status: 200, headers })
   } catch {
     if (!ext) {
-      const index = await fs.promises.readFile(path.join(DIST, 'index.html')).catch(() => null)
-      if (index) return new Response(index, { status: 200, headers: { 'content-type': MIME['.html'], 'content-security-policy': await htmlCsp() } })
+      const index = await fs.promises.readFile(path.join(root, 'index.html')).catch(() => null)
+      if (index) return new Response(index, { status: 200, headers: { 'content-type': MIME['.html'], 'content-security-policy': await csp() } })
     }
     return new Response('Not found', { status: 404 })
   }
