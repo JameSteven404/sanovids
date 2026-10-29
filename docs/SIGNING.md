@@ -290,6 +290,12 @@ GitHub (2FA) là một phần của việc xử lý: muốn đẩy bản độc 
 
 LoadBrowserProcessSpecificV8Snapshot để mặc định; fuse 8 (WasmTrapHandlers) không đụng tới.
 
+**EnableCookieEncryption vẫn tắt, cả khi giữ đăng nhập Google** (29/10): bật là một chiều (tắt lại thì mất mọi cookie),
+SanoVids 1.0.0 (cùng hồ sơ, fuse tắt) sẽ hỏng hoặc xoá kho cookie đã mã hoá, và bản chạy từ mã nguồn không mở được kho
+đó. Thay vào đó, cookie tài khoản Google chỉ sống dạng cookie phiên (không xuống tệp `Cookies` dạng rõ) và được giữ qua
+các lần chạy trong bản sao safeStorage của SanoVids (`google-canvasapp.bin`, `google-docs.bin`; docs/GATEWAY-CANVASAPP.md
+"Giữ đăng nhập Google", docs/SANO-DESKTOP.md §3b), cách giữ đăng nhập canvasapp đã dùng.
+
 **Toàn vẹn asar kiểm tra lúc nào**: header của `app.asar` (danh sách file) được so lúc mở app; nội dung **từng file** được so
 khi file đó được đọc lần đầu. File đọc lúc mở (`index.html`, mã main…) bị sửa → app không mở. File đọc muộn (đoạn mã của
 một màn hình mở sau: Cài đặt, xem take, hộp cập nhật…) bị sửa → app mở bình thường rồi **tự tắt** khi người dùng mở tới
