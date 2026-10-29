@@ -529,6 +529,8 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     const docs = mainSource.slice(at('function registerDocs() {'), at('async function sanoDesktopClientId()'))
     expect(docs).toContain('partition: docsRules.PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false,')
     expect(docs).not.toMatch(/preload|setUserAgent|userAgent|persist:/)
+    // show:false windows (documents and popups) still show when their first load fails or a redirect is refused (-3)
+    expect(docs).toMatch(/win\.once\('ready-to-show', \(\) => win\.show\(\)\)\s+\/\/[^\n]*\n\s+wc\.on\('did-fail-load', \(_e, _code, _desc, _url, isMainFrame\) => \{\s+if \(isMainFrame && !win\.isDestroyed\(\) && !win\.isVisible\(\)\) win\.show\(\)/)
     expect(serve).toContain('const csp = () => (sano ? hardening.SANO_PAGE_CSP : htmlCsp())')
     expect(serve).toContain("if (file !== root && !file.startsWith(root + path.sep)) return new Response('Forbidden', { status: 403 })")
     expect(serve).toContain("const index = await fs.promises.readFile(path.join(root, 'index.html')).catch(() => null)")

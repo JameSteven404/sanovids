@@ -917,6 +917,10 @@ function registerDocs() {
   const guard = (win, key) => {
     const wc = win.webContents
     win.once('ready-to-show', () => win.show())
+    // a first load that fails or is refused paints nothing, so no ready-to-show: shown blank, the user can close it
+    wc.on('did-fail-load', (_e, _code, _desc, _url, isMainFrame) => {
+      if (isMainFrame && !win.isDestroyed() && !win.isVisible()) win.show()
+    })
     wc.on('will-navigate', (event, url) => {
       if (docsRules.navigationAllowed(url)) return
       event.preventDefault()
