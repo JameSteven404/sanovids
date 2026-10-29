@@ -120,7 +120,7 @@ async function envelope(run, log) {
  * fx: { apiUrl (accountApiUrl's origin, or null), fetch(url, init), file, fs: fs.promises-like { readFile, writeFile,
  * rename, rm }, safeStorage: { isEncryptionAvailable, encryptString, decryptString }, now(), random(n) → bytes,
  * google: a createGoogleSignIn of its own { signIn, signOut }, log(line), onSessionEnd() (optional: main's chat Google
- * sign-out) }. Every method answers an envelope.
+ * sign-out) }. Every CALLS method answers an envelope; bearer() / ended(token) are main's own (never over IPC).
  *
  * Invariant (SANO TH-44, docs/SANO-DESKTOP.md §3a): whenever the SANO session ends or changes hands — a sign-out, a
  * session dropped (401/403, expired, a damaged or foreign file), a sign-in for another user than the last one —
@@ -327,6 +327,21 @@ function createAccount(fx) {
       cancels++
       fx.google.signOut() // a sign-in waiting on the browser ends 'cancelled'
     },
+    /** Main only (the SANO API forward, the docs windows): the live session's token, or null. Expiry clears it, as status(). */
+    async bearer() {
+      if (!fx.apiUrl) return null
+      const s = await current()
+      if (!s) return null
+      if (Date.parse(s.expiresAt) <= fx.now()) {
+        await clear(s)
+        return null
+      }
+      return s.token
+    },
+    /** Main only: the server refused `token` (401, 403 not-provisioned) → that session ends; a newer one survives. */
+    async ended(token) {
+      if (held && held.token === token) await clear(held)
+    },
     async signOut() {
       endChat() // first, and even with no session held or a sign-out that fails: ending the chat is always safe
       epoch++
@@ -347,7 +362,17 @@ function createAccount(fx) {
       return status(null)
     },
   }
-  return Object.fromEntries(CALLS.map((name) => [name, (input) => envelope(() => api[name](input), fx.log)]))
+  /** bearer / ended throw nothing: an unexpected error is logged by name only and answers null. */
+  const quiet = (name) => async (input) => {
+    try {
+      return await api[name](input)
+    } catch (e) {
+      fx.log(`[SanoVids] account: unexpected ${e && e.name}`)
+      return null
+    }
+  }
+  // bearer / ended are not in CALLS, so registerAccountIpc never exposes them to a page
+  return Object.assign(Object.fromEntries(CALLS.map((name) => [name, (input) => envelope(() => api[name](input), fx.log)])), { bearer: quiet('bearer'), ended: quiet('ended') })
 }
 
 /** ipcMain.handle('account:<call>') for every call; `allowed(event)` (main's fromSano) is checked on each one. */

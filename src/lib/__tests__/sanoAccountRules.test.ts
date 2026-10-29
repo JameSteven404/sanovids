@@ -19,6 +19,8 @@ interface Account {
   google(): Promise<Answer<Status>>
   cancelGoogle(): Promise<Answer<undefined>>
   signOut(): Promise<Answer<Status>>
+  bearer(): Promise<string | null>
+  ended(token: string): Promise<void>
 }
 interface Rules {
   TIMEOUT_MS: number
@@ -607,6 +609,46 @@ describe('createAccount (fake SANO account server)', () => {
     expect(logs).toContain('[SanoVids] account: chat sign-out failed')
   })
 
+  it('bearer(): null unconfigured / signed out / expired (expired clears, onSessionEnd runs); token otherwise', async () => {
+    expect(await setup({ apiUrl: null }).account.bearer()).toBeNull()
+    const { account, server, m } = setup()
+    expect(await account.bearer()).toBeNull()
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    const tok = server.secrets.filter((x) => x.startsWith('sano_')).at(-1)
+    const n = server.calls.length
+    expect(await account.bearer()).toBe(tok)
+    expect(await setup({ server, m }).account.bearer()).toBe(tok) // a restart reads the file
+    expect(server.calls.length).toBe(n) // no /me: the forwarded call's own answer decides
+    let ends = 0
+    const later = setup({ server, m, now: NOW + 31 * 86_400_000, onSessionEnd: () => void ends++ })
+    expect(await later.account.bearer()).toBeNull()
+    expect([ends, m.files.size, server.calls.length]).toEqual([1, 0, n])
+    expect(value(await later.account.status()).signedIn).toBe(false)
+    // an unexpected error (a broken clock): null, logged by name only
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    const broken = R.createAccount({ apiUrl: API, fetch: server.fetch, file: FILE, fs: m.fs, safeStorage: m.safeStorage, now: () => { throw new RangeError('clock') }, random: () => new Uint8Array(32), google: fakeGoogle(), log: (line: string) => void logs.push(line) })
+    expect(await broken.bearer()).toBeNull()
+    expect(logs).toContain('[SanoVids] account: unexpected RangeError')
+  })
+
+  it('ended(token): clears only that session + onSessionEnd; a newer session survives', async () => {
+    let ends = 0
+    const { account, server, m } = setup({ onSessionEnd: () => void ends++ })
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    const old = (await account.bearer())!
+    value(await account.login({ identifier: 'minh', password: server.password })) // the same user again: a newer session
+    const tok = (await account.bearer())!
+    expect(tok).not.toBe(old)
+    ends = 0
+    await account.ended(old) // a late 401 for the old token
+    expect([await account.bearer(), ends, m.files.size]).toEqual([tok, 0, 1])
+    await account.ended(tok)
+    expect([await account.bearer(), ends, m.files.size]).toEqual([null, 1, 0])
+    expect(value(await account.status()).signedIn).toBe(false)
+    await account.ended(tok) // twice: nothing more
+    expect(ends).toBe(1)
+  })
+
   it('logs: never a password, token, code or verifier', async () => {
     const { account, server } = setup()
     await account.login({ identifier: 'minh', password: server.password })
@@ -630,6 +672,15 @@ describe('IPC: every account:* call checks the sender (fromSano), and the preloa
     for (const [ch, fn] of handlers) expect(await fn('frame', { x: 1 }), ch).toEqual({ ok: false, error: 'Nguồn gọi không hợp lệ.', code: 'not-allowed' })
     expect(reached).toEqual([])
     expect(await handlers.get('account:login')!('sano', { identifier: 'a' })).toEqual({ ok: true, value: { identifier: 'a' } })
+  })
+
+  it('CALLS unchanged: bearer/ended not registered over IPC', () => {
+    expect(R.CALLS).toEqual(['status', 'login', 'register', 'forgot', 'google', 'cancelGoogle', 'signOut'])
+    const { account } = setup()
+    expect(Object.keys(account)).toEqual([...R.CALLS, 'bearer', 'ended'])
+    const channels: string[] = []
+    R.registerAccountIpc({ handle: (ch) => void channels.push(ch) }, account, () => true)
+    expect(channels).toEqual(R.CALLS.map((c) => `account:${c}`))
   })
 
   it('main: SANO mode only, fromSano on every call, Node fetch (no Origin), the profile file, the env / baked server', () => {
