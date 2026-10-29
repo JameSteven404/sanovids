@@ -34,7 +34,8 @@ Có hai cách, đều từ mã nguồn:
 3. Trong SANO: **Canvas**. Take mới vẫn chạy ở *chế độ Phát triển* (giả lập, không tốn credit). Muốn tạo
    video thật: Cài đặt của SanoVids → cổng canvasapp → bật, rồi **Đăng nhập** trên trang thật canvasapp.io.vn.
 4. Đăng nhập tài khoản SANO ngay trong app (D253, mục 3a): thêm `SANO_API_URL=<máy chủ tài khoản SANO>` trước khi chạy,
-   ví dụ `set SANO_API_URL=http://127.0.0.1:8787`. Không đặt thì app chạy như bản 1.0 (không có màn đăng nhập).
+   ví dụ `set SANO_API_URL=http://127.0.0.1:8787`. Không đặt thì app chạy như bản 1.0 (không có màn đăng nhập). Với
+   `app://sano/`, biến này còn mở API SANO của trang (mục 3) và Tài liệu (mục 3b).
 
 ## 3. Cách hoạt động
 
@@ -44,15 +45,43 @@ Có hai cách, đều từ mã nguồn:
   (`localhost`, `127.0.0.1`); chỉ lấy origin, tên máy chỉ gồm chữ, số, `-` và `.` (vì origin đi vào CSP). Giá trị khác:
   app không mở (`hardening-rules.sanoShell`).
 - `app://sano/` (D240): main phục vụ thư mục `sano-dist/` trong app, như `app://bdp/` phục vụ `dist/`. Chỉ ở chế độ này
-  host `sano` mới có; SanoVids thường và SANO từ máy chủ vẫn trả 404 cho mọi host khác `bdp`. `app://sano/api/…` luôn trả
-  404 dạng JSON (không có máy chủ), nên tab Máy chủ của SANO ghi "Chưa kết nối được API". Thiếu `sano-dist/index.html`
+  host `sano` mới có; SanoVids thường và SANO từ máy chủ vẫn trả 404 cho mọi host khác `bdp`. Thiếu `sano-dist/index.html`
   thì app báo lỗi rồi thoát. Trang SANO có CSP riêng (`hardening-rules.SANO_PAGE_CSP`): chỉ file của nó, không script
   inline, khung duy nhất là `app://bdp`.
+- `app://sano/api/…`: không có `SANO_API_URL` (bản 1.0) thì luôn trả 404 dạng JSON "Bản Sano Agent này chưa có máy chủ
+  SANO.", nên tab Máy chủ của SANO ghi "Chưa kết nối được API". Có `SANO_API_URL` (bản đóng gói: `sanoAgent.apiUrl`, mục
+  3a) thì main **chuyển tiếp** `app://sano/api/assistant/*` tới máy chủ đó và tự thêm `Authorization: Bearer sano_…` của
+  phiên tài khoản (mục 3a); token không bao giờ xuống trang (`electron/sano-api-rules.cjs`, SANO TH-44 bước 4). CSP trang
+  không đổi (`connect-src 'self'` đã gồm `app://sano/api`). Kiểm theo thứ tự; mỗi lần từ chối trả JSON `{ error, code }`
+  với `cache-control: no-store`:
+  - đường dẫn đúng `/api/assistant/<đoạn>…`, không đoạn `.`/`..`, không `%`, không phải `/api/assistant/google/callback`,
+    query ≤ 4096 ký tự → 404 `not-found`. Các `/api/…` khác (cả `/api/auth/*`) không được chuyển tiếp.
+  - chỉ `GET`/`POST` (preflight `OPTIONS` hỏng ở đây) → 405 `bad-method`.
+  - người gọi: `X-Sano-Client: desktop` (chỉ `httpClient` của SANO đặt; điều hướng, form, `<img>`, fetch no-cors không
+    đặt được), `Origin` nếu có là `app://sano`, `Sec-Fetch-Dest` nếu có là `empty`, `Sec-Fetch-Site` nếu có là
+    `same-origin` → 403 `not-allowed`. `protocol.handle` không cho biết khung gửi, nên `fromSano` không chạy được ở đây
+    và header riêng là phép kiểm chính. Electron không gửi `Sec-Fetch-*` thì log một lần
+    `[SanoVids] sano api: no sec-fetch metadata`.
+  - `POST` phải là `application/json` → 415 `bad-type`; chưa đăng nhập (`bearer()` là `null`) → 401 `signed-out`, không
+    gọi máy chủ; thân quá 80 000 byte (giới hạn của máy chủ) → 413 `too-large`, từ chối theo `Content-Length` hoặc dừng
+    đọc ngay khi vượt.
+  - máy chủ không trả lời trong 75 giây → 503 `timeout`; mất mạng → 503 `offline`; chuyển hướng (không bao giờ theo) hoặc
+    trả lời không phải JSON → 502 `bad-answer`.
+  - Tới máy chủ chỉ có `Accept`, `Authorization` và `Content-Type` (`POST`), bằng `fetch` của Node (không `Origin`):
+    **không header nào của trang** (cả `Authorization`, `X-Sano-Client`, `Cookie`, `Origin`, `Sec-*`). Về trang chỉ có
+    `content-type`, `cache-control: no-store` và `retry-after` nếu máy chủ gửi; trả lời được stream nguyên.
+  - Máy chủ trả 401, hoặc 403 `not-provisioned`: phiên đó kết thúc luôn ở app (`ended`, mục 3a) rồi trả lời mới về
+    trang; trang hỏi `account.status()` và hiện màn đăng nhập. 403 khác (kiểm quyền) không kết thúc phiên.
+  - Log chỉ khi từ chối hoặc lỗi: `[SanoVids] sano api: <phương thức> <đường dẫn> → <code>`; không token, query, thân hay
+    trả lời.
+  - Chỉ khi `app://sano/` **và** có `SANO_API_URL`, main thêm `--bdp-sano-api-forward` cho cửa sổ chính; preload khi đó
+    đưa `apiForward: true` và `docs` (mục 3b) cho trang, và trang chỉ dựa vào bearer của main khi `apiForward === true`.
+    SANO từ máy chủ (`SANO_URL` https hoặc localhost) không có forward, vẫn dùng ID token Google (TH-36) như cũ.
 - Thông báo main gửi tới trang (`devAccess:state`, `updates:state`) đi tới khung `app://bdp` (`hardening-rules.appFrames`),
   không bao giờ tới trang SANO.
 - Cửa sổ chính mở trang SANO và chỉ ở origin đó, kể cả khi máy chủ chuyển hướng; link ngoài mở trình duyệt.
 - Trang SANO thấy `window.sanoDesktop = { sanovidsUrl: 'app://bdp/', google: { signIn, token, signOut }, account }`
-  (`account`: mục 3a) và đặt khung
+  (`account`: mục 3a; thêm `apiForward: true, docs` khi có forward, mục 3b) và đặt khung
   Dựng phim vào `sanovidsUrl`: bản SanoVids nằm trong app (`dist/`), không tải từ máy chủ SANO. Chỉ khung chính của trang
   SANO nhận `sanoDesktop` (preload kiểm `process.isMainFrame`); main kiểm lại khung gửi của mọi lời gọi Google (`fromSano`:
   khung chính của cửa sổ chính, đúng origin SANO). Kiểm hai cổng này trong Electron thật (không chạy trong CI, không đăng
@@ -132,12 +161,18 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
   Agent rồi mở lại.", không bao giờ giả vờ đã đăng xuất. Trong lúc chờ máy chủ, `status()` và lần bấm đăng xuất thứ hai
   vẫn thấy người dùng đang đăng nhập. Phiên đăng xuất giữa lúc đang ghi file (đăng nhập, cập nhật hồ sơ) thì file vừa
   ghi bị xoá ngay, token không nằm lại trên đĩa.
-- **Phiên Google của chat đi theo phiên SANO (bất biến):** mỗi khi phiên tài khoản SANO kết thúc hoặc đổi chủ, main
-  đăng xuất luôn phiên Google của chat (`sanoDesktop.google` của TH-36, "Chat → Máy chủ"; `onSessionEnd` →
-  `chatGoogle.signOut()`), trước mọi việc khác: mỗi lần `signOut()` (cả khi không còn phiên, cả khi trả
-  `sign-out-failed`), khi `status()`/lần đọc file bỏ phiên (401/403, quá `expiresAt`, file hỏng hoặc của máy khác), và
-  khi đăng nhập lưu phiên của người dùng khác người dùng cuối cùng. Nhờ vậy người dùng sau không dùng lại token Google
-  (và quyền) của người trước. Lỗi của bước này chỉ ghi log, không bao giờ chặn hay làm hỏng lời gọi tài khoản.
+- **Chỉ main** (forward ở mục 3, cửa sổ Tài liệu ở mục 3b): `bearer()` trả token của phiên đang giữ; không cấu hình hoặc
+  không phiên thì `null`; quá `expiresAt` thì xoá phiên (như `status()`) rồi `null`. `ended(token)`: máy chủ từ chối
+  token đó qua forward (401, 403 `not-provisioned`) thì xoá đúng phiên đó; phiên mới hơn giữ nguyên. Hai hàm không nằm
+  trong `CALLS`, nên không bao giờ qua IPC tới trang, và không ném lỗi.
+- **Phiên Google của chat và cửa sổ Tài liệu đi theo phiên SANO (bất biến):** mỗi khi phiên tài khoản SANO kết thúc
+  hoặc đổi chủ, main đăng xuất luôn phiên Google của chat (`sanoDesktop.google` của TH-36, "Chat → Máy chủ";
+  `onSessionEnd` → `chatGoogle.signOut()`), trước mọi việc khác, rồi `sanoDocs.endSession()` (đóng mọi cửa sổ Tài liệu
+  và xoá phiên Google trong đó, mục 3b): mỗi lần `signOut()` (cả khi không còn phiên, cả khi trả `sign-out-failed`), khi
+  `status()`/lần đọc file bỏ phiên (401/403, quá `expiresAt`, file hỏng hoặc của máy khác), khi forward nhận 401/403
+  (`ended`), và khi đăng nhập lưu phiên của người dùng khác người dùng cuối cùng. Nhờ vậy người dùng sau không dùng lại
+  token Google (và quyền) hay đăng nhập Google trong trình soạn của người trước. Lỗi của bước này chỉ ghi log, không bao
+  giờ chặn hay làm hỏng lời gọi tài khoản.
 - **Cầu nối** (khớp SANO web, TH-44 bước 3):
   ```ts
   type AccountUser = { id: string; name: string; email: string; username: string | null; admin: boolean }
@@ -160,6 +195,53 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
   `password` ≤ 128, `name` ≤ 100, `username` ≤ 32).
 - Không bao giờ ghi log mật khẩu, token hay mã. Kiểm thử: `src/lib/__tests__/sanoAccountRules.test.ts` (máy chủ, safeStorage,
   Google giả) và `npx electron scripts/sano-desktop-probe.cjs` (cầu nối trong Electron thật, không máy chủ).
+
+## 3b. Cửa sổ Tài liệu (SANO TH-45)
+
+Mục **Tài liệu** của SANO liệt kê Google Docs và Sheets của người dùng (máy chủ SANO đọc Drive bằng quyền `drive.readonly`
+đã cấp, qua forward ở mục 3). **Mở** mở tài liệu trong cửa sổ riêng của Sano Agent, bằng trình soạn của chính Google, đăng
+nhập tài khoản Google của người dùng ngay trong cửa sổ đó. Sửa không đi qua API nào, nên không xin quyền ghi. Chỉ có khi
+có forward (`app://sano/` và `SANO_API_URL`). Mã: `electron/sano-docs-rules.cjs` (logic, mọi thứ được tiêm vào để test),
+`main.cjs` `registerDocs`, `preload.cjs`.
+
+- **Cầu nối:** `window.sanoDesktop.docs = { open({ id, kind }): Promise<void>, closeAll(): Promise<boolean> }`, chỉ ở khung
+  chính của trang SANO và chỉ cùng `apiForward`. Preload cắt `id` ở 201 ký tự, `kind` ở 10; main kiểm khung gửi
+  (`fromSano`, nơi khác nhận `not-allowed`). `open` nhận `id` khớp `^[A-Za-z0-9_-]{10,200}$` (giống hệt `DRIVE_FILE_ID`
+  của SANO) và `kind` `docs` hoặc `sheets`, rồi mở đúng `https://docs.google.com/document|spreadsheets/d/<id>/edit`.
+  Tài liệu đang mở thì chỉ đưa cửa sổ đó lên. Lỗi là `Error` có `code` (cách làm của `account`): `bad-input`,
+  `signed-out` (chưa đăng nhập SANO), `too-many`, `not-allowed`, `failed`.
+- **Partition trong bộ nhớ** `sano-google-docs` (không `persist:`): fuse `EnableCookieEncryption` đang tắt, nên partition
+  lưu đĩa sẽ để cookie Google (cũng là Gmail, Drive, Admin) dạng rõ trong thư mục dữ liệu. Vì vậy mỗi lần mở app, cửa
+  sổ Tài liệu hỏi đăng nhập Google một lần; thoát app là hết. `app://` chỉ đăng ký trên session mặc định, nên cửa sổ Tài
+  liệu không gọi được `app://sano` hay forward.
+- **Cửa sổ:** 1200×900, không preload, `sandbox`, `contextIsolation`, không `nodeIntegration`/`webviewTag`,
+  `safeDialogs`, `spellcheck: false`, DevTools theo cùng cổng của cửa sổ chính. **User agent mặc định của Electron, không
+  bao giờ `setUserAgent`** (Google chặn UA Chrome giả). Docs báo còn thay đổi chưa lưu thì hỏi **Ở lại / Vẫn đóng**.
+- **Điều hướng** (khung chính, `will-navigate` và `will-redirect`): chỉ `https:`, không user:pass, không cổng riêng, host
+  `docs.google.com`, `drive.google.com`, `accounts.google.com`, `accounts.youtube.com`, hoặc `www.google.com` với đường
+  dẫn `/accounts/…`. Ngoài danh sách: `will-navigate` bị chặn và `https:`/`mailto:` mở bằng trình duyệt mặc định;
+  `will-redirect` bị chặn, không mở ngoài. Khung con không bị giới hạn (Google tự nhúng khung; cửa sổ không có preload).
+- **Cửa sổ mới:** trang trong danh sách mở cửa sổ con cùng tuỳ chọn và cùng các phép kiểm; `https:`/`mailto:` khác mở
+  trình duyệt; còn lại (`about:blank`, `javascript:`, `data:`, `blob:`) bị chặn. Tài liệu và cửa sổ con tính chung tối đa
+  20. Mỗi cửa sổ mở trình duyệt tối đa một lần mỗi 2 giây, phần thừa bị bỏ và ghi log.
+- **Tải về:** chỉ bản xuất của Docs (`docs.google.com`, `doc-…-docs.googleusercontent.com`, `blob:https://docs.google.com/…`;
+  kiểm địa chỉ cuối sau chuyển hướng), qua hộp Save của Electron; còn lại bị huỷ. Không mở cho phần còn lại của
+  `*.googleusercontent.com` (nội dung người dùng tuỳ ý).
+- **Quyền:** chỉ `clipboard-sanitized-write` (chép). Thông báo, camera/micro, vị trí, `clipboard-read` (Ctrl+V vẫn dán
+  được), thiết bị và mọi quyền khác bị từ chối.
+- **Log** chỉ ghi host, không id tài liệu hay đường dẫn: `[SanoVids] docs: refused <host>`, `download refused <host>`,
+  `external throttled <host>`. Các dòng này là căn cứ để nới danh sách sau lần Minh kiểm với Google thật.
+- **Bất biến (`dirty`):** partition có thể còn đăng nhập Google của người dùng trước, nên bị coi là bẩn lúc khởi động và
+  sau mỗi `endSession` (mỗi `onSessionEnd` của mục 3a). `endSession` đóng ngay mọi cửa sổ Tài liệu, không hỏi, rồi xoá dữ
+  liệu và cache của partition. Tài liệu chỉ mở sau khi có một lần xoá thành công kể từ đó: xoá lỗi thì lần mở sau xoá
+  lại, lỗi nữa thì báo `failed` "Chưa dọn được phiên Google cũ. Thử lại."; lần mở bị một `endSession` chen giữa thì báo
+  `signed-out`. Người dùng SANO sau không bao giờ thừa hưởng đăng nhập Google trong trình soạn của người trước.
+- **Đóng hết (`closeAll`):** người dùng tự đăng xuất SANO (trang gọi `docs.closeAll()` trước) và lần đóng thật cửa sổ
+  chính (không phải lúc thoát để cập nhật) hỏi trước khi còn tài liệu mở: "Còn n tài liệu đang mở. Đóng hết? Thay đổi
+  chưa lưu lên Google sẽ mất." **Ở lại** giữ cả hai. Cửa sổ chính đã đóng thì mọi cửa sổ Tài liệu đóng theo, nên không
+  cửa sổ nào sống lâu hơn cửa sổ chính. macOS vẫn chỉ ẩn cửa sổ chính; cửa sổ Tài liệu giữ nguyên.
+- Kiểm thử: `src/lib/__tests__/sanoDocsRules.test.ts`, `sanoApiRules.test.ts` và các ghim trong `hardeningRules.test.ts`,
+  `sanoAccountRules.test.ts`. Chưa kiểm trong Electron thật với máy chủ (E2E bước 4) và chưa kiểm với Google thật.
 
 ## 4. Giới hạn
 
