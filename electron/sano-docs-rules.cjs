@@ -134,6 +134,7 @@ function createDocs(fx) {
     })
   }
   const clear = async () => {
+    if (!dirty) return // queued behind another open's clear: already clean, and its window may hold a sign-in by now
     const started = ends
     try {
       await fx.clearPartition()

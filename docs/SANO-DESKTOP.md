@@ -242,7 +242,9 @@ có forward (`app://sano/` và `SANO_API_URL`). Mã: `electron/sano-docs-rules.c
   sau mỗi `endSession` (mỗi `onSessionEnd` của mục 3a). `endSession` đóng ngay mọi cửa sổ Tài liệu, không hỏi, rồi xoá dữ
   liệu và cache của partition. Tài liệu chỉ mở sau khi có một lần xoá thành công kể từ đó: xoá lỗi thì lần mở sau xoá
   lại, lỗi nữa thì báo `failed` "Chưa dọn được phiên Google cũ. Thử lại."; lần mở bị một `endSession` chen giữa thì báo
-  `signed-out`. Người dùng SANO sau không bao giờ thừa hưởng đăng nhập Google trong trình soạn của người trước.
+  `signed-out`. Nhiều lần mở cùng lúc dùng chung một lần xoá: lần xoá xếp hàng sau đó thấy partition đã sạch thì bỏ
+  qua, nên không bao giờ xoá đè lên cửa sổ vừa mở. Người dùng SANO sau không bao giờ thừa hưởng đăng nhập Google trong
+  trình soạn của người trước.
 - **Đóng hết (`closeAll`):** người dùng tự đăng xuất SANO (trang gọi `docs.closeAll()` trước) và lần đóng thật cửa sổ
   chính (không phải lúc thoát để cập nhật) hỏi trước khi còn tài liệu mở: "Còn n tài liệu đang mở. Đóng hết? Thay đổi
   chưa lưu lên Google sẽ mất." **Ở lại** giữ cả hai. Lúc đóng cửa sổ chính chỉ hỏi (`confirmClose`), chưa đóng tài liệu: trang SANO còn có thể

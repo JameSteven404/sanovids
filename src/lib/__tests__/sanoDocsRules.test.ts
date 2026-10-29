@@ -253,6 +253,13 @@ describe('sano-docs-rules', () => {
     expect(state.clears).toBe(3) // once clean, opens do not clear again
   })
 
+  it('opens arriving together on a dirty partition share one clear: none runs after a document window opened', async () => {
+    const { docs, windows, state } = setup()
+    const answers = await Promise.all([open(docs, 0), open(docs, 1)])
+    expect(answers.map((a) => a.ok)).toEqual([true, true])
+    expect([windows.length, state.clears]).toEqual([2, 1])
+  })
+
   it('open called in the same tick as endSession waits for it', async () => {
     const gates: (() => void)[] = []
     let gated = false
