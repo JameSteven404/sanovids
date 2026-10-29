@@ -29,6 +29,7 @@ const TEXT = Object.freeze({
   googleCancelled: 'Đã huỷ đăng nhập Google.',
   notAllowed: 'Nguồn gọi không hợp lệ.',
   signOutFailed: 'Phiên vẫn còn trên máy này. Kiểm tra mạng rồi thử lại, hoặc đóng hẳn Sano Agent rồi mở lại.',
+  notSaved: 'Không lưu được phiên đăng nhập trên máy này. Đóng hẳn Sano Agent, mở lại rồi đăng nhập lại.',
 })
 const NOT_ALLOWED = Object.freeze({ ok: false, error: TEXT.notAllowed, code: 'not-allowed' })
 
@@ -133,6 +134,7 @@ function createAccount(fx) {
   let epoch = 0 // signOut bumps it: a sign-in that finishes after it is dropped
   let cancels = 0 // cancelGoogle bumps it: a Google sign-in still exchanging its token is dropped
   let lastUser = null // id of the last user held: a sign-in for anyone else ends the chat's Google session
+  const marker = fx.file + '.forget' // beside a session file a sign-out could neither delete nor empty
   /** fx.onSessionEnd(reason), best effort: its failure never blocks or fails an account call. */
   const endChat = (reason) => {
     try {
@@ -199,7 +201,8 @@ function createAccount(fx) {
     }
     let s = null
     try {
-      s = readSession(JSON.parse(fx.safeStorage.decryptString(bytes)))
+      const forgotten = await fx.fs.readFile(marker).then(() => true, () => false)
+      if (!forgotten) s = readSession(JSON.parse(fx.safeStorage.decryptString(bytes)))
     } catch {
       // another computer's key, a damaged file: signed out
     }
@@ -216,7 +219,10 @@ function createAccount(fx) {
     return held
   }
 
-  /** Deletes the session file, else empties it (load() refuses empty bytes) → true when no token is left on disk. */
+  /**
+   * Deletes the session file, else empties it (load() refuses empty bytes), else leaves the marker beside it (load()
+   * never reopens a file it marks) → true when no session on disk can be reopened.
+   */
   async function remove() {
     try {
       await fx.fs.rm(fx.file, { force: true })
@@ -229,22 +235,39 @@ function createAccount(fx) {
       return true
     } catch (e) {
       fx.log(`[SanoVids] account: could not empty the session file (${e && e.code})`)
+    }
+    try {
+      await fx.fs.writeFile(marker, Buffer.alloc(0))
+      return true
+    } catch (e) {
+      fx.log(`[SanoVids] account: could not mark the session file (${e && e.code})`)
       return false
     }
   }
 
+  /** Holds s and writes it; another session it replaces never stays reopenable on disk, else AccountError not-saved. */
   async function save(s) {
     if (s.user.id !== lastUser) endChat()
     lastUser = s.user.id
+    const before = held
     held = s
     if (!persistent()) return
     try {
       await fx.fs.writeFile(fx.file + '.tmp', fx.safeStorage.encryptString(JSON.stringify(s)))
       await fx.fs.rename(fx.file + '.tmp', fx.file)
+      await fx.fs.rm(marker, { force: true }) // the file is this session now, not the one signed out
       if (held !== s) await remove() // signed out (or replaced) while writing: never leave this token on disk
     } catch (e) {
       fx.log(`[SanoVids] account: session kept in memory only (${e && e.code})`)
       await Promise.resolve(fx.fs.rm(fx.file + '.tmp', { force: true })).catch(() => undefined) // never leave a token beside the file
+      // the file may still hold the session s replaces: a restart would reopen that one (the same session's older copy may stay)
+      if ((!before || before.token !== s.token) && !(await remove())) {
+        if (held === s) {
+          held = before
+          lastUser = before ? before.user.id : null
+        }
+        throw new AccountError(TEXT.notSaved, 'not-saved')
+      }
     }
   }
 
@@ -286,14 +309,24 @@ function createAccount(fx) {
     const code = codeOf(answer, state)
     const s = readSession(await post('/api/auth/token', { code, code_verifier: verifier, redirect_uri: REDIRECT_URI }))
     if (!s) throw new AccountError(TEXT.invalid, 'bad-answer')
+    const end = () => call('POST', '/api/auth/logout', {}, s.token).catch(() => undefined) // best effort
+    const dropped = () => epoch !== started || cancelled()
     await current() // the file read first: its clean-up never deletes the session written below
-    if (epoch !== started || cancelled()) {
-      // signed out (or Huỷ) while this ran: the new session is dropped, and ended on the server too (best effort)
-      call('POST', '/api/auth/logout', {}, s.token).catch(() => undefined)
+    if (!dropped()) {
+      try {
+        await save(s)
+      } catch (e) {
+        end()
+        throw e
+      }
+    }
+    if (dropped()) {
+      // signed out (or Huỷ) while this ran, its file write included: the new session is dropped, and ended on the server too
+      await clear(s)
+      end()
       if (epoch === started) throw new AccountError(TEXT.googleCancelled, 'cancelled')
       return status(null)
     }
-    await save(s)
     return status(s)
   }
 
@@ -302,23 +335,29 @@ function createAccount(fx) {
       if (!fx.apiUrl) return status(null)
       const s = await current()
       if (!s) return status(null)
-      if (Date.parse(s.expiresAt) <= fx.now()) return status(await slid(s))
-      let r
+      if (Date.parse(s.expiresAt) <= fx.now()) {
+        await slid(s)
+        return status(held)
+      }
+      let r = null
       try {
         r = await call('GET', '/api/auth/me', null, s.token)
       } catch {
-        return status(s, { offline: true })
+        /* offline */
       }
+      // signed out or signed in again while /me ran: its answer is about a session no longer held
+      if (held !== s) return status(held)
+      if (!r) return status(s, { offline: true })
       // 401: revoked or expired; 403: the account was turned off (the request carries no Origin, the only other 403)
       if (r.status === 401 || r.status === 403) {
         await clear(s, r.status === 403 ? 'forbidden' : undefined)
-        return status(null)
+        return status(held)
       }
       const user = r.ok ? readUser(r.json) : null
       if (!user) return status(s, { offline: true })
       // a desktop session slides on use (SANO authenticate): a later expiresAt is kept with the session
       const later = typeof r.json.expiresAt === 'string' && Date.parse(r.json.expiresAt) > Date.parse(s.expiresAt) ? r.json.expiresAt : s.expiresAt
-      if (held === s && (JSON.stringify(user) !== JSON.stringify(s.user) || later !== s.expiresAt)) await save({ ...s, user, expiresAt: later })
+      if (JSON.stringify(user) !== JSON.stringify(s.user) || later !== s.expiresAt) await save({ ...s, user, expiresAt: later })
       return status(held)
     },
     async login(input) {
@@ -339,8 +378,9 @@ function createAccount(fx) {
       configured()
       const asked = cancels
       const r = await fx.google.signIn()
-      // the account keeps its own sano_ session: Google's tokens (refresh token included) are not kept
-      fx.google.signOut()
+      // the account keeps its own sano_ session: Google's tokens (refresh token included) are not kept. Only a sign-in
+      // that got them drops them: a superseded one would cancel the newer sign-in that replaced it
+      if (r && r.ok) fx.google.signOut()
       if (!r || !r.ok) throw new AccountError(r && r.code === 'cancelled' ? TEXT.googleCancelled : (r && r.message) || TEXT.invalid, (r && r.code) || 'failed')
       return exchange('/api/auth/google', { credential: r.idToken }, () => cancels !== asked)
     },
