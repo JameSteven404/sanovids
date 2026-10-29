@@ -120,7 +120,7 @@ async function envelope(run, log) {
  * fx: { apiUrl (accountApiUrl's origin, or null), fetch(url, init), file, fs: fs.promises-like { readFile, writeFile,
  * rename, rm }, safeStorage: { isEncryptionAvailable, encryptString, decryptString }, now(), random(n) → bytes,
  * google: a createGoogleSignIn of its own { signIn, signOut }, log(line), onSessionEnd() (optional: main's chat Google
- * sign-out) }. Every CALLS method answers an envelope; bearer() / ended(token) are main's own (never over IPC).
+ * sign-out) }. Every CALLS method answers an envelope; bearer() / ended(token) / userId() are main's own (never over IPC).
  *
  * Invariant (SANO TH-44, docs/SANO-DESKTOP.md §3a): whenever the SANO session ends or changes hands — a sign-out, a
  * session dropped (401/403, expired, a damaged or foreign file), a sign-in for another user than the last one —
@@ -338,6 +338,8 @@ function createAccount(fx) {
       }
       return s.token
     },
+    /** Main only (the docs' Google owner): id of the user whose session is held, or null. */
+    userId: () => (held ? held.user.id : null),
     /** Main only: the server refused `token` (401, 403 not-provisioned) → that session ends; a newer one survives. */
     async ended(token) {
       if (held && held.token === token) await clear(held)
@@ -371,8 +373,8 @@ function createAccount(fx) {
       return null
     }
   }
-  // bearer / ended are not in CALLS, so registerAccountIpc never exposes them to a page
-  return Object.assign(Object.fromEntries(CALLS.map((name) => [name, (input) => envelope(() => api[name](input), fx.log)])), { bearer: quiet('bearer'), ended: quiet('ended') })
+  // bearer / ended / userId are not in CALLS, so registerAccountIpc never exposes them to a page
+  return Object.assign(Object.fromEntries(CALLS.map((name) => [name, (input) => envelope(() => api[name](input), fx.log)])), { bearer: quiet('bearer'), ended: quiet('ended'), userId: api.userId })
 }
 
 /** ipcMain.handle('account:<call>') for every call; `allowed(event)` (main's fromSano) is checked on each one. */

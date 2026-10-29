@@ -17,7 +17,10 @@
  * 'too-many' | 'not-allowed' | 'failed' }), closeAll() → Promise<boolean> (false: the user chose "Ở lại").
  */
 const DRIVE_FILE_ID = /^[A-Za-z0-9_-]{10,200}$/
-/** In memory: CookieEncryption is off, a persist: partition would store Google session cookies in plaintext. */
+/**
+ * In memory: CookieEncryption is off, a persist: partition would store Google session cookies in plaintext. Google's
+ * sign-in is kept across runs in main's encrypted snapshot instead (google-keep-rules, <profile>/google-docs.bin).
+ */
 const PARTITION = 'sano-google-docs'
 /** Document windows and their popups together. */
 const MAX_WINDOWS = 20
@@ -96,11 +99,15 @@ function hostLabel(url) {
 
 /**
  * fx: { openWindow(url, key) → { focus(), destroy(), isDestroyed(), onClosed(cb) }, clearPartition() → Promise,
- * signedIn() → Promise<boolean>, confirm(n) → boolean (main's native dialog), openExternal(url), now(), log(line) }.
+ * signedIn() → Promise<boolean>, confirm(n) → boolean (main's native dialog), openExternal(url), now(), log(line),
+ * and Google's kept cookies (google-keep-rules, bound to the SANO user; none of them throws): restoreGoogle(),
+ * startGoogle(), saveGoogle() / wipeGoogle() (each capped by main, then nothing is saved until the next restore) }.
  *
  * Invariant (docs/SANO-DESKTOP.md §3b): the partition may hold the Google sign-in of whoever used it last, so it is
  * `dirty` from the start and after every endSession (main's onSessionEnd: sign-out, a session dropped, another user).
  * A document opens only once a clear has succeeded since then: the next SANO user never inherits that Google sign-in.
+ * What persists is the encrypted snapshot: put back after each clear an open made (a snapshot of another SANO user is
+ * deleted unread), saved before endSession clears — or wiped with it when the account was turned off (403).
  */
 function createDocs(fx) {
   const tracked = new Set() // every window: documents and their popups
@@ -109,6 +116,8 @@ function createDocs(fx) {
   let running = null // the clear in progress: an open waits for it
   let dirty = true
   let ends = 0 // endSession bumps it: an open it overtook is refused, a clear started before it does not count
+  let fresh = false // cleared since Google's kept cookies were last put back
+  let watching = false // fx.startGoogle ran
 
   const destroy = (win) => {
     tracked.delete(win)
@@ -138,8 +147,19 @@ function createDocs(fx) {
     try {
       await fx.clearPartition()
       if (ends === started) dirty = false
+      fresh = true
     } catch (e) {
       fx.log(`[SanoVids] docs: clear failed (${e && e.name})`) // stays dirty: the next open clears again
+    }
+  }
+  /** Once per clear, before the next document opens: the signed-in user's kept Google cookies go back in. */
+  const restore = async () => {
+    if (!fresh) return
+    fresh = false
+    await fx.restoreGoogle()
+    if (!watching) {
+      watching = true
+      fx.startGoogle()
     }
   }
   /** One clear at a time, in call order. */
@@ -164,6 +184,8 @@ function createDocs(fx) {
         if (dirty) await queue(clear)
         if (ends !== started) return fail(TEXT.signedOut, 'signed-out') // the session ended meanwhile
         if (dirty) return fail(TEXT.notCleared, 'failed')
+        await queue(restore)
+        if (ends !== started) return fail(TEXT.signedOut, 'signed-out')
         const key = `${input.kind}:${input.id}`
         const open = documents.get(key)
         if (open && !open.isDestroyed()) {
@@ -178,12 +200,18 @@ function createDocs(fx) {
         return fail(TEXT.failed, 'failed')
       }
     },
-    /** Server-forced end (401/403/expiry/another user): every window goes, unload prompts unasked, then the partition. */
-    endSession() {
+    /**
+     * Server-forced end (401/403/expiry/another user): every window goes, unload prompts unasked, Google's cookies are
+     * saved (`wipe`: the account was turned off → removed with their snapshot), then the partition is cleared.
+     */
+    endSession({ wipe = false } = {}) {
       ends++
       dirty = true
       destroyAll()
-      return queue(clear)
+      return queue(async () => {
+        await (wipe ? fx.wipeGoogle() : fx.saveGoogle())
+        await clear()
+      })
     },
     /** The user's own sign-out, the main window closing: asks first when any window is open → false on "Ở lại". */
     closeAll({ ask } = {}) {

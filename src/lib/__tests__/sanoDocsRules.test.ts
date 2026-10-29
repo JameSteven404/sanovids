@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 type Answer = { ok: true; value: undefined } | { ok: false; error: string; code: string }
 interface Docs {
   open(input: unknown): Promise<Answer>
-  endSession(): Promise<void>
+  endSession(o?: { wipe?: boolean }): Promise<void>
   closeAll(o?: { ask?: boolean }): boolean
   confirmClose(): boolean
   track(parentKey: string, child: Win): boolean
@@ -59,16 +59,24 @@ function setup(o: { signedIn?: boolean; clear?: () => Promise<void>; confirm?: (
   const external: string[] = []
   const asked: number[] = []
   const state = { signedIn: o.signedIn ?? true, clears: 0, now: 0 }
+  /** Every partition / Google step in order: 'clear', 'restore', 'start', 'save', 'wipe', 'open'. */
+  const steps: string[] = []
   const docs = R.createDocs({
     openWindow: (url: string, key: string) => {
+      steps.push('open')
       const w = fakeWindow(url, key)
       windows.push(w)
       return w
     },
     clearPartition: () => {
+      steps.push('clear')
       state.clears++
       return o.clear ? o.clear() : Promise.resolve()
     },
+    restoreGoogle: async () => void steps.push('restore'),
+    startGoogle: () => void steps.push('start'),
+    saveGoogle: async () => void steps.push('save'),
+    wipeGoogle: async () => void steps.push('wipe'),
     signedIn: async () => state.signedIn,
     confirm: (n: number) => {
       asked.push(n)
@@ -78,7 +86,7 @@ function setup(o: { signedIn?: boolean; clear?: () => Promise<void>; confirm?: (
     now: () => state.now,
     log: (line: string) => void logs.push(line),
   })
-  return { docs, windows, logs, external, asked, state }
+  return { docs, windows, logs, external, asked, state, steps }
 }
 const open = (docs: Docs, n: number, kind = 'docs') => docs.open({ id: `${ID}${n}`, kind })
 const tick = () => new Promise((r) => setTimeout(r, 0))
@@ -308,6 +316,52 @@ describe('sano-docs-rules', () => {
     expect(logs).toEqual(['[SanoVids] docs: destroy failed (RangeError)', '[SanoVids] docs: clear failed (TypeError)'])
     expect(await open(docs, 0)).toEqual({ ok: false, error: R.TEXT.notCleared, code: 'failed' }) // still dirty
     expect(logs.join('\n')).not.toContain(ID)
+  })
+
+  it("Google's kept sign-in: put back after each clear an open made (watched once), saved before endSession clears, wiped instead on a 403", async () => {
+    const { docs, steps } = setup()
+    expect((await open(docs, 0)).ok).toBe(true)
+    expect((await open(docs, 1)).ok).toBe(true)
+    expect(steps).toEqual(['clear', 'restore', 'start', 'open', 'open'])
+    steps.length = 0
+    await docs.endSession() // 401 / expiry / sign-out: the snapshot is kept (another user's open deletes it: owner rule)
+    expect(steps).toEqual(['save', 'clear'])
+    steps.length = 0
+    expect((await open(docs, 0)).ok).toBe(true)
+    expect(steps).toEqual(['restore', 'open']) // endSession's clear counts; watching already
+    steps.length = 0
+    await docs.endSession({ wipe: true }) // the account was turned off
+    expect(steps).toEqual(['wipe', 'clear'])
+  })
+
+  it('a failed or overtaken clear restores nothing; a session ending during the restore refuses the open', async () => {
+    let failing = 1
+    const t = setup({ clear: async () => { if (failing-- > 0) throw new Error('busy') } })
+    expect((await open(t.docs, 0)).ok).toBe(false)
+    expect(t.steps).toEqual(['clear'])
+    // endSession while the open's restore runs: refused, and endSession's own save + clear come after the restore
+    let release = () => {}
+    const s = setup()
+    const gated = R.createDocs({
+      openWindow: () => fakeWindow(DOC, null),
+      clearPartition: async () => void s.steps.push('clear'),
+      restoreGoogle: () => new Promise<void>((r) => void (s.steps.push('restore'), (release = r))),
+      startGoogle: () => void s.steps.push('start'),
+      saveGoogle: async () => void s.steps.push('save'),
+      wipeGoogle: async () => void s.steps.push('wipe'),
+      signedIn: async () => true,
+      confirm: () => true,
+      openExternal: () => undefined,
+      now: () => 0,
+      log: () => undefined,
+    })
+    const opening = open(gated, 0)
+    await tick()
+    const ended = gated.endSession()
+    release()
+    expect(await opening).toEqual({ ok: false, error: R.TEXT.signedOut, code: 'signed-out' })
+    await ended
+    expect(s.steps).toEqual(['clear', 'restore', 'start', 'save', 'clear'])
   })
 
   it('closeAll: no window → true without asking; ask declined → false, windows kept; accepted → all destroyed', async () => {

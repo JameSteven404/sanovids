@@ -1437,7 +1437,7 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(mainSource).toContain('const GOOGLE_SAVE_CAP_MS = 1500')
     const save = fnBody('saveGoogle')
     expect(save).toContain('return Promise.race([all, new Promise((resolve) => setTimeout(resolve, capMs))])')
-    expect(save).toContain('Promise.allSettled([googleKeepCanvasapp && googleKeepCanvasapp.save(), flush(session.defaultSession), flush(canvasappSession())])')
+    expect(save).toContain('Promise.allSettled([googleKeepCanvasapp && googleKeepCanvasapp.save(), googleKeepDocs && googleKeepDocs.save(), flush(session.defaultSession), flush(canvasappSession())])')
     // Windows sign-out / shut-down: saved too, never vetoed; an update install saves before the installer kills the app
     expect(fnBody('createWindow')).toContain("win.on('query-session-end', () => void saveGoogle(GOOGLE_SAVE_CAP_MS))")
     expect(mainSource).not.toMatch(/query-session-end[^\n]*preventDefault/)

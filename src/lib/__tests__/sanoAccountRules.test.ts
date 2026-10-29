@@ -21,6 +21,7 @@ interface Account {
   signOut(): Promise<Answer<Status>>
   bearer(): Promise<string | null>
   ended(token: string): Promise<void>
+  userId(): string | null
 }
 interface Rules {
   TIMEOUT_MS: number
@@ -631,6 +632,19 @@ describe('createAccount (fake SANO account server)', () => {
     expect(logs).toContain('[SanoVids] account: unexpected RangeError')
   })
 
+  it('userId(): the held user only (main-only, for the docs Google owner); null signed out', async () => {
+    const { account, server, m } = setup()
+    expect(account.userId()).toBeNull()
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    expect(account.userId()).toBe(server.user.id)
+    const restart = setup({ server, m })
+    expect(restart.account.userId()).toBeNull() // the file is read on first use
+    await restart.account.bearer()
+    expect(restart.account.userId()).toBe(server.user.id)
+    value(await account.signOut())
+    expect(account.userId()).toBeNull()
+  })
+
   it('ended(token): clears only that session + onSessionEnd; a newer session survives', async () => {
     let ends = 0
     const { account, server, m } = setup({ onSessionEnd: () => void ends++ })
@@ -674,10 +688,10 @@ describe('IPC: every account:* call checks the sender (fromSano), and the preloa
     expect(await handlers.get('account:login')!('sano', { identifier: 'a' })).toEqual({ ok: true, value: { identifier: 'a' } })
   })
 
-  it('CALLS unchanged: bearer/ended not registered over IPC', () => {
+  it('CALLS unchanged: bearer/ended/userId not registered over IPC', () => {
     expect(R.CALLS).toEqual(['status', 'login', 'register', 'forgot', 'google', 'cancelGoogle', 'signOut'])
     const { account } = setup()
-    expect(Object.keys(account)).toEqual([...R.CALLS, 'bearer', 'ended'])
+    expect(Object.keys(account)).toEqual([...R.CALLS, 'bearer', 'ended', 'userId'])
     const channels: string[] = []
     R.registerAccountIpc({ handle: (ch) => void channels.push(ch) }, account, () => true)
     expect(channels).toEqual(R.CALLS.map((c) => `account:${c}`))
@@ -696,7 +710,22 @@ describe('IPC: every account:* call checks the sender (fromSano), and the preloa
     // main-only bearer() / ended(): the module-scope account feeds the forward and the docs windows, never IPC
     expect(body).toContain('const account = (sanoAccount = accountRules.createAccount({')
     expect(body).toContain('signedIn: async () => !!(sanoAccount && (await sanoAccount.bearer())),')
-    expect(body).toContain('clearPartition: () => partition().clearStorageData().then(() => ses.clearCache()),')
+    expect(body).toContain('clearPartition: () => ses.clearStorageData().then(() => ses.clearCache()),')
+    // the docs partition's rules are set at registration, before any window (not on the first clear)
+    const docs = body.slice(body.indexOf('function registerDocs() {'))
+    const at = (s: string) => docs.indexOf(s)
+    for (const s of ['ses.setPermissionRequestHandler(', 'ses.setPermissionCheckHandler(', 'ses.setDevicePermissionHandler(() => false)', "ses.on('will-download'"]) {
+      expect(at(s), s).toBeGreaterThan(at('const ses = session.fromPartition(docsRules.PARTITION)'))
+      expect(at(s), s).toBeLessThan(at('sanoDocs = docsRules.createDocs({'))
+    }
+    expect(docs).not.toContain('const partition = ')
+    // Google's kept sign-in of the docs windows: bound to the server and the SANO user (a hash, never the id itself)
+    expect(docs).toContain("file: path.join(profile.dir, 'google-docs.bin'),")
+    expect(docs).toContain('cookies: ses.cookies,')
+    expect(docs).toContain("return id ? crypto.createHash('sha256').update(`${SANO_API}\\n${id}`).digest('hex') : null")
+    expect(docs).toContain('saveGoogle: () => capped(googleKeepDocs.save()).then(() => googleKeepDocs.detach()),')
+    expect(docs).toContain('wipeGoogle: () => capped(googleKeepDocs.wipe()).then(() => googleKeepDocs.detach()),')
+    expect(docs).toContain('const capped = (p) => Promise.race([p, new Promise((resolve) => setTimeout(resolve, GOOGLE_SAVE_CAP_MS))])')
     expect(mainSource).toContain('  const google = (chatGoogle = newGoogleSignIn())\n')
     expect(mainSource).toContain('\n    if (SANO) registerGoogleSignIn()\n')
     expect(body).toContain("safeStorage.getSelectedStorageBackend() === 'basic_text'") // Linux plain text: memory only

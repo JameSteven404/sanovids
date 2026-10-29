@@ -857,6 +857,7 @@ function newGoogleSignIn() {
 let sanoAccount = null // main-only bearer() / ended() for the API forward and the docs windows
 let sanoApi = null // the /api/assistant/* forward (SANO_IN_APP with SANO_API only)
 let sanoDocs = null // the "Tài liệu" windows (same condition)
+let googleKeepDocs = null // their Google sign-in, kept encrypted (registerDocs)
 function registerAccount() {
   const account = (sanoAccount = accountRules.createAccount({
     apiUrl: SANO_API,
@@ -889,27 +890,38 @@ function registerAccount() {
 
 /**
  * Sano Agent "Tài liệu" (SANO TH-45, sano-docs-rules.cjs, docs/SANO-DESKTOP.md §3b): "Mở" opens the document in
- * Google's own editor in a window of its own: no preload, the in-memory partition, Google's pages only, the default
- * Electron user agent (never setUserAgent: Google blocks a spoofed Chrome). Only SANO's page itself may ask (fromSano).
+ * Google's own editor in a window of its own: no preload, the in-memory partition (Google's sign-in kept encrypted in
+ * <profile>/google-docs.bin, bound to the SANO user), Google's pages only, the default Electron user agent (never
+ * setUserAgent: Google blocks a spoofed Chrome). Only SANO's page itself may ask (fromSano).
  */
 function registerDocs() {
-  let ses = null
-  /** The partition, its permission and download rules set once (on the first clear: the first open clears). */
-  const partition = () => {
-    if (ses) return ses
-    ses = session.fromPartition(docsRules.PARTITION)
-    ses.setPermissionRequestHandler((_wc, permission, callback) => callback(docsRules.permissionAllowed(permission)))
-    ses.setPermissionCheckHandler((_wc, permission) => docsRules.permissionAllowed(permission))
-    ses.setDevicePermissionHandler(() => false)
-    // Docs' own exports only; the Save dialog stays Electron's (no setSavePath)
-    ses.on('will-download', (_event, item) => {
-      const url = item.getURLChain().at(-1) || item.getURL()
-      if (docsRules.downloadAllowed(url)) return
-      item.cancel()
-      console.error(`[SanoVids] docs: download refused ${docsRules.hostLabel(url)}`)
-    })
-    return ses
-  }
+  // The partition, its permission and download rules set once, here, before any window
+  const ses = session.fromPartition(docsRules.PARTITION)
+  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(docsRules.permissionAllowed(permission)))
+  ses.setPermissionCheckHandler((_wc, permission) => docsRules.permissionAllowed(permission))
+  ses.setDevicePermissionHandler(() => false)
+  // Docs' own exports only; the Save dialog stays Electron's (no setSavePath)
+  ses.on('will-download', (_event, item) => {
+    const url = item.getURLChain().at(-1) || item.getURL()
+    if (docsRules.downloadAllowed(url)) return
+    item.cancel()
+    console.error(`[SanoVids] docs: download refused ${docsRules.hostLabel(url)}`)
+  })
+  // Google's sign-in of the SANO user (google-keep-rules): a snapshot of another user, or of another server, is deleted unread
+  googleKeepDocs = googleKeepRules.createGoogleKeep({
+    label: 'google-docs',
+    file: path.join(profile.dir, 'google-docs.bin'),
+    cookies: ses.cookies,
+    crypto: asyncSafeStorage,
+    fs: fs.promises,
+    now: Date.now,
+    log: (line) => console.error(line),
+    owner: () => {
+      const id = sanoAccount && sanoAccount.userId()
+      return id ? crypto.createHash('sha256').update(`${SANO_API}\n${id}`).digest('hex') : null
+    },
+  })
+  const capped = (p) => Promise.race([p, new Promise((resolve) => setTimeout(resolve, GOOGLE_SAVE_CAP_MS))])
   const options = () => ({
     width: 1200,
     height: 900,
@@ -964,7 +976,11 @@ function registerDocs() {
       win.loadURL(url).catch(() => undefined) // a refused redirect aborts the load: logged by host in guard
       return handle(win)
     },
-    clearPartition: () => partition().clearStorageData().then(() => ses.clearCache()),
+    clearPartition: () => ses.clearStorageData().then(() => ses.clearCache()),
+    restoreGoogle: () => googleKeepDocs.restore(),
+    startGoogle: () => googleKeepDocs.start(),
+    saveGoogle: () => capped(googleKeepDocs.save()).then(() => googleKeepDocs.detach()),
+    wipeGoogle: () => capped(googleKeepDocs.wipe()).then(() => googleKeepDocs.detach()),
     signedIn: async () => !!(sanoAccount && (await sanoAccount.bearer())),
     confirm: (n) => {
       const opts = { type: 'question', buttons: ['Ở lại', 'Đóng hết'], defaultId: 0, cancelId: 0, message: `Còn ${n} tài liệu đang mở. Đóng hết? Thay đổi chưa lưu lên Google sẽ mất.` }
@@ -2297,7 +2313,7 @@ function settleCanvasappGoogle() {
  */
 function saveGoogle(capMs) {
   const flush = (ses) => Promise.resolve().then(() => ses.cookies.flushStore()).catch(() => undefined)
-  const all = Promise.allSettled([googleKeepCanvasapp && googleKeepCanvasapp.save(), flush(session.defaultSession), flush(canvasappSession())])
+  const all = Promise.allSettled([googleKeepCanvasapp && googleKeepCanvasapp.save(), googleKeepDocs && googleKeepDocs.save(), flush(session.defaultSession), flush(canvasappSession())])
   return Promise.race([all, new Promise((resolve) => setTimeout(resolve, capMs))])
 }
 
