@@ -407,9 +407,9 @@ function appFrames(wc) {
 
 /** TH-46: Sano Agent's main window (main.cjs TITLE_BAR) draws Windows' min / max / close over SANO's 44 px top bar. */
 const TITLE_BAR_HEIGHT = 44
-/** Its colors until SANO's page sets its own: SANO's top bar (--surface) and its text (--text) of web/theme.css. */
+/** Its colors until SANO's page sets its own: SANO's top bar (--bar-bg) and its icons (--bar-fg) of web/theme.css. */
 const TITLE_BAR_START = Object.freeze({
-  dark: Object.freeze({ color: '#1b1e22', symbolColor: '#edf0f5' }),
+  dark: Object.freeze({ color: '#17191c', symbolColor: '#edf0f5' }),
   light: Object.freeze({ color: '#ffffff', symbolColor: '#20242c' }),
 })
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/

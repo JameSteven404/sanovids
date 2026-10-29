@@ -678,6 +678,8 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     }
     for (const bad of [null, undefined, '#ffffff', ['#ffffff', '#000000'], {}]) expect(h.titleBarOverlay(bad), String(bad)).toBeNull()
     expect(Object.isFrozen(h.TITLE_BAR_START)).toBe(true)
+    // SANO web/theme.css --bar-bg / --bar-fg, so min/max/close match the bar before the page pushes its colors
+    expect(h.TITLE_BAR_START).toEqual({ dark: { color: '#17191c', symbolColor: '#edf0f5' }, light: { color: '#ffffff', symbolColor: '#20242c' } })
     for (const theme of ['dark', 'light'] as const) {
       expect(Object.isFrozen(h.TITLE_BAR_START[theme]), theme).toBe(true)
       expect(h.titleBarOverlay(h.TITLE_BAR_START[theme]), theme).toEqual({ ...h.TITLE_BAR_START[theme], height: 44 })
