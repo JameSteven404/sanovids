@@ -474,7 +474,10 @@ function createWindow() {
     win.on('close', (event) => {
       const updating = macQuitForUpdate || !!(updater && updater.isQuittingForUpdate())
       if (updating || hardening.mainWindowCloseHides({ platform: process.platform, quitting, quittingForUpdate: updating })) return
-      if (!sanoDocs.confirmClose()) event.preventDefault()
+      if (!sanoDocs.confirmClose()) {
+        event.preventDefault()
+        if (process.platform === 'darwin') quitting = false // this ⌘Q is cancelled: the red button hides again
+      }
     })
   }
 
@@ -947,6 +950,7 @@ function registerDocs() {
     wc.on('will-prevent-unload', (event) => {
       const choice = dialog.showMessageBoxSync(win, { type: 'question', buttons: ['Ở lại', 'Vẫn đóng'], defaultId: 0, cancelId: 0, message: 'Tài liệu còn thay đổi chưa lưu lên Google. Vẫn đóng cửa sổ?' })
       if (choice === 1) event.preventDefault()
+      else if (process.platform === 'darwin' && !macQuitForUpdate) quitting = false // "Ở lại" cancels a ⌘Q too
     })
   }
   const handle = (win) => ({ focus: () => win.focus(), destroy: () => win.destroy(), isDestroyed: () => win.isDestroyed(), onClosed: (cb) => win.on('closed', cb) })

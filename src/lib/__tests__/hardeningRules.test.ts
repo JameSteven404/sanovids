@@ -521,6 +521,8 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     const create = mainSource.slice(at('function createWindow() {'), at('function showMainWindow() {'))
     expect(create).toMatch(/if \(updating \|\| hardening\.mainWindowCloseHides\(\{ platform: process\.platform, quitting, quittingForUpdate: updating \}\)\) return\s+if \(!sanoDocs\.confirmClose\(\)\) \{?\s*event\.preventDefault\(\)/)
     expect(create).not.toContain('sanoDocs.closeAll({ ask: true })')
+    // macOS: a docs prompt's "Ở lại" cancels ⌘Q, so `quitting` goes back to false (the red button hides again)
+    expect(create).toMatch(/if \(!sanoDocs\.confirmClose\(\)\) \{\s+event\.preventDefault\(\)\s+if \(process\.platform === 'darwin'\) quitting = false/)
     expect(create).toContain('if (sanoDocs) sanoDocs.closeAll({ ask: false })')
     // docs IPC: SANO's page itself only
     expect(mainSource).toContain("ipcMain.handle('docs:open', (event, input) => (fromSano(event) ? sanoDocs.open(input) : accountRules.NOT_ALLOWED))")
@@ -529,6 +531,7 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     const docs = mainSource.slice(at('function registerDocs() {'), at('async function sanoDesktopClientId()'))
     expect(docs).toContain('partition: docsRules.PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false,')
     expect(docs).not.toMatch(/preload|setUserAgent|userAgent|persist:/)
+    expect(docs).toMatch(/if \(choice === 1\) event\.preventDefault\(\)\s+else if \(process\.platform === 'darwin' && !macQuitForUpdate\) quitting = false/)
     // show:false windows (documents and popups) still show when their first load fails or a redirect is refused (-3)
     expect(docs).toMatch(/win\.once\('ready-to-show', \(\) => win\.show\(\)\)\s+\/\/[^\n]*\n\s+wc\.on\('did-fail-load', \(_e, _code, _desc, _url, isMainFrame\) => \{\s+if \(isMainFrame && !win\.isDestroyed\(\) && !win\.isVisible\(\)\) win\.show\(\)/)
     expect(serve).toContain('const csp = () => (sano ? hardening.SANO_PAGE_CSP : htmlCsp())')
