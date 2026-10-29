@@ -849,6 +849,54 @@ describe('createAccount (fake SANO account server)', () => {
     }
   })
 
+  it('renewals of one session at the same time (two forwards, or status() and a forward) all get its token; the file keeps it', async () => {
+    const pairs = { 'bearer + bearer': (a: Account) => [a.bearer(), a.bearer()], 'status + bearer': (a: Account) => [a.status().then((s) => value(s).signedIn), a.bearer()] }
+    for (const [name, pair] of Object.entries(pairs)) {
+      const server = fakeServer()
+      const m = machine()
+      value(await setup({ server, m }).account.login({ identifier: 'minh', password: server.password }))
+      const tok = server.secrets.filter((x) => x.startsWith('sano_')).at(-1)
+      const slidTo = new Date(NOW + 60 * 86_400_000).toISOString()
+      server.opts.meExpiresAt = slidTo
+      const later = setup({ server, m, now: NOW + 31 * 86_400_000 })
+      let answer!: () => void
+      server.opts.hang = '/api/auth/me'
+      server.opts.gate = new Promise<void>((r) => (answer = r))
+      const both = Promise.all(pair(later.account))
+      await new Promise((r) => setTimeout(r, 0))
+      answer() // both /me answer together, past the saved expiresAt
+      const [a, b] = await both
+      expect([a === (name === 'bearer + bearer' ? tok : true), b === tok], name).toEqual([true, true]) // compared, never printed
+      const saved = JSON.parse(Buffer.from(m.files.get(FILE)!.toString().slice(3), 'base64').toString()) as { token: string; expiresAt: string }
+      expect([saved.token === tok, saved.expiresAt], name).toEqual([true, slidTo]) // a restart stays signed in
+    }
+  })
+
+  it('a renewed copy of the session saved while a renewal is still writing (status() sliding it again): the file is kept', async () => {
+    const server = fakeServer()
+    const m = machine()
+    value(await setup({ server, m }).account.login({ identifier: 'minh', password: server.password }))
+    const tok = server.secrets.filter((x) => x.startsWith('sano_')).at(-1)
+    server.opts.meExpiresAt = new Date(NOW + 60 * 86_400_000).toISOString()
+    const later = setup({ server, m, now: NOW + 31 * 86_400_000 })
+    const write = m.fs.writeFile
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    m.fs.writeFile = async (p, b) => {
+      m.fs.writeFile = write // only the renewal's write waits
+      await gate
+      return write(p, b)
+    }
+    const renewing = later.account.bearer()
+    await new Promise((r) => setTimeout(r, 0)) // its write is waiting
+    server.opts.meExpiresAt = new Date(NOW + 61 * 86_400_000).toISOString()
+    expect(value(await later.account.status()).signedIn).toBe(true) // saved a renewed copy meanwhile
+    release()
+    expect((await renewing) === tok).toBe(true)
+    const saved = JSON.parse(Buffer.from(m.files.get(FILE)?.toString().slice(3) ?? '', 'base64').toString() || 'null') as { token: string } | null
+    expect(saved?.token === tok).toBe(true) // a restart stays signed in
+  })
+
   it('userId(): the held user only (main-only, for the docs Google owner); null signed out', async () => {
     const { account, server, m } = setup()
     expect(account.userId()).toBeNull()

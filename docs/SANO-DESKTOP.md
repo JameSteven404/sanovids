@@ -174,7 +174,8 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
 - **Chỉ main** (forward ở mục 3, cửa sổ Tài liệu ở mục 3b): `bearer()` trả token của phiên đang giữ; không cấu hình hoặc
   không phiên thì `null`; quá `expiresAt` thì hỏi `/me` như `status()` (phiên đã trượt vẫn dùng được khi app mở liên tục
   quá 30 ngày); phiên đó bị đăng xuất hoặc thay bằng phiên khác trong lúc chờ `/me` thì trả `null`, không bao giờ token của
-  phiên mới (yêu cầu bắt đầu dưới tài khoản cũ không đi bằng tài khoản mới). `ended(token, reason)`: máy chủ từ chối token đó qua forward (401; 403 `not-provisioned` → lý do
+  phiên mới (yêu cầu bắt đầu dưới tài khoản cũ không đi bằng tài khoản mới); so theo token, nên nhiều lần gia hạn cùng
+  một phiên chạy cùng lúc (hai forward, hoặc `status()` và một forward) đều nhận token đó và file vẫn giữ phiên. `ended(token, reason)`: máy chủ từ chối token đó qua forward (401; 403 `not-provisioned` → lý do
   `'forbidden'`) thì xoá đúng phiên đó; phiên mới hơn giữ nguyên. `userId()`: id người dùng của phiên đang giữ (chủ bản sao
   Google của Tài liệu, mục 3b). Các hàm này không nằm trong `CALLS`, nên không bao giờ qua IPC tới trang, và không ném lỗi.
 - **Phiên Google của chat và cửa sổ Tài liệu đi theo phiên SANO (bất biến):** mỗi khi phiên tài khoản SANO kết thúc

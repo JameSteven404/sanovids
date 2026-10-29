@@ -256,7 +256,8 @@ function createAccount(fx) {
       await fx.fs.writeFile(fx.file + '.tmp', fx.safeStorage.encryptString(JSON.stringify(s)))
       await fx.fs.rename(fx.file + '.tmp', fx.file)
       await fx.fs.rm(marker, { force: true }) // the file is this session now, not the one signed out
-      if (held !== s) await remove() // signed out (or replaced) while writing: never leave this token on disk
+      // signed out (or replaced) while writing: never leave this token on disk. A renewed copy of s (same token) keeps it
+      if (!held || held.token !== s.token) await remove()
     } catch (e) {
       fx.log(`[SanoVids] account: session kept in memory only (${e && e.code})`)
       await Promise.resolve(fx.fs.rm(fx.file + '.tmp', { force: true })).catch(() => undefined) // never leave a token beside the file
@@ -296,11 +297,12 @@ function createAccount(fx) {
       await clear(s, r && r.status === 403 ? 'forbidden' : undefined)
       return null
     }
-    // signed out or replaced meanwhile: the request this renewal serves never gets another session's token
-    if (held !== s) return null
+    // signed out or replaced meanwhile: the request this renewal serves never gets another session's token. By token, not
+    // identity: a renewal of s at the same time (another forward, status()) already holds (and saves) a renewed copy of s
+    if (held !== s) return held && held.token === s.token ? held : null
     const n = { ...s, user, expiresAt: later }
     await save(n)
-    return held === n ? n : null
+    return held && held.token === s.token ? held : null
   }
 
   /** login / google: authorize params → code (our state) → token, with a fresh verifier per attempt. */
