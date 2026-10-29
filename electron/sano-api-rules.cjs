@@ -103,7 +103,8 @@ function createApiForward(fx) {
       // 'manual' gives an opaque redirect (status 0) or the 3xx itself: never followed
       if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400) || !type.toLowerCase().startsWith('application/json')) return refuse('bad-answer')
       // the session is over on the server (revoked, expired, account turned off): end it here too; other 403s are scope checks
-      if (token && (res.status === 401 || (res.status === 403 && (await res.clone().json().catch(() => null))?.code === 'not-provisioned'))) await fx.account.ended(token)
+      // 'forbidden' (turned off) also wipes the docs' kept Google sign-in, as a /me 403 does
+      if (token && (res.status === 401 || (res.status === 403 && (await res.clone().json().catch(() => null))?.code === 'not-provisioned'))) await fx.account.ended(token, res.status === 403 ? 'forbidden' : undefined)
       const back = { 'content-type': type, 'cache-control': 'no-store' }
       const retry = res.headers.get('retry-after')
       if (retry) back['retry-after'] = retry

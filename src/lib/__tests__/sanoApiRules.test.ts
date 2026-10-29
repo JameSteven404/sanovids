@@ -31,13 +31,14 @@ function setup(o: { token?: string | null; answer?: (url: string, init: RequestI
     calls.push({ url, init })
     return o.answer ? o.answer(url, init) : json(200, { ok: true })
   }
-  const account = { bearer: async () => token, ended: async (t: string) => void ended.push(t) }
+  const reasons: unknown[] = []
+  const account = { bearer: async () => token, ended: async (t: string, reason?: string) => void (ended.push(t), reasons.push(reason)) }
   const api = R.createApiForward({ apiUrl: API, fetch, account, log: (line: string) => void logs.push(line) })
   const send = (path: string, init: RequestInit = {}) => {
     const request = new Request(`app://sano${path}`, { ...init, headers: { ...PAGE, ...(init.headers as Record<string, string>) } })
     return api.forward(request, new URL(request.url))
   }
-  return { api, send, calls, ended, token }
+  return { api, send, calls, ended, reasons, token }
 }
 const refusal = async (res: Response, code: string) => {
   expect(res.status, code).toBe(R.REFUSALS[code][0])
@@ -166,20 +167,21 @@ describe('createApiForward (fake SANO server)', () => {
     }
   })
 
-  it('server 401 → ended(token) then the server body; 403 not-provisioned ends; other 403 does not', async () => {
-    for (const [res, ends] of [
-      [() => json(401, { error: 'Phiên đăng nhập đã hết hạn. Đăng nhập lại.' }), true],
-      [() => json(403, { error: 'Tài khoản đã bị tắt.', code: 'not-provisioned' }), true],
+  it("server 401 → ended(token) then the server body; 403 not-provisioned ends with 'forbidden'; other 403 does not", async () => {
+    for (const [res, ends, reason] of [
+      [() => json(401, { error: 'Phiên đăng nhập đã hết hạn. Đăng nhập lại.' }), true, undefined],
+      [() => json(403, { error: 'Tài khoản đã bị tắt.', code: 'not-provisioned' }), true, 'forbidden'],
       [() => json(403, { error: 'Không có quyền.', code: 'forbidden' }), false],
       [() => json(403, { error: 'Không có quyền.' }), false],
       [() => json(500, { error: 'Lỗi máy chủ.' }), false],
-    ] as [() => Response, boolean][]) {
+    ] as [() => Response, boolean, string?][]) {
       const want = await res().json()
       const t = setup({ answer: res })
       const r = await t.send('/api/assistant/session')
       expect(r.status).toBe(res().status)
       expect(await r.json()).toEqual(want)
       expect(t.ended).toEqual(ends ? [t.token] : [])
+      expect(t.reasons).toEqual(ends ? [reason] : [])
     }
   })
 

@@ -343,9 +343,9 @@ function createAccount(fx) {
     },
     /** Main only (the docs' Google owner): id of the user whose session is held, or null. */
     userId: () => (held ? held.user.id : null),
-    /** Main only: the server refused `token` (401, 403 not-provisioned) → that session ends; a newer one survives. */
-    async ended(token) {
-      if (held && held.token === token) await clear(held)
+    /** Main only: the server refused `token` (401; 403 not-provisioned → reason 'forbidden') → that session ends; a newer one survives. */
+    async ended(token, reason) {
+      if (held && held.token === token) await clear(held, reason)
     },
     async signOut() {
       endChat() // first, and even with no session held or a sign-out that fails: ending the chat is always safe
@@ -368,9 +368,9 @@ function createAccount(fx) {
     },
   }
   /** bearer / ended throw nothing: an unexpected error is logged by name only and answers null. */
-  const quiet = (name) => async (input) => {
+  const quiet = (name) => async (...args) => {
     try {
-      return await api[name](input)
+      return await api[name](...args)
     } catch (e) {
       fx.log(`[SanoVids] account: unexpected ${e && e.name}`)
       return null

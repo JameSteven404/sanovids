@@ -20,7 +20,7 @@ interface Account {
   cancelGoogle(): Promise<Answer<undefined>>
   signOut(): Promise<Answer<Status>>
   bearer(): Promise<string | null>
-  ended(token: string): Promise<void>
+  ended(token: string, reason?: string): Promise<void>
   userId(): string | null
 }
 interface Rules {
@@ -632,7 +632,7 @@ describe('createAccount (fake SANO account server)', () => {
     expect(logs).toContain('[SanoVids] account: unexpected RangeError')
   })
 
-  it("onSessionEnd's reason: 'forbidden' only for a /me 403 (the account turned off); none for a 401, expiry or sign-out", async () => {
+  it("onSessionEnd's reason: 'forbidden' for a /me 403 (the account turned off); none for a 401, expiry or sign-out", async () => {
     const reasons: unknown[] = []
     const { account, server } = setup({ onSessionEnd: (reason) => void reasons.push(reason) })
     value(await account.login({ identifier: 'minh', password: server.password }))
@@ -698,6 +698,17 @@ describe('createAccount (fake SANO account server)', () => {
     expect(value(await account.status()).signedIn).toBe(false)
     await account.ended(tok) // twice: nothing more
     expect(ends).toBe(1)
+  })
+
+  it("ended(token, 'forbidden') (the forward's 403 not-provisioned): onSessionEnd('forbidden'); a 401's ended(token) passes none", async () => {
+    const reasons: unknown[] = []
+    const { account, server } = setup({ onSessionEnd: (reason) => void reasons.push(reason) })
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    reasons.length = 0
+    await account.ended((await account.bearer())!, 'forbidden')
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    await account.ended((await account.bearer())!)
+    expect(reasons).toEqual(['forbidden', undefined])
   })
 
   it('logs: never a password, token, code or verifier', async () => {
