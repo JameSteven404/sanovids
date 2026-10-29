@@ -1432,8 +1432,16 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     const show = fnBody('showMainWindow')
     expect(show).toContain('if (!mainWindowShown) return')
     expect(show).toContain("if (process.platform === 'darwin' && app.isReady() && !macQuitForUpdate) {")
-    // Windows: the app still quits with its last window
-    expect(mainSource).toMatch(/app\.on\('window-all-closed', \(\) => \{\s+if \(process\.platform !== 'darwin'\) app\.quit\(\)/)
+    // Windows: the app still quits with its last window, once Google's cookies are saved (capped, quits either way)
+    expect(mainSource).toMatch(/app\.on\('window-all-closed', \(\) => \{\s+if \(process\.platform !== 'darwin'\) void saveGoogle\(GOOGLE_SAVE_CAP_MS\)\.finally\(\(\) => app\.quit\(\)\)\s+\}\)/)
+    expect(mainSource).toContain('const GOOGLE_SAVE_CAP_MS = 1500')
+    const save = fnBody('saveGoogle')
+    expect(save).toContain('return Promise.race([all, new Promise((resolve) => setTimeout(resolve, capMs))])')
+    expect(save).toContain('Promise.allSettled([googleKeepCanvasapp && googleKeepCanvasapp.save(), flush(session.defaultSession), flush(canvasappSession())])')
+    // Windows sign-out / shut-down: saved too, never vetoed; an update install saves before the installer kills the app
+    expect(fnBody('createWindow')).toContain("win.on('query-session-end', () => void saveGoogle(GOOGLE_SAVE_CAP_MS))")
+    expect(mainSource).not.toMatch(/query-session-end[^\n]*preventDefault/)
+    expect(mainSource).toContain('beforeInstall: () => saveGoogle(GOOGLE_SAVE_CAP_MS) })')
   })
 
   it('checkout window: never modal on macOS (a sheet has no close button), setMenu on Windows only', () => {

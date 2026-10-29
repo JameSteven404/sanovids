@@ -1460,9 +1460,13 @@ describe('keep-login wiring (electron/main.cjs)', () => {
     expect(reg).not.toMatch(/\.restore\(|safeStorage/)
     const start = fnBody('startCanvasappKeepLogin')
     expect(start).not.toMatch(/\.restore\(|readFile\(|ensureCanvasappRestored/)
-    // safeStorage appears only in the require line, inside the injected crypto object of startCanvasappKeepLogin, and
-    // in Sano Agent's account object (sano-account-rules.cjs, D253: used on a status() call, never at start)
-    const cryptoObj = start.slice(start.indexOf('const asyncSafeStorage = {'), blockAt(start, start.indexOf('const asyncSafeStorage = {'))[1])
+    // safeStorage appears only in the require line, inside the crypto object keep-login and Google's kept cookies share
+    // (asyncSafeStorage), and in Sano Agent's account object (sano-account-rules.cjs, D253: used on a status() call,
+    // never at start)
+    const cryptoAt = mainCode.indexOf('\nconst asyncSafeStorage = {')
+    const cryptoObj = mainCode.slice(cryptoAt, blockAt(mainCode, cryptoAt)[1])
+    expect(start).toContain('crypto: asyncSafeStorage,')
+    expect(fnBody('registerCanvasappGateway')).toContain('crypto: asyncSafeStorage,')
     const account = fnBody('registerAccount')
     const accountObj = account.slice(account.indexOf('safeStorage: {'), blockAt(account, account.indexOf('safeStorage: {'))[1])
     expect(count(mainCode, 'safeStorage')).toBe(count(cryptoObj, 'safeStorage') + count(account, 'safeStorage') + 1)
@@ -1578,17 +1582,38 @@ describe('keep-login wiring (electron/main.cjs)', () => {
     expect(mainCode.indexOf('if (DEVTOOLS) {')).toBeLessThan(mainCode.indexOf('if (DEVTOOLS) void logCanvasappCookieShape()'))
   })
 
-  it('Google account cookies: removed after a confirmed login (finish), and once per run after a confirmed session — never while the login window is open', () => {
+  it('Google account cookies: kept with keep-login (else removed) after a confirmed login (finish) and once per run after a confirmed session — never while the login window is open', () => {
     const login = fnBody('canvasappLogin')
-    order(login, ['(await canvasappKeep.loggedIn()).kept', 'if (st.ok && st.authenticated) await keepLoginRules.removeGoogleAccountCookies(canvasappSession().cookies)', 'resolve('])
+    order(login, ['(await canvasappKeep.loggedIn()).kept', 'if (st.ok && st.authenticated) await settleCanvasappGoogle()', 'resolve('])
     const confirmed = fnBody('canvasappLoginConfirmed')
     order(confirmed, [
-      'if (canvasappGoogleCleaned || (canvasappLoginWin && !canvasappLoginWin.isDestroyed())) return',
-      'canvasappGoogleCleaned = true',
-      'void keepLoginRules.removeGoogleAccountCookies(canvasappSession().cookies)',
+      'if (canvasappGoogleSettled || (canvasappLoginWin && !canvasappLoginWin.isDestroyed())) return',
+      'canvasappGoogleSettled = true',
+      'void settleCanvasappGoogle()',
     ])
-    // + the default session at start: what the in-app Google popup of earlier SANO desktop runs left (TH-36 removed it)
-    expect(count(mainCode, 'removeGoogleAccountCookies(')).toBe(3)
+    expect(fnBody('settleCanvasappGoogle')).toContain('return canvasappGoogleKept() ? googleKeepCanvasapp.save() : googleKeepCanvasapp.wipe()')
+    // the same switch as keep-login: Portable / temp default-off, an explicit off or failed encryption → removed
+    const kept = fnBody('canvasappGoogleKept')
+    expect(kept).toContain('const st = canvasappKeep ? canvasappKeep.state() : null')
+    expect(kept).toContain('return !!st && st.available && st.enabled')
+    const reg = fnBody('registerCanvasappGateway')
+    order(reg, ['restrictCanvasappPermissions()', 'googleKeepCanvasapp = googleKeepRules.createGoogleKeep({', 'startCanvasappKeepLogin()'])
+    expect(reg).toContain("file: path.join(app.getPath('userData'), GOOGLE_CANVASAPP_FILE),")
+    expect(reg).toContain('cookies: canvasappSession().cookies,')
+    expect(reg).toContain('allowed: canvasappGoogleKept,')
+    expect(reg).not.toContain('owner:')
+    expect(mainCode).toContain("const GOOGLE_CANVASAPP_FILE = 'google-canvasapp.bin'")
+    // put back with the kept login, inside the same 3 s restore wait: restore, then the sweep of leftovers, then watched
+    const restore = fnBody('ensureCanvasappRestored')
+    expect(restore).toMatch(/const google = googleKeepCanvasapp\s+\.restore\(\)\s+\.then\(\(\) => googleKeepCanvasapp\.sweep\(\)\)/)
+    order(restore, ["canvasappSession().cookies.on('changed', canvasappKeep.onChanged)", 'const google = googleKeepCanvasapp', '.then(() => googleKeepCanvasapp.sweep())', '.then(() => googleKeepCanvasapp.start())', 'const done = Promise.all([keep, google])', 'keepLoginRules.KEEP_LOGIN_RESTORE_CAP_MS'])
+    expect(count(mainCode, 'KEEP_LOGIN_RESTORE_CAP_MS')).toBe(1)
+    // the switch: off wipes Google's sign-in, on saves it; Đăng xuất wipes it with the partition
+    order(fnBody('canvasappSetKeepLogin'), ['await canvasappKeep.setEnabled(on)', 'await (on ? googleKeepCanvasapp.save() : googleKeepCanvasapp.wipe())', 'await storeCanvasappKeepPrefs(on)'])
+    order(fnBody('canvasappLogout'), ['await ses.clearStorageData()', 'await googleKeepCanvasapp.wipe()', 'await ses.cookies.flushStore()'])
+    // removeGoogleAccountCookies stays for the default session at start only: what the in-app Google popup of earlier
+    // SANO desktop runs left (TH-36 removed it)
+    expect(count(mainCode, 'removeGoogleAccountCookies(')).toBe(1)
     expect(mainCode).toContain('\n    void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies)\n')
     expect(mainCode).not.toMatch(/cookies\.remove\(/) // only through the rules (Google cookies only)
   })
