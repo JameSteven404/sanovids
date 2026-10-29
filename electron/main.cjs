@@ -199,6 +199,8 @@ let mainWindowShown = false
  */
 let quitting = false
 let macQuitForUpdate = false
+/** Windows / Linux: the last window closed and the quit waits on saveGoogle; a second launch then relaunches after it. */
+let quitAfterSave = false
 /** macOS: the main window's hidden-work rules (hardening-rules createHiddenWork; set in createWindow, null elsewhere). */
 let mainWindowWork = null
 
@@ -250,7 +252,16 @@ if (!app.requestSingleInstanceLock()) {
     }
   }
   // A second launch brings THE SanoVids window forward (never a canvasapp login / checkout window).
-  app.on('second-instance', () => showMainWindow())
+  app.on('second-instance', () => {
+    // no window to bring back and the quit is coming: start again once it is done (the lock is held until then)
+    if (quitAfterSave) {
+      quitAfterSave = false
+      const exe = portableFile() // Portable: the .exe itself, not the temp copy this run is deleted with
+      app.relaunch(exe ? { execPath: exe, args: [] } : undefined)
+      return
+    }
+    showMainWindow()
+  })
   // Every web page SanoVids ever creates (main window, canvasapp login and its popups, checkout): no <webview>, and
   // Web Bluetooth never picks a device (Electron would otherwise select the first one). Exactly one handler each.
   app.on('web-contents-created', (_event, wc) => {
@@ -307,7 +318,10 @@ if (!app.requestSingleInstanceLock()) {
     }
   })
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') void saveGoogle(GOOGLE_SAVE_CAP_MS).finally(() => app.quit())
+    if (process.platform !== 'darwin') {
+      quitAfterSave = true
+      void saveGoogle(GOOGLE_SAVE_CAP_MS).finally(() => app.quit())
+    }
   })
   if (process.platform === 'darwin') {
     // ⌘Q / app.quit(): the main window really closes now (its close button otherwise only hides it).
