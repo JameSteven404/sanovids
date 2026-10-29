@@ -94,7 +94,13 @@ function keepLoginPlacement({ platform, kind, inApplications }) {
 /** A session cookie of `host` that a restart would lose → the plain entry SanoVids keeps, else null. */
 function keptCookieEntry(c, host) {
   if (!isHostCookie(c, host) || c.session !== true || c.expirationDate !== undefined) return null
-  if (typeof c.name !== 'string' || !COOKIE_NAME_RE.test(c.name) || isCloudflareCookie(c.name)) return null
+  if (typeof c.name !== 'string' || isCloudflareCookie(c.name)) return null
+  return cookieEntryFields(c)
+}
+
+/** What cookies.set needs to put a cookie back exactly (name, value, host-only, path, flags, sameSite), or null. */
+function cookieEntryFields(c) {
+  if (typeof c.name !== 'string' || !COOKIE_NAME_RE.test(c.name)) return null
   if (typeof c.value !== 'string' || c.value.length > KEEP_LOGIN_MAX_VALUE) return null
   const hostOnly = c.hostOnly === true
   const path = typeof c.path === 'string' && c.path.startsWith('/') && c.path.length <= 1024 ? c.path : '/'
@@ -647,6 +653,7 @@ module.exports = {
   defaultKeepLogin,
   keepLoginPlacement,
   keptCookieEntry,
+  cookieEntryFields,
   loginSnapshot,
   loginSnapshotKey,
   parseLoginSnapshot,
