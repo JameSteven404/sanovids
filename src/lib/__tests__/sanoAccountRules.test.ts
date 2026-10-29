@@ -691,8 +691,12 @@ describe('IPC: every account:* call checks the sender (fromSano), and the preloa
     expect(body).not.toContain('net.fetch')
     expect(body).toContain("file: path.join(profile.dir, 'sano-account.bin'),")
     expect(body).toContain('google: newGoogleSignIn(),')
-    // the chat's Google (registerGoogleSignIn's instance, not the account's own) ends with the SANO session
-    expect(body).toContain('onSessionEnd: () => chatGoogle && chatGoogle.signOut(),')
+    // the chat's Google (registerGoogleSignIn's instance, not the account's own) and the docs windows end with the SANO session
+    expect(body).toMatch(/onSessionEnd: \(\) => \{\s+chatGoogle && chatGoogle\.signOut\(\)\s+if \(sanoDocs\) void sanoDocs\.endSession\(\)\s+\},/)
+    // main-only bearer() / ended(): the module-scope account feeds the forward and the docs windows, never IPC
+    expect(body).toContain('const account = (sanoAccount = accountRules.createAccount({')
+    expect(body).toContain('signedIn: async () => !!(sanoAccount && (await sanoAccount.bearer())),')
+    expect(body).toContain('clearPartition: () => partition().clearStorageData().then(() => ses.clearCache()),')
     expect(mainSource).toContain('  const google = (chatGoogle = newGoogleSignIn())\n')
     expect(mainSource).toContain('\n    if (SANO) registerGoogleSignIn()\n')
     expect(body).toContain("safeStorage.getSelectedStorageBackend() === 'basic_text'") // Linux plain text: memory only
@@ -706,18 +710,43 @@ describe('IPC: every account:* call checks the sender (fromSano), and the preloa
   it('preload: SANO top frame only; inputs cut one past the limit; { ok: false } → Error(message) with code', async () => {
     const invoked: [string, unknown][] = []
     let answer: unknown = { ok: true, value: { signedIn: false } }
-    const exposed: Record<string, { account: Record<string, (i?: unknown) => Promise<unknown>> }> = {}
+    type Bridge = Record<string, (i?: unknown) => Promise<unknown>>
+    let exposed: Record<string, { account: Bridge; docs?: Bridge; apiForward?: true }> = {}
     const electron = {
       contextBridge: { exposeInMainWorld: (key: string, api: never) => void (exposed[key] = api), executeInMainWorld: ({ func, args }: { func: (...a: unknown[]) => unknown; args: unknown[] }) => new Function(`return (${func})`)()(...args) },
       ipcRenderer: { invoke: async (ch: string, input: unknown) => (invoked.push([ch, input]), answer), on: () => undefined, removeListener: () => undefined },
     }
-    const run = (isMainFrame: boolean) => {
-      const proc = { argv: ['--bdp-version=1.0.0', '--bdp-sano-origin=app://sano'], versions: { electron: '44.0.0' }, platform: 'win32', isMainFrame }
+    const run = (isMainFrame: boolean, forward = false) => {
+      exposed = {}
+      const proc = { argv: ['--bdp-version=1.0.0', '--bdp-sano-origin=app://sano', ...(forward ? ['--bdp-sano-api-forward'] : [])], versions: { electron: '44.0.0' }, platform: 'win32', isMainFrame }
       new Function('require', 'process', 'location', 'window', preloadSource)(() => electron, proc, { origin: 'app://sano' }, { addEventListener: () => undefined })
     }
+    // step 4: apiForward and docs only for SANO's top frame with main's --bdp-sano-api-forward
+    run(false, true)
+    expect(exposed.sanoDesktop).toBeUndefined()
+    run(true, true)
+    expect(Object.keys(exposed.sanoDesktop)).toEqual(['sanovidsUrl', 'google', 'account', 'apiForward', 'docs'])
+    expect(exposed.sanoDesktop.apiForward).toBe(true)
+    const docs = exposed.sanoDesktop.docs!
+    expect(Object.keys(docs)).toEqual(['open', 'closeAll'])
+    answer = { ok: true, value: undefined }
+    expect(await docs.open({ id: 'i'.repeat(300), kind: 'k'.repeat(20), extra: 'dropped' })).toBeUndefined()
+    expect(invoked.at(-1)).toEqual(['docs:open', { id: 'i'.repeat(201), kind: 'k'.repeat(10) }])
+    await docs.open(null)
+    expect(invoked.at(-1)).toEqual(['docs:open', { id: '', kind: '' }])
+    answer = { ok: true, value: false }
+    expect(await docs.closeAll()).toBe(false)
+    expect(invoked.at(-1)).toEqual(['docs:closeAll', undefined])
+    answer = { ok: false, error: 'Đang mở quá nhiều tài liệu. Đóng bớt rồi thử lại.', code: 'too-many' }
+    const d = (await docs.open({ id: 'x', kind: 'docs' }).catch((x) => x)) as Error & { code?: string }
+    expect([d instanceof Error, d.message, d.code]).toEqual([true, 'Đang mở quá nhiều tài liệu. Đóng bớt rồi thử lại.', 'too-many'])
+    answer = null
+    await expect(docs.open({ id: 'x', kind: 'docs' })).rejects.toThrow('Chưa mở được tài liệu.')
     run(false)
     expect(exposed.sanoDesktop).toBeUndefined()
     run(true)
+    expect(Object.keys(exposed.sanoDesktop)).toEqual(['sanovidsUrl', 'google', 'account'])
+    answer = { ok: true, value: { signedIn: false } }
     const a = exposed.sanoDesktop.account
     expect(Object.keys(a)).toEqual(['status', 'login', 'register', 'forgot', 'google', 'cancelGoogle', 'signOut'])
     expect(await a.status()).toEqual({ signedIn: false })

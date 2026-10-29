@@ -491,7 +491,7 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(h.defaultPermissionAllowed('fileSystem', { ...perm, sanoOrigin: 'http://127.0.0.1:8080' })).toBe(false)
   })
 
-  it('D240 wiring: app://sano is served from sano-dist only in that mode, its API is a JSON 404, a missing build stops the start', () => {
+  it('D240 wiring: app://sano is served from sano-dist only in that mode, its API forwarded with SANO_API (else a JSON 404), a missing build stops the start', () => {
     const at = (s: string) => {
       const i = mainSource.indexOf(s)
       expect(i, s).toBeGreaterThan(-1)
@@ -508,9 +508,26 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     // plain SanoVids and a server SANO: every host but bdp stays 404
     expect(serve).toContain("const sano = SANO_IN_APP && url.host === 'sano'")
     expect(serve).toContain("if (url.host !== HOST && !sano) return new Response('Not found', { status: 404 })")
-    // /api and /api/… : JSON 404 before any file or index.html fallback
-    expect(serve).toMatch(/if \(sano && \/\^\\\/api\(\?:\\\/\|\$\)\/\.test\(rel\)\) \{\s+return new Response\(JSON\.stringify\(\{ error: '[^']+' \}\), \{ status: 404, headers: \{ 'content-type': MIME\['\.json'\]/)
+    // /api and /api/… : the forward when SANO_API (sano-api-rules.cjs), else the 1.0 JSON 404, before any file or index.html fallback
+    expect(serve).toMatch(/if \(sano && \/\^\\\/api\(\?:\\\/\|\$\)\/\.test\(rel\)\) \{\s+if \(sanoApi\) return sanoApi\.forward\(request, url\)\s+return new Response\(JSON\.stringify\(\{ error: '[^']+' \}\), \{ status: 404, headers: \{ 'content-type': MIME\['\.json'\]/)
     expect(serve.indexOf('/^\\/api(?:\\/|$)/.test(rel)')).toBeLessThan(serve.indexOf('const root = sano ? SANO_DIST : DIST'))
+    // the forward and the docs windows exist only with app://sano/ and SANO_API, and so does the page's flag
+    expect(mainSource.match(/\bsanoApi = /g)).toHaveLength(2) // `let sanoApi = null` + the one below
+    expect(mainSource.match(/\bsanoDocs = /g)).toHaveLength(2) // `let sanoDocs = null` + registerDocs
+    expect(mainSource).toMatch(/\n {2}if \(SANO_IN_APP && SANO_API\) \{\n {4}sanoApi = apiRules\.createApiForward\(\{ apiUrl: SANO_API, fetch: \(url, init\) => fetch\(url, init\), account, log: \(line\) => console\.error\(line\) \}\)\n {4}registerDocs\(\)\n {2}\}/)
+    expect(mainSource.split('--bdp-sano-api-forward').length - 1).toBe(1)
+    expect(mainSource).toContain("...(SANO_IN_APP && SANO_API ? ['--bdp-sano-api-forward'] : [])")
+    // a real main-window close asks docs.closeAll first; closed destroys what is left
+    const create = mainSource.slice(at('function createWindow() {'), at('function showMainWindow() {'))
+    expect(create).toMatch(/if \(updating \|\| hardening\.mainWindowCloseHides\(\{ platform: process\.platform, quitting, quittingForUpdate: updating \}\)\) return\s+if \(!sanoDocs\.closeAll\(\{ ask: true \}\)\) event\.preventDefault\(\)/)
+    expect(create).toContain('if (sanoDocs) sanoDocs.closeAll({ ask: false })')
+    // docs IPC: SANO's page itself only
+    expect(mainSource).toContain("ipcMain.handle('docs:open', (event, input) => (fromSano(event) ? sanoDocs.open(input) : accountRules.NOT_ALLOWED))")
+    expect(mainSource).toContain("ipcMain.handle('docs:closeAll', (event) => (fromSano(event) ? { ok: true, value: sanoDocs.closeAll({ ask: true }) } : accountRules.NOT_ALLOWED))")
+    // the docs window: no preload, its in-memory partition, Electron's own user agent
+    const docs = mainSource.slice(at('function registerDocs() {'), at('async function sanoDesktopClientId()'))
+    expect(docs).toContain('partition: docsRules.PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false,')
+    expect(docs).not.toMatch(/preload|setUserAgent|userAgent|persist:/)
     expect(serve).toContain('const csp = () => (sano ? hardening.SANO_PAGE_CSP : htmlCsp())')
     expect(serve).toContain("if (file !== root && !file.startsWith(root + path.sep)) return new Response('Forbidden', { status: 403 })")
     expect(serve).toContain("const index = await fs.promises.readFile(path.join(root, 'index.html')).catch(() => null)")
@@ -627,8 +644,9 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     const sano = /\n {2}contextBridge\.exposeInMainWorld\('sanoDesktop', \{\n([\s\S]*?)\n {2}\}\)\n/.exec(preloadSource)
     expect(sano).not.toBeNull()
     expect([...sano![1].matchAll(/^ {4}(\w+): /gm)].map((m) => m[1])).toEqual(['sanovidsUrl', 'google'])
-    // D253: the account object is built in the page's world (its Errors keep their code), then exposed here
-    expect(sano![1]).toMatch(/\n {4}account,$/)
+    // D253: the account object is built in the page's world (its Errors keep their code), then exposed here; step 4:
+    // apiForward and docs only with main's --bdp-sano-api-forward
+    expect(sano![1]).toMatch(/\n {4}account,\n(?: {4}\/\*\*[^\n]*\*\/\n)? {4}\.\.\.\(forward \? \{ apiForward: true, docs \} : \{\}\),$/)
     expect(preloadSource).toContain('  const account = contextBridge.executeInMainWorld({')
     expect(sano![1]).toContain("sanovidsUrl: 'app://bdp/',")
     // no argument crosses: main decides the client, the endpoints and where the tokens go
@@ -1053,8 +1071,8 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     for (const later of ['app.enableSandbox()', "app.setPath('userData'", 'requestSingleInstanceLock', 'app.whenReady()']) expect(strip, later).toBeLessThan(idx(later))
   })
 
-  it('DevTools: devTools: DEVTOOLS on the 3 webPreferences, shortcuts only inside if (DEVTOOLS)', () => {
-    expect(count('devTools: DEVTOOLS')).toBe(3)
+  it('DevTools: devTools: DEVTOOLS on the 4 webPreferences, shortcuts only inside if (DEVTOOLS)', () => {
+    expect(count('devTools: DEVTOOLS')).toBe(4) // main window, canvasapp login, checkout, Tài liệu
     expect(mainSource).toContain('const DEVTOOLS = hardening.allowDevTools({ isPackaged: PACKAGED, profileSource: profile.source, testBuild: TEST_BUILD })')
     const [start, end] = blockAt(idx('if (DEVTOOLS) {'))
     const toggles = [...mainSource.matchAll(/toggleDevTools|openDevTools/g)].map((m) => m.index!)
@@ -1098,7 +1116,7 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(mainSource).toContain('ses.setPermissionRequestHandler((wc, permission, callback, details)')
     expect(mainSource).toContain('ses.setPermissionCheckHandler((wc, permission, requestingOrigin, details)')
     expect(mainSource).toContain('hardening.defaultPermissionAllowed(permission, {')
-    expect(count('setDevicePermissionHandler(() => false)')).toBe(2) // default session + canvasapp partition
+    expect(count('setDevicePermissionHandler(() => false)')).toBe(3) // default session + canvasapp and Tài liệu partitions
     // exactly one bluetooth handler per webContents (app-wide)
     expect(count("'select-bluetooth-device'")).toBe(1)
     expect(idx("'select-bluetooth-device'")).toBeGreaterThan(idx("app.on('web-contents-created'"))
@@ -1339,8 +1357,9 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
   })
 
   it('downloads: one will-download listener on the default session, registered at ready (never per window); the page is not told', () => {
-    expect(count("'will-download'")).toBe(1)
+    expect(count("'will-download'")).toBe(2) // + the Tài liệu partition's, set once with it (registerDocs)
     expect(fnBody('registerDownloads')).toContain("session.defaultSession.on('will-download', (_event, item) => {")
+    expect(fnBody('registerDocs')).toContain("ses.on('will-download', (_event, item) => {")
     expect(fnBody('createWindow')).not.toContain('will-download')
     const [rs, re] = blockAt(idx('app.whenReady().then(() => {'))
     const call = idx('    registerDownloads()')
@@ -1469,7 +1488,7 @@ describe('development-mode lock wiring (main.cjs / preload.cjs / devaccess*.cjs 
     const setup = idx(mainSource, "devAccess = setupDevAccess({ userDataDir: app.getPath('userData'), buildOpen: DEV_OPEN_BUILD, isAppSender: fromApp, getMainWindow: () => mainWindow })")
     expect(setup).toBeGreaterThan(ready)
     expect(setup).toBeLessThan(mainSource.indexOf('createWindow()', ready))
-    expect(mainSource).toContain("additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, `--bdp-product=${app.getName()}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : [])]")
+    expect(mainSource).toContain("additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, `--bdp-product=${app.getName()}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : []), ...(SANO_IN_APP && SANO_API ? ['--bdp-sano-api-forward'] : [])]")
     expect(mainSource).toContain('if (devAccess) devAccess.attachWindow(win)')
     // only one place builds the unlock module, and nothing else in main touches its channels
     expect(mainSource.split('setupDevAccess(').length - 1).toBe(1)

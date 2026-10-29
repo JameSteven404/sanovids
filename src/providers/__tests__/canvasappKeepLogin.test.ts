@@ -1517,8 +1517,9 @@ describe('keep-login wiring (electron/main.cjs)', () => {
     expect(R.KEEP_LOGIN_DRAIN_CAP_MS).toBe(5000)
     const drain = fnBody('drainCanvasappRequests')
     order(drain, ['for (const r of pending) r.controller.abort()', 'Promise.allSettled(pending.map((r) => r.done))'])
-    // the only clearStorageData is Đăng xuất's
-    expect(count(mainCode, 'clearStorageData(')).toBe(1)
+    // the only clearStorageData of the canvasapp partition is Đăng xuất's (the other clears the Tài liệu partition)
+    expect(count(mainCode, 'clearStorageData(')).toBe(2)
+    expect(count(mainCode, 'partition().clearStorageData()')).toBe(1)
   })
 
   it('the server logout is main-only (not in the allowlist), best effort, and the only other canvasapp fetch', () => {

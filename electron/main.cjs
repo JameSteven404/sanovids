@@ -50,6 +50,8 @@ const updaterRules = require('./updater-rules.cjs')
 const hardening = require('./hardening-rules.cjs')
 const googleSignInRules = require('./google-signin-rules.cjs')
 const accountRules = require('./sano-account-rules.cjs')
+const apiRules = require('./sano-api-rules.cjs')
+const docsRules = require('./sano-docs-rules.cjs')
 /**
  * Packaged app? Not app.isPackaged alone: Electron decides that from the exe NAME, so a copy of SanoVids.exe renamed
  * electron.exe would run the real app.asar with every packaged-only protection off. With the OnlyLoadAppFromAsar fuse
@@ -337,8 +339,10 @@ async function serveDist(request) {
   } catch {
     return new Response('Bad request', { status: 400 })
   }
-  // No SANO server in the app (1.0 has no API): its API answers like nginx's /api/ 404, never index.html parsed as JSON.
+  // With SANO_API_URL: /api/assistant/* goes to that server with the account's bearer (sano-api-rules.cjs). No SANO
+  // server in the app (1.0 has no API): its API answers like nginx's /api/ 404, never index.html parsed as JSON.
   if (sano && /^\/api(?:\/|$)/.test(rel)) {
+    if (sanoApi) return sanoApi.forward(request, url)
     return new Response(JSON.stringify({ error: 'Bản Sano Agent này chưa có máy chủ SANO.' }), { status: 404, headers: { 'content-type': MIME['.json'], 'cache-control': 'no-store' } })
   }
   const root = sano ? SANO_DIST : DIST
@@ -437,7 +441,7 @@ function createWindow() {
       spellcheck: false,
       // Hover previews / the take viewer may start with sound before any click (the speaker switch decides).
       autoplayPolicy: 'no-user-gesture-required',
-      additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, `--bdp-product=${app.getName()}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : [])],
+      additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, `--bdp-product=${app.getName()}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : []), ...(SANO_IN_APP && SANO_API ? ['--bdp-sano-api-forward'] : [])],
     },
   })
 
@@ -450,6 +454,7 @@ function createWindow() {
     if (mainWindow === win) mainWindow = null
     if (work) work.stop()
     if (mainWindowWork === work) mainWindowWork = null
+    if (sanoDocs) sanoDocs.closeAll({ ask: false }) // no document window outlives the main window
   })
   if (process.platform === 'darwin') {
     // macOS: the red button / ⌘W only hide the window — the app keeps running and the takes being made go on — until
@@ -463,6 +468,14 @@ function createWindow() {
     win.on('show', () => work.show())
     // A page that crashed or reloads says again what it is doing ('app:busy' when it starts): nothing is being made now.
     win.webContents.on('render-process-gone', () => work.setBusy(false))
+  }
+  // A real close (not macOS hiding it, not an update's quit) asks first when documents are open: "Ở lại" keeps both.
+  if (sanoDocs) {
+    win.on('close', (event) => {
+      const updating = macQuitForUpdate || !!(updater && updater.isQuittingForUpdate())
+      if (updating || hardening.mainWindowCloseHides({ platform: process.platform, quitting, quittingForUpdate: updating })) return
+      if (!sanoDocs.closeAll({ ask: true })) event.preventDefault()
+    })
   }
 
   // Portable build: a pinned window relaunches the portable .exe itself, not the temp copy it runs from (updater-rules
@@ -835,8 +848,11 @@ function newGoogleSignIn() {
  * Sano Agent's in-app sign-in (D253): window.sanoDesktop.account → these handlers → SANO's account server, called with
  * Node's fetch (no Origin header, no Chromium cookie). Only SANO's page itself may call (fromSano, on every call).
  */
+let sanoAccount = null // main-only bearer() / ended() for the API forward and the docs windows
+let sanoApi = null // the /api/assistant/* forward (SANO_IN_APP with SANO_API only)
+let sanoDocs = null // the "Tài liệu" windows (same condition)
 function registerAccount() {
-  const account = accountRules.createAccount({
+  const account = (sanoAccount = accountRules.createAccount({
     apiUrl: SANO_API,
     fetch: (url, init) => fetch(url, init),
     file: path.join(profile.dir, 'sano-account.bin'),
@@ -851,10 +867,104 @@ function registerAccount() {
     random: (n) => crypto.randomBytes(n),
     google: newGoogleSignIn(),
     log: (line) => console.error(line),
-    // the SANO session ended or changed hands: the previous user's chat Google token must not serve the next one
-    onSessionEnd: () => chatGoogle && chatGoogle.signOut(),
-  })
+    // the SANO session ended or changed hands: the previous user's chat Google token and docs editor sign-in must not
+    // serve the next one
+    onSessionEnd: () => {
+      chatGoogle && chatGoogle.signOut()
+      if (sanoDocs) void sanoDocs.endSession()
+    },
+  }))
   accountRules.registerAccountIpc(ipcMain, account, fromSano)
+  if (SANO_IN_APP && SANO_API) {
+    sanoApi = apiRules.createApiForward({ apiUrl: SANO_API, fetch: (url, init) => fetch(url, init), account, log: (line) => console.error(line) })
+    registerDocs()
+  }
+}
+
+/**
+ * Sano Agent "Tài liệu" (SANO TH-45, sano-docs-rules.cjs, docs/SANO-DESKTOP.md §3b): "Mở" opens the document in
+ * Google's own editor in a window of its own: no preload, the in-memory partition, Google's pages only, the default
+ * Electron user agent (never setUserAgent: Google blocks a spoofed Chrome). Only SANO's page itself may ask (fromSano).
+ */
+function registerDocs() {
+  let ses = null
+  /** The partition, its permission and download rules set once (on the first clear: the first open clears). */
+  const partition = () => {
+    if (ses) return ses
+    ses = session.fromPartition(docsRules.PARTITION)
+    ses.setPermissionRequestHandler((_wc, permission, callback) => callback(docsRules.permissionAllowed(permission)))
+    ses.setPermissionCheckHandler((_wc, permission) => docsRules.permissionAllowed(permission))
+    ses.setDevicePermissionHandler(() => false)
+    // Docs' own exports only; the Save dialog stays Electron's (no setSavePath)
+    ses.on('will-download', (_event, item) => {
+      const url = item.getURLChain().at(-1) || item.getURL()
+      if (docsRules.downloadAllowed(url)) return
+      item.cancel()
+      console.error(`[SanoVids] docs: download refused ${docsRules.hostLabel(url)}`)
+    })
+    return ses
+  }
+  const options = () => ({
+    width: 1200,
+    height: 900,
+    show: false,
+    autoHideMenuBar: true,
+    title: 'Tài liệu — Sano Agent',
+    webPreferences: { partition: docsRules.PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false, webviewTag: false, safeDialogs: true, navigateOnDragDrop: false, spellcheck: false, devTools: DEVTOOLS },
+  })
+  const refused = (url) => console.error(`[SanoVids] docs: refused ${docsRules.hostLabel(url)}`)
+  /** A document window or one of its popups: Google's pages stay, links go to the default browser (docs.external). */
+  const guard = (win, key) => {
+    const wc = win.webContents
+    win.once('ready-to-show', () => win.show())
+    wc.on('will-navigate', (event, url) => {
+      if (docsRules.navigationAllowed(url)) return
+      event.preventDefault()
+      refused(url)
+      sanoDocs.external(key, url)
+    })
+    // a redirect is the server's, never opened in the browser
+    wc.on('will-redirect', (event, url) => {
+      if (!event.isMainFrame || docsRules.navigationAllowed(url)) return
+      event.preventDefault()
+      refused(url)
+    })
+    wc.setWindowOpenHandler(({ url }) => {
+      const decision = docsRules.popupDecision(url)
+      if (decision === 'allow') return { action: 'allow', overrideBrowserWindowOptions: options() }
+      if (decision === 'external') sanoDocs.external(key, url)
+      else refused(url)
+      return { action: 'deny' }
+    })
+    // tracked (the cap counts popups too) or destroyed by track itself
+    wc.on('did-create-window', (child) => {
+      if (sanoDocs.track(key, handle(child))) guard(child, key)
+    })
+    wc.on('will-prevent-unload', (event) => {
+      const choice = dialog.showMessageBoxSync(win, { type: 'question', buttons: ['Ở lại', 'Vẫn đóng'], defaultId: 0, cancelId: 0, message: 'Tài liệu còn thay đổi chưa lưu lên Google. Vẫn đóng cửa sổ?' })
+      if (choice === 1) event.preventDefault()
+    })
+  }
+  const handle = (win) => ({ focus: () => win.focus(), destroy: () => win.destroy(), isDestroyed: () => win.isDestroyed(), onClosed: (cb) => win.on('closed', cb) })
+  sanoDocs = docsRules.createDocs({
+    openWindow: (url, key) => {
+      const win = new BrowserWindow(options())
+      guard(win, key)
+      win.loadURL(url).catch(() => undefined) // a refused redirect aborts the load: logged by host in guard
+      return handle(win)
+    },
+    clearPartition: () => partition().clearStorageData().then(() => ses.clearCache()),
+    signedIn: async () => !!(sanoAccount && (await sanoAccount.bearer())),
+    confirm: (n) => {
+      const opts = { type: 'question', buttons: ['Ở lại', 'Đóng hết'], defaultId: 0, cancelId: 0, message: `Còn ${n} tài liệu đang mở. Đóng hết? Thay đổi chưa lưu lên Google sẽ mất.` }
+      return (mainWindow && !mainWindow.isDestroyed() ? dialog.showMessageBoxSync(mainWindow, opts) : dialog.showMessageBoxSync(opts)) === 1
+    },
+    openExternal: (url) => shell.openExternal(url),
+    now: Date.now,
+    log: (line) => console.error(line),
+  })
+  ipcMain.handle('docs:open', (event, input) => (fromSano(event) ? sanoDocs.open(input) : accountRules.NOT_ALLOWED))
+  ipcMain.handle('docs:closeAll', (event) => (fromSano(event) ? { ok: true, value: sanoDocs.closeAll({ ask: true }) } : accountRules.NOT_ALLOWED))
 }
 
 /**
