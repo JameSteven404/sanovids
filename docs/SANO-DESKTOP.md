@@ -173,7 +173,8 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
   giữ lúc đó. Bấm Google lần nữa khi lượt trước còn chờ trình duyệt: lượt trước trả `superseded`, lượt mới vẫn chạy.
 - **Chỉ main** (forward ở mục 3, cửa sổ Tài liệu ở mục 3b): `bearer()` trả token của phiên đang giữ; không cấu hình hoặc
   không phiên thì `null`; quá `expiresAt` thì hỏi `/me` như `status()` (phiên đã trượt vẫn dùng được khi app mở liên tục
-  quá 30 ngày). `ended(token, reason)`: máy chủ từ chối token đó qua forward (401; 403 `not-provisioned` → lý do
+  quá 30 ngày); phiên đó bị đăng xuất hoặc thay bằng phiên khác trong lúc chờ `/me` thì trả `null`, không bao giờ token của
+  phiên mới (yêu cầu bắt đầu dưới tài khoản cũ không đi bằng tài khoản mới). `ended(token, reason)`: máy chủ từ chối token đó qua forward (401; 403 `not-provisioned` → lý do
   `'forbidden'`) thì xoá đúng phiên đó; phiên mới hơn giữ nguyên. `userId()`: id người dùng của phiên đang giữ (chủ bản sao
   Google của Tài liệu, mục 3b). Các hàm này không nằm trong `CALLS`, nên không bao giờ qua IPC tới trang, và không ném lỗi.
 - **Phiên Google của chat và cửa sổ Tài liệu đi theo phiên SANO (bất biến):** mỗi khi phiên tài khoản SANO kết thúc
@@ -229,7 +230,8 @@ có forward (`app://sano/` và `SANO_API_URL`). Mã: `electron/sano-docs-rules.c
   cookie tài khoản Google của partition được giữ qua các lần chạy trong bản sao mã hoá `google-docs.bin` (safeStorage; máy
   không mã hoá được hoặc Linux `basic_text` thì không giữ, như trước: mỗi lần mở app hỏi đăng nhập Google một lần). Sau
   mỗi lần xoá partition (bất biến `dirty` dưới đây) và trước khi mở cửa sổ, bản sao được đặt lại thành cookie phiên; mọi
-  thay đổi được lưu lại (1 s, tối đa 10 s), và lưu lần cuối trước khi `endSession` xoá partition (tối đa 1,5 s), lúc thoát,
+  thay đổi được lưu lại (1 s, tối đa 10 s), và lưu lần cuối trước khi `endSession` xoá partition (tối đa 1,5 s), lúc thoát
+  (cả ⌘Q trên macOS),
   cài cập nhật và Windows đăng xuất. **Quy tắc chủ:** bản sao gắn với `sha256(SANO_API + '\n' + id người dùng SANO)`;
   người dùng SANO khác mở Tài liệu thì bản sao bị xoá, không đặt lại. 401, hết hạn hay đăng xuất SANO giữ bản sao (chỉ
   đúng người đó đăng nhập lại mới dùng); 403 (tài khoản bị tắt) xoá nó. Không dùng 90 ngày thì xoá.

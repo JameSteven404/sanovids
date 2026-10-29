@@ -21,7 +21,7 @@ interface Keep {
   start(): void
   save(): Promise<void>
   detach(): void
-  wipe(): Promise<void>
+  wipe(o?: { keepSnapshot?: boolean }): Promise<boolean>
 }
 interface Rules {
   GOOGLE_KEEP_IDLE_DAYS: number
@@ -128,7 +128,7 @@ function decrypt(b: Uint8Array) {
 type Machine = ReturnType<typeof machine>
 
 const logs: string[] = []
-function keepOf(store: Store, m: Machine, o: { allowed?: () => boolean; owner?: () => string | null } = {}) {
+function keepOf(store: Store, m: Machine, o: { allowed?: () => boolean; leave?: () => boolean; owner?: () => string | null } = {}) {
   return R.createGoogleKeep({ label: 'google-test', file: FILE, cookies: store, crypto: m.crypto, fs: m.fs, now: () => Date.now(), log: (l: string) => void logs.push(l), ...o })
 }
 const snapshot = (m: Machine) => JSON.parse(decrypt(m.files.get(FILE)!)) as { v: number; savedAt: number; owner: string | null; cookies: (Ck & { expirationDate?: number })[] }
@@ -317,6 +317,46 @@ describe('createGoogleKeep', () => {
     writeSnapshot(m2, { v: 1, savedAt: T0, owner: null, cookies: [] })
     expect(await keepOf(fakeStore(), m2, { allowed: () => false }).restore()).toBe(0)
     expect(m2.files.has(FILE)).toBe(false)
+  })
+
+  it('wipe: a snapshot that cannot be deleted is emptied (never put back); one that cannot be emptied either → false', async () => {
+    const busy = () => {
+      throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' })
+    }
+    for (const stuck of [['rm'], ['rm', 'writeFile']]) {
+      const m = machine()
+      const store = fakeStore([sid({ session: true, expirationDate: undefined })])
+      const keep = keepOf(store, m)
+      await keep.restore()
+      await keep.save()
+      const { rm, writeFile } = m.fs
+      m.fs.rm = async (p: string) => (p === FILE ? busy() : rm(p))
+      if (stuck.includes('writeFile')) m.fs.writeFile = async (p: string, b: Uint8Array) => (p === FILE ? busy() : writeFile(p, b))
+      expect(await keep.wipe(), stuck.join('+')).toBe(stuck.length === 1)
+      expect(store.jar.size).toBe(0)
+      Object.assign(m.fs, { rm, writeFile })
+      expect(await keepOf(fakeStore(), m).restore(), stuck.join('+')).toBe(stuck.length === 1 ? 0 : 1)
+    }
+    expect(await keepOf(fakeStore(), machine()).wipe()).toBe(true) // no snapshot at all
+  })
+
+  it('leave (never chose, default off: maybe the installed app’s snapshot): never read, written or deleted, unless wiped', async () => {
+    const m = machine()
+    writeSnapshot(m, { v: 1, savedAt: T0, owner: null, cookies: [{ name: 'SID', value: 'v-sid', domain: 'google.com', hostOnly: false, path: '/', secure: true, httpOnly: true, sameSite: 'unspecified' }] })
+    const before = m.files.get(FILE)
+    const store = fakeStore()
+    const keep = keepOf(store, m, { allowed: () => false, leave: () => true })
+    expect(await keep.restore()).toBe(0)
+    expect(store.calls.set).toEqual([]) // not put back
+    keep.start()
+    store.server(sid())
+    await vi.advanceTimersByTimeAsync(2000)
+    await keep.save()
+    await keep.sweep()
+    expect(await keep.wipe({ keepSnapshot: true })).toBe(true) // this run's Google cookies go, the snapshot stays
+    expect([store.jar.size, m.files.get(FILE)]).toEqual([0, before])
+    expect(await keep.wipe()).toBe(true) // Đăng xuất: deleted
+    expect(m.files.has(FILE)).toBe(false)
   })
 
   it('no encryption (main also reports Linux basic_text so): nothing kept, a copy on disk deleted, cookies still session-only', async () => {

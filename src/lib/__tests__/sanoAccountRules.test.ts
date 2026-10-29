@@ -827,6 +827,28 @@ describe('createAccount (fake SANO account server)', () => {
     delete server.opts.offline
   })
 
+  it("a renewal (/me past the saved expiresAt) that outlives its session answers null, never the next account's token", async () => {
+    for (const next of ['another user', 'signed out'] as const) {
+      const server = fakeServer()
+      const m = machine()
+      value(await setup({ server, m }).account.login({ identifier: 'minh', password: server.password }))
+      server.opts.meExpiresAt = new Date(NOW + 60 * 86_400_000).toISOString() // A's session slid on the server
+      const later = setup({ server, m, now: NOW + 31 * 86_400_000 })
+      let answer!: () => void
+      server.opts.hang = '/api/auth/me'
+      server.opts.gate = new Promise<void>((r) => (answer = r))
+      const renewing = later.account.bearer() // the forward of a request A started
+      await new Promise((r) => setTimeout(r, 0))
+      if (next === 'another user') {
+        Object.assign(server.user, { id: 'u-b', name: 'B' })
+        value(await later.account.login({ identifier: 'minh', password: server.password }))
+      } else value(await later.account.signOut())
+      answer()
+      expect(await renewing, next).toBeNull()
+      expect(later.account.userId(), next).toBe(next === 'another user' ? 'u-b' : null)
+    }
+  })
+
   it('userId(): the held user only (main-only, for the docs Google owner); null signed out', async () => {
     const { account, server, m } = setup()
     expect(account.userId()).toBeNull()

@@ -296,8 +296,11 @@ function createAccount(fx) {
       await clear(s, r && r.status === 403 ? 'forbidden' : undefined)
       return null
     }
-    if (held === s) await save({ ...s, user, expiresAt: later })
-    return held
+    // signed out or replaced meanwhile: the request this renewal serves never gets another session's token
+    if (held !== s) return null
+    const n = { ...s, user, expiresAt: later }
+    await save(n)
+    return held === n ? n : null
   }
 
   /** login / google: authorize params → code (our state) → token, with a fresh verifier per attempt. */
