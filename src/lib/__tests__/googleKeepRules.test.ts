@@ -163,6 +163,20 @@ describe('createGoogleKeep', () => {
     expect(store.jar.get('canvas_session\ncanvasapp.io.vn\n/')).toMatchObject({ value: `${SECRET}-cv` })
   })
 
+  it('start() before restore() (main: restore may wait on a keychain): a sign-in is made session-only at once, saved only after restore', async () => {
+    const store = fakeStore()
+    const m = machine()
+    const keep = keepOf(store, m)
+    keep.start()
+    store.server(sid())
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(store.jar.get('SID\n.google.com\n/')).toMatchObject({ session: true })
+    expect(m.files.size).toBe(0)
+    expect(await keep.restore()).toBe(0)
+    await keep.save()
+    expect(snapshot(m).cookies.map((c) => c.name)).toEqual(['SID'])
+  })
+
   it('restore: session cookies only, right url / domain / host-only; a cookie already there wins; expired entries dropped', async () => {
     const m = machine()
     const now = Math.floor(T0 / 1000)

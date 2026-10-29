@@ -1597,16 +1597,18 @@ describe('keep-login wiring (electron/main.cjs)', () => {
     expect(kept).toContain('const st = canvasappKeep ? canvasappKeep.state() : null')
     expect(kept).toContain('return !!st && st.available && st.enabled')
     const reg = fnBody('registerCanvasappGateway')
-    order(reg, ['restrictCanvasappPermissions()', 'googleKeepCanvasapp = googleKeepRules.createGoogleKeep({', 'startCanvasappKeepLogin()'])
+    // watched at once, never behind the restore's safeStorage wait (a slow keychain must not let a sign-in reach the disk)
+    order(reg, ['restrictCanvasappPermissions()', 'googleKeepCanvasapp = googleKeepRules.createGoogleKeep({', 'googleKeepCanvasapp.start()', 'startCanvasappKeepLogin()'])
     expect(reg).toContain("file: path.join(app.getPath('userData'), GOOGLE_CANVASAPP_FILE),")
     expect(reg).toContain('cookies: canvasappSession().cookies,')
     expect(reg).toContain('allowed: canvasappGoogleKept,')
     expect(reg).not.toContain('owner:')
     expect(mainCode).toContain("const GOOGLE_CANVASAPP_FILE = 'google-canvasapp.bin'")
-    // put back with the kept login, inside the same 3 s restore wait: restore, then the sweep of leftovers, then watched
+    // put back with the kept login, inside the same 3 s restore wait: restore, then the sweep of leftovers
     const restore = fnBody('ensureCanvasappRestored')
-    expect(restore).toMatch(/const google = googleKeepCanvasapp\s+\.restore\(\)\s+\.then\(\(\) => googleKeepCanvasapp\.sweep\(\)\)/)
-    order(restore, ["canvasappSession().cookies.on('changed', canvasappKeep.onChanged)", 'const google = googleKeepCanvasapp', '.then(() => googleKeepCanvasapp.sweep())', '.then(() => googleKeepCanvasapp.start())', 'const done = Promise.all([keep, google])', 'keepLoginRules.KEEP_LOGIN_RESTORE_CAP_MS'])
+    expect(restore).toContain('const google = googleKeepCanvasapp.restore().then(() => googleKeepCanvasapp.sweep())')
+    expect(count(mainCode, 'googleKeepCanvasapp.start()')).toBe(1)
+    order(restore, ["canvasappSession().cookies.on('changed', canvasappKeep.onChanged)", 'const google = googleKeepCanvasapp', 'const done = Promise.all([keep, google])', 'keepLoginRules.KEEP_LOGIN_RESTORE_CAP_MS'])
     expect(count(mainCode, 'KEEP_LOGIN_RESTORE_CAP_MS')).toBe(1)
     // the switch: off wipes Google's sign-in, on saves it; Đăng xuất wipes it with the partition
     order(fnBody('canvasappSetKeepLogin'), ['await canvasappKeep.setEnabled(on)', 'await (on ? googleKeepCanvasapp.save() : googleKeepCanvasapp.wipe())', 'await storeCanvasappKeepPrefs(on)'])

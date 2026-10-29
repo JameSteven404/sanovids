@@ -2320,7 +2320,7 @@ function saveGoogle(capMs) {
 
 /**
  * The kept login and the kept Google cookies are put back once, before the first canvasapp use of the run (together at
- * most 3 s), then changes are watched.
+ * most 3 s), then the kept login's changes are watched (Google's are from registerCanvasappGateway on).
  */
 function ensureCanvasappRestored() {
   if (!canvasappRestore) {
@@ -2331,10 +2331,7 @@ function ensureCanvasappRestored() {
           .catch(() => undefined)
       : Promise.resolve()
     // restore before sweep: a leftover persistent cookie (newer) wins over the snapshot, then joins it
-    const google = googleKeepCanvasapp
-      .restore()
-      .then(() => googleKeepCanvasapp.sweep())
-      .then(() => googleKeepCanvasapp.start())
+    const google = googleKeepCanvasapp.restore().then(() => googleKeepCanvasapp.sweep())
     const done = Promise.all([keep, google])
     canvasappRestore = Promise.race([done, new Promise((resolve) => setTimeout(resolve, keepLoginRules.KEEP_LOGIN_RESTORE_CAP_MS))])
   }
@@ -2725,6 +2722,8 @@ function registerCanvasappGateway() {
     log: (line) => console.error(line),
     allowed: canvasappGoogleKept,
   })
+  // watched before any safeStorage wait: a Google sign-in never reaches the cookie file, even when restore is slow
+  googleKeepCanvasapp.start()
   try {
     startCanvasappKeepLogin()
   } catch (e) {
