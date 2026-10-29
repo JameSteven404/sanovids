@@ -405,8 +405,11 @@ function appFrames(wc) {
   }
 }
 
-/** TH-46: Sano Agent's main window (main.cjs TITLE_BAR) draws Windows' min / max / close over SANO's 44 px top bar. */
-const TITLE_BAR_HEIGHT = 44
+/**
+ * TH-46: Sano Agent's main window (main.cjs TITLE_BAR) draws Windows' min / max / close over SANO's 44 px top bar: its
+ * top 43 px, so the bar's 1 px bottom border runs on under the buttons (a 44 px overlay hid it there).
+ */
+const TITLE_BAR_HEIGHT = 43
 /** Its colors until SANO's page sets its own: SANO's top bar (--bar-bg) and its icons (--bar-fg) of web/theme.css. */
 const TITLE_BAR_START = Object.freeze({
   dark: Object.freeze({ color: '#17191c', symbolColor: '#edf0f5' }),

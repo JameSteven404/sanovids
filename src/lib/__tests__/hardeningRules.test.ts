@@ -667,11 +667,11 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     ])
   })
 
-  it('TH-46 titleBarOverlay: two exact #rrggbb → the 44 px overlay, anything else → null; the start colors pass', () => {
-    expect(h.TITLE_BAR_HEIGHT).toBe(44)
-    expect(h.titleBarOverlay({ color: '#1b1e22', symbolColor: '#EDF0F5' })).toEqual({ color: '#1b1e22', symbolColor: '#EDF0F5', height: 44 })
+  it('TH-46 titleBarOverlay: two exact #rrggbb → the 43 px overlay (above the 1 px bar border), anything else → null; the start colors pass', () => {
+    expect(h.TITLE_BAR_HEIGHT).toBe(43)
+    expect(h.titleBarOverlay({ color: '#1b1e22', symbolColor: '#EDF0F5' })).toEqual({ color: '#1b1e22', symbolColor: '#EDF0F5', height: 43 })
     // only the two colors cross: the page never picks the height
-    expect(h.titleBarOverlay({ color: '#000000', symbolColor: '#ffffff', height: 400, x: 1 })).toEqual({ color: '#000000', symbolColor: '#ffffff', height: 44 })
+    expect(h.titleBarOverlay({ color: '#000000', symbolColor: '#ffffff', height: 400, x: 1 })).toEqual({ color: '#000000', symbolColor: '#ffffff', height: 43 })
     for (const bad of ['red', '#fff', '#ffffff00', 'ffffff', '#gggggg', ' #ffffff', '#ffffff ', '#ffffff\n', 'rgb(0,0,0)', '', 0x123456, null, undefined]) {
       expect(h.titleBarOverlay({ color: bad, symbolColor: '#ffffff' }), String(bad)).toBeNull()
       expect(h.titleBarOverlay({ color: '#ffffff', symbolColor: bad }), String(bad)).toBeNull()
@@ -682,7 +682,7 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(h.TITLE_BAR_START).toEqual({ dark: { color: '#17191c', symbolColor: '#edf0f5' }, light: { color: '#ffffff', symbolColor: '#20242c' } })
     for (const theme of ['dark', 'light'] as const) {
       expect(Object.isFrozen(h.TITLE_BAR_START[theme]), theme).toBe(true)
-      expect(h.titleBarOverlay(h.TITLE_BAR_START[theme]), theme).toEqual({ ...h.TITLE_BAR_START[theme], height: 44 })
+      expect(h.titleBarOverlay(h.TITLE_BAR_START[theme]), theme).toEqual({ ...h.TITLE_BAR_START[theme], height: 43 })
     }
   })
 

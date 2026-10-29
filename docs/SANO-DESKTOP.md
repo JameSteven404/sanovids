@@ -88,8 +88,9 @@ Có hai cách, đều từ mã nguồn:
   khung chính của cửa sổ chính, đúng origin SANO). Kiểm hai cổng này trong Electron thật (không chạy trong CI, không đăng
   nhập): `npx electron scripts/sano-desktop-probe.cjs`.
 - **Thanh tiêu đề gộp** (TH-46): chỉ cửa sổ chính của Sano Agent (`app://sano/`) trên Windows không có thanh tiêu đề riêng
-  (`titleBarStyle: 'hidden'`); nút thu nhỏ / phóng to / đóng của Windows vẽ đè lên thanh trên cùng 44 px của trang SANO, màu
-  ban đầu theo giao diện sáng/tối của hệ thống. Khi đó (và chỉ khi đó) trang thấy thêm `sanoDesktop.titleBar.setColors({
+  (`titleBarStyle: 'hidden'`); nút thu nhỏ / phóng to / đóng của Windows vẽ đè lên 43 px trên của thanh trên cùng 44 px
+  của trang SANO (đường viền 1 px dưới cùng của thanh chạy liền dưới các nút), màu ban đầu theo giao diện sáng/tối của
+  hệ thống. Khi đó (và chỉ khi đó) trang thấy thêm `sanoDesktop.titleBar.setColors({
   color, symbolColor })`: hai màu `#rrggbb`, main kiểm khung gửi (`fromSano`) rồi đổi màu nút, trả `true`; sai thì `false`.
   Vùng kéo cửa sổ (`app-region`) và khoảng chừa cho nút (`env(titlebar-area-*)`) là việc của trang SANO. SanoVids riêng,
   SANO từ máy chủ, macOS, Linux và các cửa sổ khác (Tài liệu, đăng nhập, thanh toán) giữ khung cũ.
