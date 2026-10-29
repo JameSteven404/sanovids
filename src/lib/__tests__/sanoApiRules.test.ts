@@ -132,7 +132,17 @@ describe('createApiForward (fake SANO server)', () => {
     const t = setup({ token: null })
     await refusal(await t.send('/api/assistant/session'), 'signed-out')
     await refusal(await t.send('/api/assistant/chat', { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } }), 'signed-out')
+    await refusal(await t.send('/api/assistant/status', { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } }), 'signed-out')
+    await refusal(await t.send('/api/assistant/status/x'), 'signed-out')
     expect(t.calls).toEqual([])
+  })
+
+  it('signed out, GET /api/assistant/status (public on the server) is still forwarded, with no Authorization', async () => {
+    const t = setup({ token: null, answer: () => json(401, { code: 'session-invalid' }) })
+    expect((await t.send('/api/assistant/status')).status).toBe(401)
+    expect(t.calls).toHaveLength(1)
+    expect(t.calls[0].init.headers).toEqual({ Accept: 'application/json' })
+    expect(t.ended).toEqual([])
   })
 
   it('offline 503, timeout 503, redirect 502, non-JSON 502', async () => {

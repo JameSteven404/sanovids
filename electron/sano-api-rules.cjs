@@ -81,14 +81,16 @@ function createApiForward(fx) {
       }
       if (method === 'POST' && !(h.get('content-type') || '').toLowerCase().startsWith('application/json')) return refuse('bad-type')
       const token = await fx.account.bearer()
-      if (!token) return refuse('signed-out')
+      // the server answers status before any auth check: signed out, the page still learns the server is up, so its next
+      // httpClient call gets this 401 and shows the sign-in screen instead of "server offline"
+      if (!token && !(method === 'GET' && path === '/api/assistant/status')) return refuse('signed-out')
       let body
       if (method === 'POST') {
         if (Number(h.get('content-length')) > MAX_BODY) return refuse('too-large')
         body = await readBody(request.body)
         if (body === null) return refuse('too-large')
       }
-      const headers = { Accept: 'application/json', Authorization: `Bearer ${token}` }
+      const headers = token ? { Accept: 'application/json', Authorization: `Bearer ${token}` } : { Accept: 'application/json' }
       if (method === 'POST') headers['Content-Type'] = 'application/json'
       let res
       try {
@@ -101,7 +103,7 @@ function createApiForward(fx) {
       // 'manual' gives an opaque redirect (status 0) or the 3xx itself: never followed
       if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400) || !type.toLowerCase().startsWith('application/json')) return refuse('bad-answer')
       // the session is over on the server (revoked, expired, account turned off): end it here too; other 403s are scope checks
-      if (res.status === 401 || (res.status === 403 && (await res.clone().json().catch(() => null))?.code === 'not-provisioned')) await fx.account.ended(token)
+      if (token && (res.status === 401 || (res.status === 403 && (await res.clone().json().catch(() => null))?.code === 'not-provisioned'))) await fx.account.ended(token)
       const back = { 'content-type': type, 'cache-control': 'no-store' }
       const retry = res.headers.get('retry-after')
       if (retry) back['retry-after'] = retry

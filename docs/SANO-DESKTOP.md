@@ -63,7 +63,8 @@ Có hai cách, đều từ mã nguồn:
     và header riêng là phép kiểm chính. Electron không gửi `Sec-Fetch-*` thì log một lần
     `[SanoVids] sano api: no sec-fetch metadata`.
   - `POST` phải là `application/json` → 415 `bad-type`; chưa đăng nhập (`bearer()` là `null`) → 401 `signed-out`, không
-    gọi máy chủ; thân quá 80 000 byte (giới hạn của máy chủ) → 413 `too-large`, từ chối theo `Content-Length` hoặc dừng
+    gọi máy chủ — trừ `GET /api/assistant/status` (máy chủ trả trước mọi phép kiểm phiên): vẫn chuyển đi, không có
+    `Authorization`, để trang biết máy chủ còn chạy và lần gọi kế tiếp nhận 401 rồi hiện màn đăng nhập; thân quá 80 000 byte (giới hạn của máy chủ) → 413 `too-large`, từ chối theo `Content-Length` hoặc dừng
     đọc ngay khi vượt.
   - máy chủ không trả lời trong 75 giây → 503 `timeout`; mất mạng → 503 `offline`; chuyển hướng (không bao giờ theo) hoặc
     trả lời không phải JSON → 502 `bad-answer`.
