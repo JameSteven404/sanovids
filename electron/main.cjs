@@ -3,7 +3,7 @@
 // secure origin: IndexedDB / localStorage persist between launches exactly like on the web.
 'use strict'
 
-const { app, BrowserWindow, Menu, dialog, ipcMain, net, protocol, safeStorage, session, shell } = require('electron')
+const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, net, protocol, safeStorage, session, shell } = require('electron')
 const crypto = require('node:crypto')
 const http = require('node:http')
 const fs = require('node:fs')
@@ -117,6 +117,8 @@ if (SANO_IN_APP && !fs.existsSync(path.join(SANO_DIST, 'index.html'))) {
   dialog.showErrorBox('Sano Agent', 'Bản cài này thiếu trang SANO (sano-dist/index.html), nên app không mở. Hãy cài lại Sano Agent từ trang tải về. Chạy từ mã nguồn: chạy npm run build:sano trước.')
   process.exit(2)
 }
+/** TH-46: SANO's top bar is the window's title bar (Windows' own buttons drawn over it): Sano Agent's page on Windows only. */
+const TITLE_BAR = SANO_IN_APP && process.platform === 'win32'
 // D223: SanoVids inside SANO opens the same projects as SanoVids itself (same profile, same app://bdp storage), not a
 // copy Chromium would keep apart under SANO's page.
 if (SANO) app.commandLine.appendSwitch('disable-features', 'ThirdPartyStoragePartitioning')
@@ -292,6 +294,7 @@ if (!app.requestSingleInstanceLock()) {
     registerAppBridge()
     if (SANO) registerGoogleSignIn()
     if (SANO) registerAccount()
+    if (TITLE_BAR) registerTitleBar()
     // Google account cookies the in-app sign-in popup of earlier SANO desktop runs left (TH-36 moved sign-in to the
     // default browser); nothing in the default session needs them, in either mode (same data folder).
     void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies)
@@ -445,6 +448,10 @@ function createWindow() {
     // Windows: the multi-size .ico (sharp taskbar / Alt+Tab icon at every scale); elsewhere the 512 px PNG. SANO mode on
     // Windows: none, so the window shows the exe's own icon (Sano Agent's, not SanoVids').
     ...(SANO && process.platform === 'win32' ? {} : { icon: path.join(DIST, 'icons', process.platform === 'win32' ? 'icon.ico' : 'icon-512.png') }),
+    // TH-46: no title bar of its own; SANO's page makes its top bar the drag area and gives the buttons its colors.
+    // shortcut: "Mở Canvas" (D237) would keep this frame, unreachable while the app serves app://sano/ itself; give Canvas
+    // its own window if SANO ever loads from elsewhere in this mode.
+    ...(TITLE_BAR ? { titleBarStyle: 'hidden', titleBarOverlay: hardening.titleBarOverlay(hardening.TITLE_BAR_START[nativeTheme.shouldUseDarkColors ? 'dark' : 'light']) } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -456,7 +463,7 @@ function createWindow() {
       spellcheck: false,
       // Hover previews / the take viewer may start with sound before any click (the speaker switch decides).
       autoplayPolicy: 'no-user-gesture-required',
-      additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, `--bdp-product=${app.getName()}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : []), ...(SANO_IN_APP && SANO_API ? ['--bdp-sano-api-forward'] : [])],
+      additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, `--bdp-product=${app.getName()}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : []), ...(SANO_IN_APP && SANO_API ? ['--bdp-sano-api-forward'] : []), ...(TITLE_BAR ? ['--bdp-sano-title-bar'] : [])],
     },
   })
 
@@ -848,6 +855,17 @@ function registerGoogleSignIn() {
 function fromSano(event) {
   const win = mainWindow
   return !!(win && !win.isDestroyed() && event.senderFrame && event.senderFrame === win.webContents.mainFrame && event.senderFrame.origin === SANO.origin)
+}
+
+/** TH-46: sanoDesktop.titleBar.setColors — SANO's page itself recolors the window's buttons (two #rrggbb) → true | false. */
+function registerTitleBar() {
+  ipcMain.handle('sano:titleBarColors', (event, colors) => {
+    if (!fromSano(event)) return false
+    const overlay = hardening.titleBarOverlay(colors)
+    if (!overlay) return false
+    mainWindow.setTitleBarOverlay(overlay)
+    return true
+  })
 }
 
 /** A Google sign-in of its own (google-signin-rules.cjs): the page bridge and the account each have one. */

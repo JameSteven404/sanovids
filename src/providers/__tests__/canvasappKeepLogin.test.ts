@@ -1471,7 +1471,7 @@ describe('keep-login wiring (electron/main.cjs)', () => {
     const accountObj = account.slice(account.indexOf('safeStorage: {'), blockAt(account, account.indexOf('safeStorage: {'))[1])
     expect(count(mainCode, 'safeStorage')).toBe(count(cryptoObj, 'safeStorage') + count(account, 'safeStorage') + 1)
     expect(count(account, 'safeStorage')).toBe(count(accountObj, 'safeStorage'))
-    expect(mainCode).toMatch(/const \{ app, BrowserWindow, Menu, dialog, ipcMain, net, protocol, safeStorage, session, shell \} = require\('electron'\)/)
+    expect(mainCode).toMatch(/const \{ app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, net, protocol, safeStorage, session, shell \} = require\('electron'\)/)
     // only inside arrow functions (called later by the keep-login object or the account, never at start)
     for (const obj of [cryptoObj, accountObj]) {
       for (const line of obj.split('\n').filter((l) => l.includes('safeStorage') && !l.includes('safeStorage: {'))) expect(line).toMatch(/^\s+\w+: (async )?\([^)]*\) => /)
