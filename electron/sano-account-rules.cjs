@@ -119,8 +119,9 @@ async function envelope(run, log) {
 /**
  * fx: { apiUrl (accountApiUrl's origin, or null), fetch(url, init), file, fs: fs.promises-like { readFile, writeFile,
  * rename, rm }, safeStorage: { isEncryptionAvailable, encryptString, decryptString }, now(), random(n) → bytes,
- * google: a createGoogleSignIn of its own { signIn, signOut }, log(line), onSessionEnd() (optional: main's chat Google
- * sign-out) }. Every CALLS method answers an envelope; bearer() / ended(token) / userId() are main's own (never over IPC).
+ * google: a createGoogleSignIn of its own { signIn, signOut }, log(line), onSessionEnd(reason) (optional: main's chat
+ * Google sign-out and docs windows; reason 'forbidden' when /me answered 403 — the account was turned off — else
+ * undefined) }. Every CALLS method answers an envelope; bearer() / ended(token) / userId() are main's own (never over IPC).
  *
  * Invariant (SANO TH-44, docs/SANO-DESKTOP.md §3a): whenever the SANO session ends or changes hands — a sign-out, a
  * session dropped (401/403, expired, a damaged or foreign file), a sign-in for another user than the last one —
@@ -132,10 +133,10 @@ function createAccount(fx) {
   let epoch = 0 // signOut bumps it: a sign-in that finishes after it is dropped
   let cancels = 0 // cancelGoogle bumps it: a Google sign-in still exchanging its token is dropped
   let lastUser = null // id of the last user held: a sign-in for anyone else ends the chat's Google session
-  /** fx.onSessionEnd, best effort: its failure never blocks or fails an account call. */
-  const endChat = () => {
+  /** fx.onSessionEnd(reason), best effort: its failure never blocks or fails an account call. */
+  const endChat = (reason) => {
     try {
-      Promise.resolve(fx.onSessionEnd && fx.onSessionEnd()).catch(() => fx.log('[SanoVids] account: chat sign-out failed'))
+      Promise.resolve(fx.onSessionEnd && fx.onSessionEnd(reason)).catch(() => fx.log('[SanoVids] account: chat sign-out failed'))
     } catch {
       fx.log('[SanoVids] account: chat sign-out failed')
     }
@@ -247,11 +248,11 @@ function createAccount(fx) {
     }
   }
 
-  /** Forgets s, memory first → false only when its token is still in the file. */
-  async function clear(s) {
+  /** Forgets s, memory first → false only when its token is still in the file. `reason` goes to onSessionEnd. */
+  async function clear(s, reason) {
     if (held !== s) return true // signed in again meanwhile
     held = null
-    endChat()
+    endChat(reason)
     return persistent() ? remove() : true
   }
 
@@ -292,12 +293,14 @@ function createAccount(fx) {
       }
       // 401: revoked or expired; 403: the account was turned off (the request carries no Origin, the only other 403)
       if (r.status === 401 || r.status === 403) {
-        await clear(s)
+        await clear(s, r.status === 403 ? 'forbidden' : undefined)
         return status(null)
       }
       const user = r.ok ? readUser(r.json) : null
       if (!user) return status(s, { offline: true })
-      if (held === s && JSON.stringify(user) !== JSON.stringify(s.user)) await save({ ...s, user })
+      // a desktop session slides on use (SANO authenticate): a later expiresAt is kept with the session
+      const later = typeof r.json.expiresAt === 'string' && Date.parse(r.json.expiresAt) > Date.parse(s.expiresAt) ? r.json.expiresAt : s.expiresAt
+      if (held === s && (JSON.stringify(user) !== JSON.stringify(s.user) || later !== s.expiresAt)) await save({ ...s, user, expiresAt: later })
       return status(held)
     },
     async login(input) {

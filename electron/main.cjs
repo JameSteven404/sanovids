@@ -875,10 +875,11 @@ function registerAccount() {
     google: newGoogleSignIn(),
     log: (line) => console.error(line),
     // the SANO session ended or changed hands: the previous user's chat Google token and docs editor sign-in must not
-    // serve the next one
-    onSessionEnd: () => {
+    // serve the next one. The docs' kept Google sign-in (bound to the user) stays, unless the account was turned off (403);
+    // canvasapp's is never touched
+    onSessionEnd: (reason) => {
       chatGoogle && chatGoogle.signOut()
-      if (sanoDocs) void sanoDocs.endSession()
+      if (sanoDocs) void sanoDocs.endSession({ wipe: reason === 'forbidden' })
     },
   }))
   accountRules.registerAccountIpc(ipcMain, account, fromSano)

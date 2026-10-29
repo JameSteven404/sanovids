@@ -51,7 +51,7 @@ function fakeServer(password = pw()) {
   const codes = new Map<string, { challenge: string; redirect: string }>()
   const sessions = new Set<string>()
   const secrets: string[] = [password]
-  const opts: { offline?: boolean; meStatus?: number; state?: string; redirect?: string; hang?: string; gate?: Promise<unknown>; raw?: Response } = {}
+  const opts: { offline?: boolean; meStatus?: number; meExpiresAt?: string; state?: string; redirect?: string; hang?: string; gate?: Promise<unknown>; raw?: Response } = {}
   const issue = (body: Record<string, unknown>) => {
     const code = `code-${randomUUID()}`
     secrets.push(code)
@@ -91,7 +91,7 @@ function fakeServer(password = pw()) {
       case 'GET /api/auth/me': {
         if (opts.meStatus) return json(opts.meStatus, { error: 'x' })
         const ok = sessions.has(String(headers.Authorization).replace('Bearer ', ''))
-        return ok ? json(200, user) : json(401, { error: 'Phiên đăng nhập đã hết hạn. Đăng nhập lại.' })
+        return ok ? json(200, opts.meExpiresAt ? { ...user, expiresAt: opts.meExpiresAt } : user) : json(401, { error: 'Phiên đăng nhập đã hết hạn. Đăng nhập lại.' })
       }
       case 'POST /api/auth/logout':
         sessions.delete(String(headers.Authorization).replace('Bearer ', ''))
@@ -154,7 +154,7 @@ function fakeGoogle(result: () => Promise<GoogleResult> = async () => ({ ok: tru
 }
 
 const logs: string[] = []
-function setup(o: { server?: ReturnType<typeof fakeServer>; m?: ReturnType<typeof machine>; google?: ReturnType<typeof fakeGoogle>; apiUrl?: string | null; now?: number; onSessionEnd?: () => unknown } = {}) {
+function setup(o: { server?: ReturnType<typeof fakeServer>; m?: ReturnType<typeof machine>; google?: ReturnType<typeof fakeGoogle>; apiUrl?: string | null; now?: number; onSessionEnd?: (reason?: unknown) => unknown } = {}) {
   const server = o.server ?? fakeServer()
   const m = o.m ?? machine()
   const google = o.google ?? fakeGoogle()
@@ -632,6 +632,43 @@ describe('createAccount (fake SANO account server)', () => {
     expect(logs).toContain('[SanoVids] account: unexpected RangeError')
   })
 
+  it("onSessionEnd's reason: 'forbidden' only for a /me 403 (the account turned off); none for a 401, expiry or sign-out", async () => {
+    const reasons: unknown[] = []
+    const { account, server } = setup({ onSessionEnd: (reason) => void reasons.push(reason) })
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    reasons.length = 0 // the first sign-in of the run ends whoever was before
+    server.opts.meStatus = 403
+    expect(value(await account.status()).signedIn).toBe(false)
+    expect(reasons).toEqual(['forbidden'])
+    delete server.opts.meStatus
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    server.sessions.clear()
+    expect(value(await account.status()).signedIn).toBe(false)
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    value(await account.signOut())
+    expect(reasons.length).toBeGreaterThan(1)
+    expect(reasons.slice(1).every((r) => r === undefined)).toBe(true)
+  })
+
+  it('status(): a later expiresAt from /me (a desktop session slid on use) is saved with the session; an earlier or bad one is not', async () => {
+    const { account, server, m } = setup()
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    const saved = () => JSON.parse(Buffer.from(m.files.get(FILE)!.toString().slice(3), 'base64').toString()) as { expiresAt: string; token: string }
+    const first = saved()
+    for (const bad of [new Date(NOW + 10 * 86_400_000).toISOString(), 'not a date', first.expiresAt]) {
+      server.opts.meExpiresAt = bad
+      expect(value(await account.status()).signedIn).toBe(true)
+      expect(saved()).toEqual(first)
+    }
+    const later = new Date(NOW + 40 * 86_400_000).toISOString()
+    server.opts.meExpiresAt = later
+    expect(value(await account.status()).signedIn).toBe(true)
+    expect(saved()).toEqual({ ...first, expiresAt: later })
+    // 35 days after sign-in, past the first 30: still signed in at the next start
+    delete server.opts.meExpiresAt
+    expect(value(await setup({ server, m, now: NOW + 35 * 86_400_000 }).account.status()).signedIn).toBe(true)
+  })
+
   it('userId(): the held user only (main-only, for the docs Google owner); null signed out', async () => {
     const { account, server, m } = setup()
     expect(account.userId()).toBeNull()
@@ -706,7 +743,8 @@ describe('IPC: every account:* call checks the sender (fromSano), and the preloa
     expect(body).toContain("file: path.join(profile.dir, 'sano-account.bin'),")
     expect(body).toContain('google: newGoogleSignIn(),')
     // the chat's Google (registerGoogleSignIn's instance, not the account's own) and the docs windows end with the SANO session
-    expect(body).toMatch(/onSessionEnd: \(\) => \{\s+chatGoogle && chatGoogle\.signOut\(\)\s+if \(sanoDocs\) void sanoDocs\.endSession\(\)\s+\},/)
+    // (the docs' kept Google sign-in is wiped only when the account was turned off)
+    expect(body).toMatch(/onSessionEnd: \(reason\) => \{\s+chatGoogle && chatGoogle\.signOut\(\)\s+if \(sanoDocs\) void sanoDocs\.endSession\(\{ wipe: reason === 'forbidden' \}\)\s+\},/)
     // main-only bearer() / ended(): the module-scope account feeds the forward and the docs windows, never IPC
     expect(body).toContain('const account = (sanoAccount = accountRules.createAccount({')
     expect(body).toContain('signedIn: async () => !!(sanoAccount && (await sanoAccount.bearer())),')
