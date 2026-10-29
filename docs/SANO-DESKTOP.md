@@ -225,7 +225,7 @@ có forward (`app://sano/` và `SANO_API_URL`). Mã: `electron/sano-docs-rules.c
 - **Cửa sổ mới:** trang trong danh sách mở cửa sổ con cùng tuỳ chọn và cùng các phép kiểm; `https:`/`mailto:` khác mở
   trình duyệt; còn lại (`about:blank`, `javascript:`, `data:`, `blob:`) bị chặn. Tài liệu và cửa sổ con tính chung tối đa
   20. Mỗi cửa sổ mở trình duyệt tối đa một lần mỗi 2 giây, phần thừa bị bỏ và ghi log.
-- **Tải về:** chỉ bản xuất của Docs (`docs.google.com`, `doc-…-docs.googleusercontent.com`, `blob:https://docs.google.com/…`;
+- **Tải về:** chỉ bản xuất của Docs (`docs.google.com`, `doc-…-docs.googleusercontent.com`, `doc-…-sheets.googleusercontent.com`, `blob:https://docs.google.com/…`;
   kiểm địa chỉ cuối sau chuyển hướng), qua hộp Save của Electron; còn lại bị huỷ. Không mở cho phần còn lại của
   `*.googleusercontent.com` (nội dung người dùng tuỳ ý).
 - **Quyền:** chỉ `clipboard-sanitized-write` (chép). Thông báo, camera/micro, vị trí, `clipboard-read` (Ctrl+V vẫn dán

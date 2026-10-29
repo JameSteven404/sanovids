@@ -26,8 +26,8 @@ const EXTERNAL_EVERY_MS = 2000
 const DOC_PATH = Object.freeze({ docs: 'document', sheets: 'spreadsheets' })
 /** The editor, Drive (same account), sign-in, and Google's cross-domain SetSID hop during sign-in. */
 const NAVIGATION_HOSTS = Object.freeze(['docs.google.com', 'drive.google.com', 'accounts.google.com', 'accounts.youtube.com'])
-/** Docs' export redirect, not the rest of *.googleusercontent.com (arbitrary user content). */
-const DOWNLOAD_HOST_RE = /^doc-[a-z0-9-]+-docs\.googleusercontent\.com$/
+/** The Docs/Sheets export redirect, not the rest of *.googleusercontent.com (arbitrary user content). */
+const DOWNLOAD_HOST_RE = /^doc-[a-z0-9-]+-(?:docs|sheets)\.googleusercontent\.com$/
 const DOWNLOAD_BLOB_PREFIX = 'blob:https://docs.google.com/'
 
 const TEXT = Object.freeze({

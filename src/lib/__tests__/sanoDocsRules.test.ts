@@ -179,16 +179,19 @@ describe('sano-docs-rules', () => {
     expect(logs.join('\n')).not.toContain('secret')
   })
 
-  it('downloads allowlist: docs.google.com, doc-*-docs.googleusercontent.com, blob:https://docs.google.com; other googleusercontent refused', () => {
+  it('downloads allowlist: docs.google.com, doc-*-docs/-sheets.googleusercontent.com, blob:https://docs.google.com; other googleusercontent refused', () => {
     for (const ok of [
       'https://docs.google.com/document/d/x/export?format=docx',
       'https://doc-0k-2c-docs.googleusercontent.com/docs/securesc/x',
+      'https://doc-0k-6g-sheets.googleusercontent.com/export/x',
       'blob:https://docs.google.com/5b0c7c1e-1111-2222-3333-444455556666',
     ])
       expect(R.downloadAllowed(ok), ok).toBe(true)
     for (const bad of [
       'https://lh3.googleusercontent.com/x',
       'https://evil-docs.googleusercontent.com/x',
+      'https://evil-sheets.googleusercontent.com/x',
+      'https://doc-0k-sheetsXgoogleusercontent.com/x',
       'https://doc-x-docs.googleusercontent.com.evil.example/x',
       'https://doc-0k-docs.googleusercontent.com:8443/x',
       'http://docs.google.com/x',
