@@ -12,11 +12,11 @@ const path = require('node:path')
 const { app, BrowserWindow, session } = require('electron')
 
 // main.cjs must load synchronously (it registers schemes before 'ready'), so the port is picked, not asked for
-// (SANO_PROBE_PORT / SANO_PROBE_PROFILE: a fixed port and a throwaway profile of the caller's choice)
+// (SANO_PROBE_PORT / SANO_PROBE_PROFILE: a fixed port, and the folder the fresh profile is made in — never deleted, so a
+// wrong value can never wipe a real profile; the profile is left there for a look afterwards)
 const PORT = Number(process.env.SANO_PROBE_PORT) || 40000 + Math.floor(Math.random() * 20000)
 const ORIGIN = `http://127.0.0.1:${PORT}`
-const PROFILE = process.env.SANO_PROBE_PROFILE || path.join(os.tmpdir(), 'sanovids-sano-probe')
-fs.rmSync(PROFILE, { recursive: true, force: true })
+const PROFILE = fs.mkdtempSync(path.join(process.env.SANO_PROBE_PROFILE || os.tmpdir(), 'sanovids-sano-probe-'))
 process.env.SANO_URL = `${ORIGIN}/`
 process.env.SANOVIDS_PROFILE_DIR = PROFILE
 // D253: no account server, so the in-app sign-in reports itself unconfigured (no network call)

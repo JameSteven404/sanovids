@@ -1513,10 +1513,12 @@ describe('keep-login wiring (electron/main.cjs)', () => {
       'await ses.clearStorageData()',
       'await ses.clearCache()',
       'await ses.cookies.flushStore()',
+      'return googleRemoved',
       'await canvasappKeep.forget(clear)',
       "gatewayError('keep-login-not-cleared', keepLoginRules.KEEP_LOGIN_NOT_CLEARED_TEXT)",
     ])
-    expect(body).toContain("return copyRemoved ? { ok: true } : gatewayError('keep-login-not-cleared'")
+    // the kept Google sign-in that could not be removed is reported like the copy (google-keep-rules wipe → false)
+    expect(body).toContain("return copyRemoved && googleRemoved ? { ok: true } : gatewayError('keep-login-not-cleared'")
     expect(body).toMatch(/finally \{\s+canvasappLoggingOut = false/)
     expect(R.KEEP_LOGIN_DRAIN_CAP_MS).toBe(5000)
     const drain = fnBody('drainCanvasappRequests')
@@ -1558,17 +1560,18 @@ describe('keep-login wiring (electron/main.cjs)', () => {
     expect(count(mainCode, "'canvasapp:setKeepLogin'")).toBe(1)
     const set = fnBody('canvasappSetKeepLogin')
     order(set, ["if (typeof on !== 'boolean') return gatewayError('bad-request'", 'await canvasappKeep.setEnabled(on)', 'await storeCanvasappKeepPrefs(on)'])
-    expect(set).toContain("if (!copyRemoved) return gatewayError('keep-login-not-cleared', keepLoginRules.KEEP_LOGIN_OFF_NOT_CLEARED_TEXT)")
+    expect(set).toContain("if (!copyRemoved || !googleRemoved) return gatewayError('keep-login-not-cleared', keepLoginRules.KEEP_LOGIN_OFF_NOT_CLEARED_TEXT)")
     expect(fnBody('storeCanvasappKeepPrefs')).toContain('await renameSaveFile(fs.promises, tmp, file)')
     expect(mainCode).toContain("const CANVASAPP_PREFS_FILE = 'canvasapp-prefs.json'")
   })
 
   it('no quit hooks, no cookie made persistent, no cookie value logged', () => {
-    expect(mainCode).not.toMatch(/will-quit|beforeunload/)
+    expect(mainCode).not.toMatch(/beforeunload/)
+    expect(count(mainCode, 'will-quit')).toBe(1) // macOS ⌘Q saves Google's snapshots (hardeningRules.test.ts)
     // The only quit hooks are macOS's window ones (⌘Q / an update's quit lets the main window really close instead of
     // hiding): they never touch the keep-login copy, which is saved when the cookies change.
     expect((mainCode.match(/before-quit[\w-]*/g) ?? []).sort()).toEqual(['before-quit', 'before-quit-for-update'])
-    for (const hook of ["app.on('before-quit'", "autoUpdater.on('before-quit-for-update'"]) {
+    for (const hook of ["app.on('before-quit'", "autoUpdater.on('before-quit-for-update'", "app.on('will-quit'"]) {
       const at = mainCode.indexOf(hook)
       expect(at, hook).toBeGreaterThan(-1)
       const [s, e] = blockAt(mainCode, at)
@@ -1591,7 +1594,11 @@ describe('keep-login wiring (electron/main.cjs)', () => {
       'canvasappGoogleSettled = true',
       'void settleCanvasappGoogle()',
     ])
-    expect(fnBody('settleCanvasappGoogle')).toContain('return canvasappGoogleKept() ? googleKeepCanvasapp.save() : googleKeepCanvasapp.wipe()')
+    expect(fnBody('settleCanvasappGoogle')).toContain('return canvasappGoogleKept() ? googleKeepCanvasapp.save() : googleKeepCanvasapp.wipe({ keepSnapshot: canvasappGoogleLeft() })')
+    // never chose, default off (Portable / temp copy): the installed app's Google snapshot is neither put back nor deleted
+    const left = fnBody('canvasappGoogleLeft')
+    expect(left).toContain('const st = canvasappKeep ? canvasappKeep.state() : null')
+    expect(left).toContain("return !!st && keepLoginRules.keepLoginCopyRule(st.enabled, canvasappKeepPrefs !== null) === 'leave'")
     // the same switch as keep-login: Portable / temp default-off, an explicit off or failed encryption → removed
     const kept = fnBody('canvasappGoogleKept')
     expect(kept).toContain('const st = canvasappKeep ? canvasappKeep.state() : null')
@@ -1602,6 +1609,7 @@ describe('keep-login wiring (electron/main.cjs)', () => {
     expect(reg).toContain("file: path.join(app.getPath('userData'), GOOGLE_CANVASAPP_FILE),")
     expect(reg).toContain('cookies: canvasappSession().cookies,')
     expect(reg).toContain('allowed: canvasappGoogleKept,')
+    expect(reg).toContain('leave: canvasappGoogleLeft,')
     expect(reg).not.toContain('owner:')
     expect(mainCode).toContain("const GOOGLE_CANVASAPP_FILE = 'google-canvasapp.bin'")
     // put back with the kept login, inside the same 3 s restore wait: restore, then the sweep of leftovers
@@ -1611,7 +1619,7 @@ describe('keep-login wiring (electron/main.cjs)', () => {
     order(restore, ["canvasappSession().cookies.on('changed', canvasappKeep.onChanged)", 'const google = googleKeepCanvasapp', 'const done = Promise.all([keep, google])', 'keepLoginRules.KEEP_LOGIN_RESTORE_CAP_MS'])
     expect(count(mainCode, 'KEEP_LOGIN_RESTORE_CAP_MS')).toBe(1)
     // the switch: off wipes Google's sign-in, on saves it; Đăng xuất wipes it with the partition
-    order(fnBody('canvasappSetKeepLogin'), ['await canvasappKeep.setEnabled(on)', 'await (on ? googleKeepCanvasapp.save() : googleKeepCanvasapp.wipe())', 'await storeCanvasappKeepPrefs(on)'])
+    order(fnBody('canvasappSetKeepLogin'), ['await canvasappKeep.setEnabled(on)', 'const googleRemoved = on ? (await googleKeepCanvasapp.save(), true) : await googleKeepCanvasapp.wipe()', 'await storeCanvasappKeepPrefs(on)'])
     order(fnBody('canvasappLogout'), ['await ses.clearStorageData()', 'await googleKeepCanvasapp.wipe()', 'await ses.cookies.flushStore()'])
     // removeGoogleAccountCookies stays for the default session at start only: what the in-app Google popup of earlier
     // SANO desktop runs left (TH-36 removed it)

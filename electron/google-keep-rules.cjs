@@ -57,11 +57,13 @@ function parseSnapshot(text) {
  * deps: { label (log prefix), file (the snapshot), cookies (Session.cookies: get, set, remove, flushStore, on),
  * crypto (keep-login's async safeStorage: isEncryptionAvailable() → boolean | Promise<boolean> — false for Linux
  * basic_text —, encryptStringAsync(text) → bytes, decryptStringAsync(bytes) → { result }), fs (fs.promises-like: readFile, writeFile, rename, rm), now(), log(line), allowed() → may Google be kept now?,
- * owner() → the key the snapshot is bound to, or null (optional: no owner), setTimer / clearTimer (optional) }.
+ * owner() → the key the snapshot is bound to, or null (optional: no owner), leave() → true when not allowed only by a
+ * placement default the user never chose (optional: keepLoginCopyRule 'leave'), setTimer / clearTimer (optional) }.
  *
  * Nothing is saved before restore() (the store holds the snapshot's cookies only from then on) or after detach() (the
  * partition is about to be cleared): an empty store then never deletes the snapshot. Not allowed (or no encryption):
- * nothing is written, save() deletes the snapshot, wipe() also removes the cookies.
+ * nothing is written, save() deletes the snapshot, wipe() also removes the cookies — but while leave(), the snapshot
+ * (maybe the installed app's: Portable shares its data folder) is neither restored nor deleted, except by wipe().
  */
 function createGoogleKeep(deps) {
   const { label, file, cookies, crypto, fs, now, log } = deps
@@ -87,6 +89,13 @@ function createGoogleKeep(deps) {
       return false
     }
   }
+  const left = () => {
+    try {
+      return !!deps.leave && deps.leave() === true
+    } catch {
+      return false
+    }
+  }
   const flush = () => Promise.resolve().then(() => cookies.flushStore()).catch(() => undefined)
   const stopTimer = () => {
     if (timer) clearTimer(timer)
@@ -98,14 +107,24 @@ function createGoogleKeep(deps) {
     return Array.isArray(list) ? list.filter(isGoogleAccountCookie) : []
   }
   const removeCookie = (c) => Promise.resolve().then(() => cookies.remove(cookieRemovalUrl(c), c.name)).catch(() => undefined)
+  /** Deletes the snapshot, else empties it (restore deletes an empty one unread) → false when it is still there. */
   async function dropFile() {
     await Promise.resolve().then(() => fs.rm(file + '.tmp', { force: true })).catch(() => undefined)
     try {
       await fs.rm(file, { force: true })
       lastKey = ''
+      return true
+    } catch (e) {
+      log(`[SanoVids] ${label}: could not delete the copy (${e && e.code})`)
+    }
+    try {
+      await fs.writeFile(file, new Uint8Array(0))
+      lastKey = ''
+      return true
     } catch (e) {
       lastKey = null
-      log(`[SanoVids] ${label}: could not delete the copy (${e && e.code})`)
+      log(`[SanoVids] ${label}: could not empty the copy (${e && e.code})`)
+      return false
     }
   }
   /** A persistent Google cookie → the same cookie as a session one (it replaces the row before Chromium commits it). */
@@ -131,7 +150,7 @@ function createGoogleKeep(deps) {
   async function saveNow() {
     if (!live) return
     if (!(await keepable())) {
-      if (lastKey !== '') await dropFile()
+      if (lastKey !== '' && !left()) await dropFile()
       return
     }
     const owner = bound === undefined ? ownerNow() : bound
@@ -182,7 +201,7 @@ function createGoogleKeep(deps) {
       return 0
     }
     if (!(await keepable())) {
-      await dropFile()
+      if (!left()) await dropFile() // left: maybe the installed app's snapshot, neither decrypted nor deleted
       return 0
     }
     let snap = null
@@ -274,16 +293,20 @@ function createGoogleKeep(deps) {
       stopTimer()
       live = false
     },
-    /** Removes the Google account cookies of the store and the snapshot, then flushes. Never throws. */
-    wipe() {
+    /**
+     * Removes the Google account cookies of the store and the snapshot (kept with keepSnapshot), then flushes. → false
+     * when the snapshot could not be removed (Đăng xuất then says so). Never throws.
+     */
+    wipe({ keepSnapshot = false } = {}) {
       stopTimer()
       wipes++
       return run(async () => {
         expiries.clear()
         await removeGoogleAccountCookies(cookies)
-        await dropFile()
+        const gone = keepSnapshot || (await dropFile())
         await flush()
-      })
+        return gone
+      }).then((gone) => gone === true)
     },
   }
 }

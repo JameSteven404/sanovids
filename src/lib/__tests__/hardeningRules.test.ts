@@ -1359,8 +1359,9 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(count("'canvasapp:keepLogin'") + count("'canvasapp:setKeepLogin'")).toBe(2) // main: one handler each
     // the keep-login rules module is pure like hardening-rules (no require), and main never adds a quit hook for it
     expect(mainSource).toContain("const keepLoginRules = require('./keeplogin-rules.cjs')")
-    // no quit hook for the keep-login copy: the only 'before-quit' is macOS's window flag (tested below)
-    expect(mainSource).not.toMatch(/'will-quit'/)
+    // no quit hook for the keep-login copy: the only 'before-quit' is macOS's window flag, the only 'will-quit' macOS's
+    // save of Google's snapshots (both tested below)
+    expect(count("'will-quit'")).toBe(1)
     expect(count("app.on('before-quit'")).toBe(1)
   })
 
@@ -1504,7 +1505,12 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     // Windows: the app still quits with its last window, once Google's cookies are saved (capped, quits either way);
     // a launch during that save is not lost (second-instance above relaunches)
     expect(mainSource).toMatch(/app\.on\('window-all-closed', \(\) => \{\s+if \(process\.platform !== 'darwin'\) \{\s+quitAfterSave = true\s+void saveGoogle\(GOOGLE_SAVE_CAP_MS\)\.finally\(\(\) => app\.quit\(\)\)\s+\}\s+\}\)/)
-    expect(count('quitAfterSave = true')).toBe(1)
+    // macOS ⌘Q: the same capped save once every window is closed (will-quit, nothing can veto then); not for an update's
+    // quit (beforeInstall saved)
+    const willQuitAt = idx("app.on('will-quit', (event) => {")
+    expect(inDarwinBlock(willQuitAt)).toBe(true)
+    expect(mainSource.slice(...blockAt(willQuitAt))).toMatch(/^\{\s+if \(quitAfterSave \|\| macQuitForUpdate\) return\s+quitAfterSave = true\s+event\.preventDefault\(\)\s+void saveGoogle\(GOOGLE_SAVE_CAP_MS\)\.finally\(\(\) => app\.quit\(\)\)\s+\}$/)
+    expect(count('quitAfterSave = true')).toBe(2)
     expect(mainSource).toContain('const GOOGLE_SAVE_CAP_MS = 1500')
     const save = fnBody('saveGoogle')
     expect(save).toContain('return Promise.race([all, new Promise((resolve) => setTimeout(resolve, capMs))])')

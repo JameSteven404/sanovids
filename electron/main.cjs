@@ -201,7 +201,7 @@ let mainWindowShown = false
  */
 let quitting = false
 let macQuitForUpdate = false
-/** Windows / Linux: the last window closed and the quit waits on saveGoogle; a second launch then relaunches after it. */
+/** The quit waits on saveGoogle (Windows / Linux: the last window closed; macOS: will-quit); a second launch then relaunches after it. */
 let quitAfterSave = false
 /** macOS: the main window's hidden-work rules (hardening-rules createHiddenWork; set in createWindow, null elsewhere). */
 let mainWindowWork = null
@@ -331,6 +331,14 @@ if (!app.requestSingleInstanceLock()) {
     app.on('before-quit', () => {
       quitting = true
       if (mainWindowWork) mainWindowWork.stop()
+    })
+    // ⌘Q: every window closed, nothing can veto any more: Google's snapshots are written first, as Windows' last window
+    // does (an update's quit saved them in beforeInstall)
+    app.on('will-quit', (event) => {
+      if (quitAfterSave || macQuitForUpdate) return
+      quitAfterSave = true
+      event.preventDefault()
+      void saveGoogle(GOOGLE_SAVE_CAP_MS).finally(() => app.quit())
     })
   }
   // A downloaded update installs silently when the app quits (electron-updater, in this same 'quit' event, exit code 0):
@@ -2250,18 +2258,19 @@ async function canvasappLogout() {
             await canvasappServerLogout()
             await ses.clearStorageData()
             await ses.clearCache()
-            await googleKeepCanvasapp.wipe() // the kept Google sign-in goes too
+            const googleRemoved = await googleKeepCanvasapp.wipe() // the kept Google sign-in goes too
             try {
               await ses.cookies.flushStore()
             } catch {
               /* shutting down */
             }
+            return googleRemoved
           }
-          const { copyRemoved } = canvasappKeep ? await canvasappKeep.forget(clear) : (await clear(), { copyRemoved: true })
+          const { copyRemoved, result: googleRemoved } = canvasappKeep ? await canvasappKeep.forget(clear) : { copyRemoved: true, result: await clear() }
           canvasappJobListCache.clear()
           // anything that slipped in while the session was being wiped ends too
           canvasappDownloads.closeAll()
-          return copyRemoved ? { ok: true } : gatewayError('keep-login-not-cleared', keepLoginRules.KEEP_LOGIN_NOT_CLEARED_TEXT)
+          return copyRemoved && googleRemoved ? { ok: true } : gatewayError('keep-login-not-cleared', keepLoginRules.KEEP_LOGIN_NOT_CLEARED_TEXT)
         } finally {
           canvasappLoggingOut = false
         }
@@ -2335,9 +2344,18 @@ function canvasappGoogleKept() {
   return !!st && st.available && st.enabled
 }
 
+/**
+ * Keep-login off only by the placement default, never chosen (Portable / temp copy share userData with Setup): the
+ * Google snapshot may be the installed app's, so it is neither put back nor deleted (keepLoginCopyRule 'leave').
+ */
+function canvasappGoogleLeft() {
+  const st = canvasappKeep ? canvasappKeep.state() : null
+  return !!st && keepLoginRules.keepLoginCopyRule(st.enabled, canvasappKeepPrefs !== null) === 'leave'
+}
+
 /** After a confirmed canvasapp login: Google's account cookies are kept (saved now) or, keep-login off, removed. */
 function settleCanvasappGoogle() {
-  return canvasappGoogleKept() ? googleKeepCanvasapp.save() : googleKeepCanvasapp.wipe()
+  return canvasappGoogleKept() ? googleKeepCanvasapp.save() : googleKeepCanvasapp.wipe({ keepSnapshot: canvasappGoogleLeft() })
 }
 
 /**
@@ -2446,14 +2464,14 @@ async function canvasappSetKeepLogin(on) {
   if (typeof on !== 'boolean') return gatewayError('bad-request', 'Lựa chọn không hợp lệ.')
   if (!canvasappKeep) return gatewayError('unavailable', 'Chưa sẵn sàng — thử lại sau giây lát.')
   const { copyRemoved } = await canvasappKeep.setEnabled(on)
-  await (on ? googleKeepCanvasapp.save() : googleKeepCanvasapp.wipe()) // Google's sign-in follows the switch
+  const googleRemoved = on ? (await googleKeepCanvasapp.save(), true) : await googleKeepCanvasapp.wipe() // Google's sign-in follows the switch
   canvasappKeepPrefs = { keepLogin: on }
   try {
     await storeCanvasappKeepPrefs(on)
   } catch {
     return gatewayError('prefs-not-saved', keepLoginRules.KEEP_LOGIN_PREFS_NOT_SAVED_TEXT)
   }
-  if (!copyRemoved) return gatewayError('keep-login-not-cleared', keepLoginRules.KEEP_LOGIN_OFF_NOT_CLEARED_TEXT)
+  if (!copyRemoved || !googleRemoved) return gatewayError('keep-login-not-cleared', keepLoginRules.KEEP_LOGIN_OFF_NOT_CLEARED_TEXT)
   return canvasappKeepLoginState()
 }
 
@@ -2753,6 +2771,7 @@ function registerCanvasappGateway() {
     now: Date.now,
     log: (line) => console.error(line),
     allowed: canvasappGoogleKept,
+    leave: canvasappGoogleLeft,
   })
   // watched before any safeStorage wait: a Google sign-in never reaches the cookie file, even when restore is slow
   googleKeepCanvasapp.start()

@@ -207,9 +207,12 @@ tắt (docs/SIGNING.md §8), nên các cookie đó chỉ sống dạng **cookie 
 lâu bị đặt lại thành cookie phiên ngay (đọc lại trước, cookie đã bị Google đổi hay xoá thì không đặt lại), và giữ bản sao
 mã hoá `google-canvasapp.bin` (safeStorage; ghi chậm 1 s, tối đa 10 s; giữ hạn gốc của từng cookie; không dùng 90 ngày thì
 xoá). Lần chạy sau đặt lại bản sao trong cùng lần chờ 3 s của giữ đăng nhập, rồi dọn cookie Google lưu lâu còn sót (bản cũ,
-app bị tắt ngang, SanoVids 1.0.0). Lưu bản sao cả khi đóng cửa sổ cuối, khi cài bản cập nhật và khi Windows đăng xuất/tắt máy
-(tối đa 1,5 s, không chặn thoát; mở lại app trong lúc đó thì app tự mở lại sau khi thoát). Tắt công tắc, Portable chưa tự
-chọn, mã hoá lỗi hoặc **Đăng xuất** → cookie Google bị xoá cùng bản sao, như trước. Không đổi hạn 30 ngày của giữ đăng nhập
+app bị tắt ngang, SanoVids 1.0.0). Lưu bản sao cả khi đóng cửa sổ cuối, khi ⌘Q trên macOS (sau khi mọi cửa sổ đã đóng),
+khi cài bản cập nhật và khi Windows đăng xuất/tắt máy (tối đa 1,5 s, không chặn thoát; mở lại app trong lúc đó thì app tự
+mở lại sau khi thoát). Tắt công tắc, mã hoá lỗi hoặc **Đăng xuất** → cookie Google bị xoá cùng bản sao, như trước; không
+xoá được tệp thì ghi đè thành rỗng (lần mở sau xoá, không đặt lại), vẫn không được thì Đăng xuất / tắt công tắc báo như với
+bản sao canvasapp. Portable **chưa tự chọn** (`keepLoginCopyRule` → 'leave') không đặt lại, không lưu và không xoá bản sao
+Google của bản cài; cookie Google của lần chạy đó vẫn bị xoá sau khi đăng nhập, chỉ Đăng xuất mới xoá bản sao. Không đổi hạn 30 ngày của giữ đăng nhập
 canvasapp: hết hạn thì canvasapp hỏi lại, còn Google chỉ cần chọn tài khoản.
 
 **Đăng xuất** — `canvasapp:logout`: từ dòng đầu chặn mở lượt tải video mới (`canvasappDownloadsBlocked` → 'busy') và

@@ -158,21 +158,30 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
 - **Phiên:** `{ token: 'sano_…', expiresAt, user }` (30 ngày) mã hoá bằng `safeStorage.encryptString` ở
   `<thư mục dữ liệu>/sano-account.bin` (theo `SANOVIDS_PROFILE_DIR` nếu có). Máy không mã hoá được (cả Linux không có keyring,
   backend `basic_text`) thì chỉ giữ trong bộ nhớ (`persistent: false`, mở lại app phải đăng nhập lại); ghi file lỗi
-  (ví dụ antivirus khoá) cũng vậy, và không để lại `sano-account.bin.tmp`. `status()` hỏi `GET /api/auth/me`: 401 hoặc 403 thì xoá
+  (ví dụ antivirus khoá) cũng vậy, và không để lại `sano-account.bin.tmp`; file của phiên trước (người dùng khác) bị bỏ
+  như khi đăng xuất, để lần mở sau không quay về tài khoản cũ, còn không bỏ được thì đăng nhập báo lỗi `not-saved` "Không
+  lưu được phiên đăng nhập trên máy này. Đóng hẳn Sano Agent, mở lại rồi đăng nhập lại." và phiên cũ vẫn giữ. `status()`
+  hỏi `GET /api/auth/me`: 401 hoặc 403 thì xoá
   phiên; mất mạng / máy chủ lỗi thì vẫn đăng nhập với người dùng đã lưu (`offline: true`). Phiên desktop trượt khi dùng
   (SANO `authenticate`: `min(now + 30 ngày, created_at + 90 ngày)`): `/me` trả `expiresAt` muộn hơn thì lưu vào file. Quá
   `expiresAt` đã lưu thì hỏi `/me` một lần: phiên đã trượt thì tiếp tục (lưu hạn mới); 401/403, mất mạng hoặc không có
   hạn muộn hơn thì coi như đã đăng xuất. `signOut()` xoá bộ nhớ rồi xoá file, gửi `POST logout` nhưng không chờ. Không xoá được
-  file (Windows khoá, `EPERM`) thì ghi đè file thành rỗng; không ghi đè được thì chờ `POST logout` (20 giây): máy chủ
+  file (Windows khoá, `EPERM`) thì ghi đè file thành rỗng; không ghi đè được thì đặt dấu `sano-account.bin.forget` cạnh
+  file: lần mở sau thấy dấu thì không bao giờ mở lại phiên đó (kể cả khi mất mạng), lần lưu phiên mới thì xoá dấu. Không
+  đặt được dấu (cả thư mục không ghi được) thì chờ `POST logout` (20 giây): máy chủ
   thu hồi (2xx hoặc 401) thì vẫn là đã đăng xuất (token vẫn nằm trong file: lần mở sau mà mất mạng thì app hiện lại
   người dùng cũ ở chế độ ngoại tuyến cho đến khi `/me` trả 401), còn không thì phiên được giữ lại (lần mở sau cũng thấy)
   và `signOut()` báo lỗi `sign-out-failed` "Phiên vẫn còn trên máy này. Kiểm tra mạng rồi thử lại, hoặc đóng hẳn Sano
   Agent rồi mở lại.", không bao giờ giả vờ đã đăng xuất. Trong lúc chờ máy chủ, `status()` và lần bấm đăng xuất thứ hai
   vẫn thấy người dùng đang đăng nhập. Phiên đăng xuất giữa lúc đang ghi file (đăng nhập, cập nhật hồ sơ) thì file vừa
-  ghi bị xoá ngay, token không nằm lại trên đĩa.
+  ghi bị xoá ngay, token không nằm lại trên đĩa; Huỷ Google lúc đang ghi file cũng vậy (trả `cancelled`, phiên vừa cấp
+  kết thúc trên máy chủ). Một `/me` trả lời sau khi phiên đã đăng xuất hoặc đổi người thì bị bỏ: `status()` trả phiên đang
+  giữ lúc đó. Bấm Google lần nữa khi lượt trước còn chờ trình duyệt: lượt trước trả `superseded`, lượt mới vẫn chạy.
 - **Chỉ main** (forward ở mục 3, cửa sổ Tài liệu ở mục 3b): `bearer()` trả token của phiên đang giữ; không cấu hình hoặc
   không phiên thì `null`; quá `expiresAt` thì hỏi `/me` như `status()` (phiên đã trượt vẫn dùng được khi app mở liên tục
-  quá 30 ngày). `ended(token, reason)`: máy chủ từ chối token đó qua forward (401; 403 `not-provisioned` → lý do
+  quá 30 ngày); phiên đó bị đăng xuất hoặc thay bằng phiên khác trong lúc chờ `/me` thì trả `null`, không bao giờ token của
+  phiên mới (yêu cầu bắt đầu dưới tài khoản cũ không đi bằng tài khoản mới); so theo token, nên nhiều lần gia hạn cùng
+  một phiên chạy cùng lúc (hai forward, hoặc `status()` và một forward) đều nhận token đó và file vẫn giữ phiên. `ended(token, reason)`: máy chủ từ chối token đó qua forward (401; 403 `not-provisioned` → lý do
   `'forbidden'`) thì xoá đúng phiên đó; phiên mới hơn giữ nguyên. `userId()`: id người dùng của phiên đang giữ (chủ bản sao
   Google của Tài liệu, mục 3b). Các hàm này không nằm trong `CALLS`, nên không bao giờ qua IPC tới trang, và không ném lỗi.
 - **Phiên Google của chat và cửa sổ Tài liệu đi theo phiên SANO (bất biến):** mỗi khi phiên tài khoản SANO kết thúc
@@ -200,7 +209,7 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
   ```
   Lỗi là `Error` có `message` tiếng Việt (của máy chủ, hoặc "Không kết nối được máy chủ tài khoản. Kiểm tra mạng rồi
   thử lại.", "Bản Sano Agent này chưa nối máy chủ tài khoản.") và `code` khi có (`not-configured`, `offline`,
-  `bad-input`, `state-mismatch`, `cancelled`, `timeout`, `not-allowed`, `sign-out-failed`…). Error ném trong preload qua `contextBridge`
+  `bad-input`, `state-mismatch`, `cancelled`, `superseded`, `timeout`, `not-allowed`, `sign-out-failed`, `not-saved`…). Error ném trong preload qua `contextBridge`
   chỉ còn `message`, nên preload dựng object `account` trong world của trang (`contextBridge.executeInMainWorld`) và
   Error được tạo ở đó. Preload cắt mỗi trường ở giới hạn + 1 ký tự; main kiểm lại (chỉ chuỗi; `identifier`/`email` ≤ 254,
   `password` ≤ 128, `name` ≤ 100, `username` ≤ 32).
@@ -228,7 +237,8 @@ có forward (`app://sano/` và `SANO_API_URL`). Mã: `electron/sano-docs-rules.c
   cookie tài khoản Google của partition được giữ qua các lần chạy trong bản sao mã hoá `google-docs.bin` (safeStorage; máy
   không mã hoá được hoặc Linux `basic_text` thì không giữ, như trước: mỗi lần mở app hỏi đăng nhập Google một lần). Sau
   mỗi lần xoá partition (bất biến `dirty` dưới đây) và trước khi mở cửa sổ, bản sao được đặt lại thành cookie phiên; mọi
-  thay đổi được lưu lại (1 s, tối đa 10 s), và lưu lần cuối trước khi `endSession` xoá partition (tối đa 1,5 s), lúc thoát,
+  thay đổi được lưu lại (1 s, tối đa 10 s), và lưu lần cuối trước khi `endSession` xoá partition (tối đa 1,5 s), lúc thoát
+  (cả ⌘Q trên macOS),
   cài cập nhật và Windows đăng xuất. **Quy tắc chủ:** bản sao gắn với `sha256(SANO_API + '\n' + id người dùng SANO)`;
   người dùng SANO khác mở Tài liệu thì bản sao bị xoá, không đặt lại. 401, hết hạn hay đăng xuất SANO giữ bản sao (chỉ
   đúng người đó đăng nhập lại mới dùng); 403 (tài khoản bị tắt) xoá nó. Không dùng 90 ngày thì xoá.
@@ -253,7 +263,9 @@ có forward (`app://sano/` và `SANO_API_URL`). Mã: `electron/sano-docs-rules.c
   sau mỗi `endSession` (mỗi `onSessionEnd` của mục 3a). `endSession` đóng ngay mọi cửa sổ Tài liệu, không hỏi, rồi xoá dữ
   liệu và cache của partition. Tài liệu chỉ mở sau khi có một lần xoá thành công kể từ đó: xoá lỗi thì lần mở sau xoá
   lại, lỗi nữa thì báo `failed` "Chưa dọn được phiên Google cũ. Thử lại."; lần mở bị một `endSession` chen giữa thì báo
-  `signed-out`. Người dùng SANO sau không bao giờ thừa hưởng đăng nhập Google trong trình soạn của người trước.
+  `signed-out`. Nhiều lần mở cùng lúc dùng chung một lần xoá: lần xoá xếp hàng sau đó thấy partition đã sạch thì bỏ
+  qua, nên không bao giờ xoá đè lên cửa sổ vừa mở. Người dùng SANO sau không bao giờ thừa hưởng đăng nhập Google trong
+  trình soạn của người trước.
 - **Đóng hết (`closeAll`):** người dùng tự đăng xuất SANO (trang gọi `docs.closeAll()` trước) và lần đóng thật cửa sổ
   chính (không phải lúc thoát để cập nhật) hỏi trước khi còn tài liệu mở: "Còn n tài liệu đang mở. Đóng hết? Thay đổi
   chưa lưu lên Google sẽ mất." **Ở lại** giữ cả hai. Lúc đóng cửa sổ chính chỉ hỏi (`confirmClose`), chưa đóng tài liệu: trang SANO còn có thể
