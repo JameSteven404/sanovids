@@ -520,8 +520,11 @@ describe('createAccount (fake SANO account server)', () => {
     const login = t.account.login({ identifier: 'minh', password: t.server.password })
     await atRename
     t.server.opts.offline = true
-    expect(value(await t.account.signOut()).signedIn).toBe(false)
+    const out = t.account.signOut() // signed out in memory now; its delete waits for that write
+    await new Promise((r) => setTimeout(r, 0))
+    expect(value(await t.account.status()).signedIn).toBe(false)
     release()
+    expect(value(await out).signedIn).toBe(false)
     await login
     expect(t.m.files.size).toBe(0)
     expect(value(await setup({ server: t.server, m: t.m }).account.status()).signedIn).toBe(false)
@@ -890,14 +893,16 @@ describe('createAccount (fake SANO account server)', () => {
     const renewing = later.account.bearer()
     await new Promise((r) => setTimeout(r, 0)) // its write is waiting
     server.opts.meExpiresAt = new Date(NOW + 61 * 86_400_000).toISOString()
-    expect(value(await later.account.status()).signedIn).toBe(true) // saved a renewed copy meanwhile
+    const checked = later.account.status() // saves a renewed copy meanwhile: its write waits for the renewal's
+    await new Promise((r) => setTimeout(r, 0))
     release()
+    expect(value(await checked).signedIn).toBe(true)
     expect((await renewing) === tok).toBe(true)
     const saved = JSON.parse(Buffer.from(m.files.get(FILE)?.toString().slice(3) ?? '', 'base64').toString() || 'null') as { token: string } | null
     expect(saved?.token === tok).toBe(true) // a restart stays signed in
   })
 
-  it("an account switch (sign-out, then B signs in) while a renewal of A is inside save(): null for A's request, never B's token", async () => {
+  it("an account switch (sign-out, then B signs in) while a renewal of A is inside save(): null for A's request, never B's token; B's file kept", async () => {
     const server = fakeServer()
     const m = machine()
     value(await setup({ server, m }).account.login({ identifier: 'minh', password: server.password }))
@@ -917,17 +922,22 @@ describe('createAccount (fake SANO account server)', () => {
     }
     const renewing = later.account.bearer() // the forward of a request A started
     await inSave // /me answered: save(n) is writing A's renewed session
-    value(await later.account.signOut())
+    const out = later.account.signOut() // its delete waits for that write
     Object.assign(server.user, { id: 'u-b', name: 'B' })
-    value(await later.account.login({ identifier: 'minh', password: server.password }))
-    const tokB = server.secrets.filter((x) => x.startsWith('sano_')).at(-1)
+    const signIn = later.account.login({ identifier: 'minh', password: server.password })
+    while (later.account.userId() !== 'u-b') await new Promise((r) => setTimeout(r, 0)) // B held, A's write still waiting
     release()
+    value(await out)
+    value(await signIn)
+    const tokB = server.secrets.filter((x) => x.startsWith('sano_')).at(-1)
     const used = await renewing
     expect([used === null, used === tokB]).toEqual([true, false]) // compared, never printed
     expect(later.account.userId()).toBe('u-b') // the renewal never ends B's session
     const raw = m.files.get(FILE)?.toString().slice(3)
     const saved = raw ? (JSON.parse(Buffer.from(raw, 'base64').toString()) as { token: string }) : null
-    expect(saved?.token === tokA).toBe(false) // A's signed-out token never stays on disk
+    expect([saved?.token === tokA, saved?.token === tokB]).toEqual([false, true]) // A's signed-out token never stays on disk; B's does
+    const restart = setup({ server, m }).account
+    expect([(await restart.bearer()) === tokB, restart.userId()]).toEqual([true, 'u-b']) // a restart stays signed in as B
   })
 
   it('userId(): the held user only (main-only, for the docs Google owner); null signed out', async () => {

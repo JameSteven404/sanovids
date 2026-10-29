@@ -135,6 +135,13 @@ function createAccount(fx) {
   let cancels = 0 // cancelGoogle bumps it: a Google sign-in still exchanging its token is dropped
   let lastUser = null // id of the last user held: a sign-in for anyone else ends the chat's Google session
   const marker = fx.file + '.forget' // beside a session file a sign-out could neither delete nor empty
+  let disk = Promise.resolve() // the session file's writes and deletes, one at a time in call order
+  /** fn after every earlier write or delete of the session file: a late one (a renewal signed out) never undoes a newer one. */
+  const queued = (fn) => {
+    const run = disk.then(fn)
+    disk = run.catch(() => undefined)
+    return run
+  }
   /** fx.onSessionEnd(reason), best effort: its failure never blocks or fails an account call. */
   const endChat = (reason) => {
     try {
@@ -208,7 +215,7 @@ function createAccount(fx) {
     }
     if (!s) {
       endChat()
-      await remove()
+      await queued(remove)
     } else lastUser = s.user.id
     return s
   }
@@ -251,7 +258,11 @@ function createAccount(fx) {
     lastUser = s.user.id
     const before = held
     held = s
-    if (!persistent()) return
+    if (persistent()) await queued(() => write(s, before))
+  }
+
+  /** save()'s disk part, queued: the checks of held run once this write has landed. */
+  async function write(s, before) {
     try {
       await fx.fs.writeFile(fx.file + '.tmp', fx.safeStorage.encryptString(JSON.stringify(s)))
       await fx.fs.rename(fx.file + '.tmp', fx.file)
@@ -277,7 +288,7 @@ function createAccount(fx) {
     if (held !== s) return true // signed in again meanwhile
     held = null
     endChat(reason)
-    return persistent() ? remove() : true
+    return persistent() ? queued(remove) : true
   }
 
   /**
