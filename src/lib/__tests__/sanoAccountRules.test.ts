@@ -897,6 +897,39 @@ describe('createAccount (fake SANO account server)', () => {
     expect(saved?.token === tok).toBe(true) // a restart stays signed in
   })
 
+  it("an account switch (sign-out, then B signs in) while a renewal of A is inside save(): null for A's request, never B's token", async () => {
+    const server = fakeServer()
+    const m = machine()
+    value(await setup({ server, m }).account.login({ identifier: 'minh', password: server.password }))
+    const tokA = server.secrets.filter((x) => x.startsWith('sano_')).at(-1)
+    server.opts.meExpiresAt = new Date(NOW + 60 * 86_400_000).toISOString() // A's session slid on the server
+    const later = setup({ server, m, now: NOW + 31 * 86_400_000 })
+    const write = m.fs.writeFile
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let reached!: () => void
+    const inSave = new Promise<void>((r) => (reached = r))
+    m.fs.writeFile = async (p, b) => {
+      m.fs.writeFile = write // only the renewal's write waits
+      reached()
+      await gate
+      return write(p, b)
+    }
+    const renewing = later.account.bearer() // the forward of a request A started
+    await inSave // /me answered: save(n) is writing A's renewed session
+    value(await later.account.signOut())
+    Object.assign(server.user, { id: 'u-b', name: 'B' })
+    value(await later.account.login({ identifier: 'minh', password: server.password }))
+    const tokB = server.secrets.filter((x) => x.startsWith('sano_')).at(-1)
+    release()
+    const used = await renewing
+    expect([used === null, used === tokB]).toEqual([true, false]) // compared, never printed
+    expect(later.account.userId()).toBe('u-b') // the renewal never ends B's session
+    const raw = m.files.get(FILE)?.toString().slice(3)
+    const saved = raw ? (JSON.parse(Buffer.from(raw, 'base64').toString()) as { token: string }) : null
+    expect(saved?.token === tokA).toBe(false) // A's signed-out token never stays on disk
+  })
+
   it('userId(): the held user only (main-only, for the docs Google owner); null signed out', async () => {
     const { account, server, m } = setup()
     expect(account.userId()).toBeNull()
