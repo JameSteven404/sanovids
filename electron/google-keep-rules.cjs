@@ -136,9 +136,11 @@ function createGoogleKeep(deps) {
     }
     const owner = bound === undefined ? ownerNow() : bound
     if (deps.owner && owner === null) return // whose cookies these are is not known: nothing written
+    const list = await googleCookies()
+    if (!live) return // detached while waiting: the store may already be cleared, so nothing is written or deleted
     const seen = new Set()
     const entries = []
-    for (const c of await googleCookies()) {
+    for (const c of list) {
       const e = googleEntry(c)
       if (!e || seen.has(idOf(e))) continue
       const exp = c.session === false ? c.expirationDate : expiries.get(idOf(e))

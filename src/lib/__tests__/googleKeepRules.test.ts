@@ -429,6 +429,24 @@ describe('createGoogleKeep', () => {
     expect(m.files.get(FILE)).toBe(kept)
   })
 
+  it('a save still waiting on safeStorage when detach() and the clear come (the 1.5 s cap): the snapshot is kept', async () => {
+    const store = fakeStore([sid({ session: true, expirationDate: undefined })])
+    const m = machine()
+    const keep = keepOf(store, m)
+    await keep.restore()
+    await keep.save()
+    const kept = m.files.get(FILE)
+    let release = (_: boolean) => {}
+    m.crypto.isEncryptionAvailable = () => new Promise<boolean>((r) => (release = r))
+    const saving = keep.save()
+    await settle()
+    keep.detach()
+    store.clear()
+    release(true)
+    await saving
+    expect(m.files.get(FILE)).toBe(kept)
+  })
+
   it('atomic write: tmp then rename; a failed rename leaves the old snapshot and no tmp', async () => {
     const store = fakeStore([sid({ session: true, expirationDate: undefined })])
     const m = machine()
