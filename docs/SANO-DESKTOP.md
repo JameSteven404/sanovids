@@ -122,16 +122,22 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
 - **Phiên:** `{ token: 'sano_…', expiresAt, user }` (30 ngày) mã hoá bằng `safeStorage.encryptString` ở
   `<thư mục dữ liệu>/sano-account.bin` (theo `SANOVIDS_PROFILE_DIR` nếu có). Máy không mã hoá được (cả Linux không có keyring,
   backend `basic_text`) thì chỉ giữ trong bộ nhớ (`persistent: false`, mở lại app phải đăng nhập lại); ghi file lỗi
-  (ví dụ antivirus khoá) cũng vậy, và không để lại `sano-account.bin.tmp`. `status()` hỏi `GET /api/auth/me`: 401 hoặc 403 thì xoá
+  (ví dụ antivirus khoá) cũng vậy, và không để lại `sano-account.bin.tmp`; file của phiên trước (người dùng khác) bị bỏ
+  như khi đăng xuất, để lần mở sau không quay về tài khoản cũ, còn không bỏ được thì đăng nhập báo lỗi `not-saved` "Không
+  lưu được phiên đăng nhập trên máy này. Đóng hẳn Sano Agent, mở lại rồi đăng nhập lại." và phiên cũ vẫn giữ. `status()` hỏi `GET /api/auth/me`: 401 hoặc 403 thì xoá
   phiên; mất mạng / máy chủ lỗi thì vẫn đăng nhập với người dùng đã lưu (`offline: true`); quá `expiresAt` thì coi như
   đã đăng xuất, không hỏi máy chủ. `signOut()` xoá bộ nhớ rồi xoá file, gửi `POST logout` nhưng không chờ. Không xoá được
-  file (Windows khoá, `EPERM`) thì ghi đè file thành rỗng; không ghi đè được thì chờ `POST logout` (20 giây): máy chủ
+  file (Windows khoá, `EPERM`) thì ghi đè file thành rỗng; không ghi đè được thì đặt dấu `sano-account.bin.forget` cạnh
+  file: lần mở sau thấy dấu thì không bao giờ mở lại phiên đó (kể cả khi mất mạng), lần lưu phiên mới thì xoá dấu. Không
+  đặt được dấu (cả thư mục không ghi được) thì chờ `POST logout` (20 giây): máy chủ
   thu hồi (2xx hoặc 401) thì vẫn là đã đăng xuất (token vẫn nằm trong file: lần mở sau mà mất mạng thì app hiện lại
   người dùng cũ ở chế độ ngoại tuyến cho đến khi `/me` trả 401), còn không thì phiên được giữ lại (lần mở sau cũng thấy)
   và `signOut()` báo lỗi `sign-out-failed` "Phiên vẫn còn trên máy này. Kiểm tra mạng rồi thử lại, hoặc đóng hẳn Sano
   Agent rồi mở lại.", không bao giờ giả vờ đã đăng xuất. Trong lúc chờ máy chủ, `status()` và lần bấm đăng xuất thứ hai
   vẫn thấy người dùng đang đăng nhập. Phiên đăng xuất giữa lúc đang ghi file (đăng nhập, cập nhật hồ sơ) thì file vừa
-  ghi bị xoá ngay, token không nằm lại trên đĩa.
+  ghi bị xoá ngay, token không nằm lại trên đĩa; Huỷ Google lúc đang ghi file cũng vậy (trả `cancelled`, phiên vừa cấp
+  kết thúc trên máy chủ). Một `/me` trả lời sau khi phiên đã đăng xuất hoặc đổi người thì bị bỏ: `status()` trả phiên đang
+  giữ lúc đó. Bấm Google lần nữa khi lượt trước còn chờ trình duyệt: lượt trước trả `superseded`, lượt mới vẫn chạy.
 - **Phiên Google của chat đi theo phiên SANO (bất biến):** mỗi khi phiên tài khoản SANO kết thúc hoặc đổi chủ, main
   đăng xuất luôn phiên Google của chat (`sanoDesktop.google` của TH-36, "Chat → Máy chủ"; `onSessionEnd` →
   `chatGoogle.signOut()`), trước mọi việc khác: mỗi lần `signOut()` (cả khi không còn phiên, cả khi trả
@@ -154,7 +160,7 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
   ```
   Lỗi là `Error` có `message` tiếng Việt (của máy chủ, hoặc "Không kết nối được máy chủ tài khoản. Kiểm tra mạng rồi
   thử lại.", "Bản Sano Agent này chưa nối máy chủ tài khoản.") và `code` khi có (`not-configured`, `offline`,
-  `bad-input`, `state-mismatch`, `cancelled`, `timeout`, `not-allowed`, `sign-out-failed`…). Error ném trong preload qua `contextBridge`
+  `bad-input`, `state-mismatch`, `cancelled`, `superseded`, `timeout`, `not-allowed`, `sign-out-failed`, `not-saved`…). Error ném trong preload qua `contextBridge`
   chỉ còn `message`, nên preload dựng object `account` trong world của trang (`contextBridge.executeInMainWorld`) và
   Error được tạo ở đó. Preload cắt mỗi trường ở giới hạn + 1 ký tự; main kiểm lại (chỉ chuỗi; `identifier`/`email` ≤ 254,
   `password` ≤ 128, `name` ≤ 100, `username` ≤ 32).

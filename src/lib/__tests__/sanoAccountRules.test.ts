@@ -6,6 +6,7 @@ import { createRequire } from 'node:module'
 import { afterEach, describe, expect, it } from 'vitest'
 import mainSource from '../../../electron/main.cjs?raw'
 import preloadSource from '../../../electron/preload.cjs?raw'
+import probeSource from '../../../scripts/sano-desktop-probe.cjs?raw'
 
 type User = { id: string; name: string; email: string; username: string | null; admin: boolean }
 type Status = { configured: boolean; signedIn: boolean; user: User | null; persistent: boolean; offline?: boolean }
@@ -36,6 +37,7 @@ const R = nodeRequire('../../../electron/sano-account-rules.cjs') as Rules
 
 const API = 'http://127.0.0.1:8796'
 const FILE = 'C:/profile/sano-account.bin'
+const MARK = `${FILE}.forget`
 const NOW = Date.parse('2026-10-28T10:00:00Z')
 const pw = () => `Pw-${randomUUID()}`
 const S256 = (v: string) => createHash('sha256').update(v).digest('base64url')
@@ -313,6 +315,28 @@ describe('createAccount (fake SANO account server)', () => {
     expect(value(await account.status()).signedIn).toBe(false)
   })
 
+  it('a /me still pending when the session ends or changes hands answers the session held now, never the old one', async () => {
+    for (const late of ['offline', 'bad user', 'another user'] as const) {
+      const { account, server } = setup()
+      value(await account.login({ identifier: 'minh', password: server.password }))
+      let answer!: () => void
+      server.opts.hang = '/api/auth/me'
+      server.opts.gate = new Promise<void>((r) => (answer = r))
+      const pending = account.status()
+      await new Promise((r) => setTimeout(r, 0))
+      if (late === 'another user') {
+        Object.assign(server.user, { id: 'u-b', name: 'B' })
+        value(await account.login({ identifier: 'minh', password: server.password }))
+      } else expect(value(await account.signOut()).signedIn).toBe(false)
+      if (late === 'offline') server.opts.offline = true
+      if (late === 'bad user') server.opts.raw = json(200, { nope: true })
+      answer()
+      const s = value(await pending)
+      expect(s.offline, late).toBeUndefined()
+      expect(s.user?.id ?? null, late).toBe(late === 'another user' ? 'u-b' : null)
+    }
+  })
+
   it('expired by expiresAt: signed out without asking the server; a damaged file: signed out and deleted', async () => {
     const server = fakeServer()
     const m = machine()
@@ -347,6 +371,42 @@ describe('createAccount (fake SANO account server)', () => {
     expect([...m.files.keys()]).toEqual([])
   })
 
+  it("another user's sign-in that cannot be written: the previous user's file goes, else the sign-in fails (a restart never switches back)", async () => {
+    for (const step of ['writeFile', 'rename'] as const) {
+      const server = fakeServer()
+      const m = machine()
+      value(await setup({ server, m }).account.login({ identifier: 'minh', password: server.password })) // A's file
+      const { writeFile, rename, rm } = m.fs
+      m.fs[step] = async () => {
+        throw Object.assign(new Error('EACCES'), { code: 'EACCES' })
+      }
+      Object.assign(server.user, { id: 'u-b', name: 'B' })
+      const b = setup({ server, m })
+      expect(value(await b.account.login({ identifier: 'minh', password: server.password })).user!.id, step).toBe('u-b')
+      expect(m.files.has(FILE), step).toBe(false) // B in memory only, A no longer on disk
+      expect(value(await setup({ server, m }).account.status()).signedIn, step).toBe(false)
+      // A's file cannot be deleted, emptied or marked either: B's sign-in is refused, memory and a restart agree on A
+      Object.assign(m.fs, { writeFile, rename, rm })
+      Object.assign(server.user, { id: 'u-a', name: 'Minh' })
+      value(await setup({ server, m }).account.login({ identifier: 'minh', password: server.password }))
+      const denied = async () => {
+        throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+      }
+      m.fs.rm = denied
+      m.fs.writeFile = async (p: string, x: Buffer) => (step === 'writeFile' || p === FILE || p === MARK ? denied() : writeFile(p, x))
+      if (step === 'rename') m.fs.rename = denied
+      Object.assign(server.user, { id: 'u-b', name: 'B' })
+      const c = setup({ server, m })
+      const open = server.sessions.size
+      expect(await c.account.login({ identifier: 'minh', password: server.password }), step).toEqual({ ok: false, error: R.TEXT.notSaved, code: 'not-saved' })
+      Object.assign(server.user, { id: 'u-a', name: 'Minh' })
+      expect(value(await c.account.status()).user?.id, step).toBe('u-a')
+      expect(value(await setup({ server, m }).account.status()).user?.id, step).toBe('u-a')
+      await new Promise((r) => setTimeout(r, 0))
+      expect(server.sessions.size, step).toBe(open) // B's refused session ended on the server
+    }
+  })
+
   it('sign-out: file and memory gone at once, logout sent best effort (never waited on), a Google wait cancelled', async () => {
     const { account, server, m, google } = setup()
     value(await account.login({ identifier: 'minh', password: server.password }))
@@ -367,13 +427,14 @@ describe('createAccount (fake SANO account server)', () => {
 
   it('sign-out with the session file locked (Windows EPERM): emptied, else the server must revoke it, else an honest error', async () => {
     const restart = (t: ReturnType<typeof setup>) => setup({ server: t.server, m: t.m }).account
-    const lock = (m: ReturnType<typeof machine>, what: ('rm' | 'writeFile')[]) => {
+    const lock = (m: ReturnType<typeof machine>, what: ('rm' | 'writeFile')[], paths = [FILE, MARK]) => {
       const { rm, writeFile } = m.fs
       const locked = (p: string) => {
-        if (p === FILE) throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+        if (paths.includes(p)) throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
       }
       if (what.includes('rm')) m.fs.rm = async (p: string) => (locked(p), rm(p))
       if (what.includes('writeFile')) m.fs.writeFile = async (p: string, b: Buffer) => (locked(p), writeFile(p, b))
+      return () => Object.assign(m.fs, { rm, writeFile })
     }
     // rm fails, overwrite works: the file is emptied, logout still not waited on
     const a = setup()
@@ -384,14 +445,32 @@ describe('createAccount (fake SANO account server)', () => {
     expect(a.m.files.get(FILE)?.length).toBe(0)
     a.server.opts.hang = undefined
     expect(value(await restart(a).status()).signedIn).toBe(false)
-    // nothing can touch the file, the server is up: logout awaited, the token revoked, a restart finds no session
+    // the file can be neither deleted nor emptied: a marker beside it, so even an offline restart never reopens it
+    const a2 = setup()
+    value(await a2.account.login({ identifier: 'minh', password: a2.server.password }))
+    const unlock = lock(a2.m, ['rm', 'writeFile'], [FILE])
+    a2.server.opts.hang = '/api/auth/logout'
+    expect(value(await a2.account.signOut()).signedIn).toBe(false)
+    expect(a2.m.files.get(FILE)?.length).toBeGreaterThan(0)
+    expect(a2.m.files.has(MARK)).toBe(true)
+    a2.server.opts.hang = undefined
+    a2.server.opts.offline = true
+    expect(value(await restart(a2).status()).signedIn).toBe(false)
+    // the lock gone, the next sign-in is kept again: the marker goes with the new file
+    a2.server.opts.offline = false
+    unlock()
+    const again = restart(a2)
+    value(await again.login({ identifier: 'minh', password: a2.server.password }))
+    expect(a2.m.files.has(MARK)).toBe(false)
+    expect(value(await restart(a2).status()).signedIn).toBe(true)
+    // nothing can be written beside it either, the server is up: logout awaited, the token revoked, a restart finds no session
     const b = setup()
     value(await b.account.login({ identifier: 'minh', password: b.server.password }))
     lock(b.m, ['rm', 'writeFile'])
     expect(value(await b.account.signOut()).signedIn).toBe(false)
     expect(b.server.sessions.size).toBe(0)
     expect(value(await restart(b).status()).signedIn).toBe(false)
-    // nothing can touch the file, the server is down: an error, never a fake sign-out (memory and a restart agree)
+    // nothing can be written, the server is down: an error, never a fake sign-out (memory and a restart agree)
     const c = setup()
     value(await c.account.login({ identifier: 'minh', password: c.server.password }))
     lock(c.m, ['rm', 'writeFile'])
@@ -530,6 +609,57 @@ describe('createAccount (fake SANO account server)', () => {
     expect(value(await slow.google()).signedIn).toBe(true)
   })
 
+  it('Google: Huỷ while the new session is being written (write or rename): cancelled, nothing kept, the session ended', async () => {
+    for (const step of ['writeFile', 'rename'] as const) {
+      const t = setup()
+      const original = t.m.fs[step] as (a: string, b: never) => Promise<void>
+      let release!: () => void
+      const gate = new Promise<void>((r) => (release = r))
+      let reached!: () => void
+      const at = new Promise<void>((r) => (reached = r))
+      t.m.fs[step] = (async (a: string, b: never) => {
+        reached()
+        await gate
+        return original(a, b)
+      }) as never
+      const g = t.account.google()
+      await at
+      value(await t.account.cancelGoogle())
+      release()
+      expect(await g, step).toEqual({ ok: false, error: R.TEXT.googleCancelled, code: 'cancelled' })
+      t.m.fs[step] = original as never
+      expect(t.m.files.size, step).toBe(0)
+      expect(value(await t.account.status()).signedIn, step).toBe(false)
+      expect(value(await setup({ server: t.server, m: t.m }).account.status()).signedIn, step).toBe(false)
+      await new Promise((r) => setTimeout(r, 0))
+      expect(t.server.sessions.size, step).toBe(0)
+    }
+  })
+
+  it('Google: a second sign-in replaces one still waiting on the browser; the replaced one never cancels it', async () => {
+    // createGoogleSignIn's contract: one sign-in at a time, a newer one ends the waiting one 'superseded', signOut the current one 'cancelled'
+    let current: ((r: GoogleResult) => void) | null = null
+    const google = {
+      signIn: () =>
+        new Promise<GoogleResult>((resolve) => {
+          current?.({ ok: false, code: 'superseded', message: 'Một lượt đăng nhập mới đã bắt đầu.' })
+          current = resolve
+        }),
+      signOut: () => {
+        current?.({ ok: false, code: 'cancelled', message: 'Bạn đã hủy đăng nhập.' })
+        current = null
+        return true
+      },
+    }
+    const { account, server } = setup({ google: google as never })
+    const first = account.google()
+    await new Promise((r) => setTimeout(r, 0))
+    const second = account.google()
+    expect(await first).toEqual({ ok: false, error: 'Một lượt đăng nhập mới đã bắt đầu.', code: 'superseded' })
+    current!({ ok: true, idToken: 'google-id-token' }) // the browser answers the second
+    expect(value(await second)).toMatchObject({ signedIn: true, user: server.user })
+  })
+
   it("the chat's Google session ends with the SANO session: sign-out, /me 401, expiry, a damaged file, another user", async () => {
     // main's chat Google (#18's sanoDesktop.google): holds a token for whoever signed it in last
     const chat = () => {
@@ -650,6 +780,11 @@ describe('IPC: every account:* call checks the sender (fromSano), and the preloa
     expect(mainSource).toContain('const SANO_API = SANO ? accountRules.accountApiUrl(SANO_API_RAW) : null')
     const from = mainSource.slice(mainSource.indexOf('function fromSano(event) {'), mainSource.indexOf('/** A Google sign-in of its own'))
     expect(from).toContain('event.senderFrame === win.webContents.mainFrame && event.senderFrame.origin === SANO.origin')
+  })
+
+  it('the opt-in desktop probe: a fresh profile folder of its own (SANO_PROBE_PROFILE only names its parent), nothing deleted', () => {
+    expect(probeSource).toContain("const PROFILE = fs.mkdtempSync(path.join(process.env.SANO_PROBE_PROFILE || os.tmpdir(), 'sanovids-sano-probe-'))")
+    expect(probeSource).not.toMatch(/\brmSync\(|\.rm\(/)
   })
 
   it('preload: SANO top frame only; inputs cut one past the limit; { ok: false } → Error(message) with code', async () => {
