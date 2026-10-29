@@ -256,6 +256,27 @@ function createAccount(fx) {
     return persistent() ? remove() : true
   }
 
+  /**
+   * s is past its saved expiresAt, but SANO slides a desktop session on use (authenticate): /me decides → the session
+   * (its later expiresAt saved), or null (ended: 401 / 403 / offline / no later expiresAt, as before the slide).
+   */
+  async function slid(s) {
+    let r = null
+    try {
+      r = await call('GET', '/api/auth/me', null, s.token)
+    } catch {
+      /* offline: ended, as before */
+    }
+    const user = r && r.ok ? readUser(r.json) : null
+    const later = user && typeof r.json.expiresAt === 'string' && Date.parse(r.json.expiresAt) > fx.now() ? r.json.expiresAt : null
+    if (!later) {
+      await clear(s, r && r.status === 403 ? 'forbidden' : undefined)
+      return null
+    }
+    if (held === s) await save({ ...s, user, expiresAt: later })
+    return held
+  }
+
   /** login / google: authorize params → code (our state) → token, with a fresh verifier per attempt. */
   async function exchange(path, body, cancelled = () => false) {
     const started = epoch
@@ -281,10 +302,7 @@ function createAccount(fx) {
       if (!fx.apiUrl) return status(null)
       const s = await current()
       if (!s) return status(null)
-      if (Date.parse(s.expiresAt) <= fx.now()) {
-        await clear(s)
-        return status(null)
-      }
+      if (Date.parse(s.expiresAt) <= fx.now()) return status(await slid(s))
       let r
       try {
         r = await call('GET', '/api/auth/me', null, s.token)
@@ -330,14 +348,14 @@ function createAccount(fx) {
       cancels++
       fx.google.signOut() // a sign-in waiting on the browser ends 'cancelled'
     },
-    /** Main only (the SANO API forward, the docs windows): the live session's token, or null. Expiry clears it, as status(). */
+    /** Main only (the SANO API forward, the docs windows): the live session's token, or null. Expiry asks /me, as status(). */
     async bearer() {
       if (!fx.apiUrl) return null
       const s = await current()
       if (!s) return null
       if (Date.parse(s.expiresAt) <= fx.now()) {
-        await clear(s)
-        return null
+        const n = await slid(s)
+        return n ? n.token : null
       }
       return s.token
     },

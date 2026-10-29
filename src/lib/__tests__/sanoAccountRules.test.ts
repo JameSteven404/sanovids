@@ -316,14 +316,14 @@ describe('createAccount (fake SANO account server)', () => {
     expect(value(await account.status()).signedIn).toBe(false)
   })
 
-  it('expired by expiresAt: signed out without asking the server; a damaged file: signed out and deleted', async () => {
+  it('expired by expiresAt: one /me (no later expiresAt: signed out); a damaged file: signed out and deleted', async () => {
     const server = fakeServer()
     const m = machine()
     value(await setup({ server, m }).account.login({ identifier: 'minh', password: server.password }))
     const later = setup({ server, m, now: NOW + 31 * 86_400_000 })
     const n = server.calls.length
     expect(value(await later.account.status()).signedIn).toBe(false)
-    expect(server.calls.length).toBe(n)
+    expect(server.calls.length).toBe(n + 1) // the session may have slid on the server: /me asked once
     expect(m.files.size).toBe(0)
     m.files.set(FILE, Buffer.from('garbage'))
     expect(value(await setup({ server, m }).account.status()).signedIn).toBe(false)
@@ -623,7 +623,7 @@ describe('createAccount (fake SANO account server)', () => {
     let ends = 0
     const later = setup({ server, m, now: NOW + 31 * 86_400_000, onSessionEnd: () => void ends++ })
     expect(await later.account.bearer()).toBeNull()
-    expect([ends, m.files.size, server.calls.length]).toEqual([1, 0, n])
+    expect([ends, m.files.size, server.calls.length]).toEqual([1, 0, n + 1]) // one /me: no later expiresAt
     expect(value(await later.account.status()).signedIn).toBe(false)
     // an unexpected error (a broken clock): null, logged by name only
     value(await account.login({ identifier: 'minh', password: server.password }))
@@ -667,6 +667,34 @@ describe('createAccount (fake SANO account server)', () => {
     // 35 days after sign-in, past the first 30: still signed in at the next start
     delete server.opts.meExpiresAt
     expect(value(await setup({ server, m, now: NOW + 35 * 86_400_000 }).account.status()).signedIn).toBe(true)
+  })
+
+  it('past the saved expiresAt, the app left open: bearer() / status() ask /me; a slid session goes on (saved), 401 / offline end it', async () => {
+    const server = fakeServer()
+    const m = machine()
+    value(await setup({ server, m }).account.login({ identifier: 'minh', password: server.password }))
+    const tok = server.secrets.filter((x) => x.startsWith('sano_')).at(-1)
+    const saved = () => JSON.parse(Buffer.from(m.files.get(FILE)!.toString().slice(3), 'base64').toString()) as { expiresAt: string }
+    const slidTo = new Date(NOW + 60 * 86_400_000).toISOString()
+    server.opts.meExpiresAt = slidTo
+    let ends = 0
+    const later = setup({ server, m, now: NOW + 31 * 86_400_000, onSessionEnd: () => void ends++ })
+    const n = server.calls.length
+    expect(await later.account.bearer()).toBe(tok)
+    expect([ends, saved().expiresAt, server.calls.length]).toEqual([0, slidTo, n + 1])
+    expect(await later.account.bearer()).toBe(tok) // the later expiresAt is held: no second /me
+    expect(server.calls.length).toBe(n + 1)
+    expect(value(await setup({ server, m, now: NOW + 31 * 86_400_000 }).account.status()).signedIn).toBe(true)
+    // revoked on the server meanwhile: ended at the next expiry
+    for (const end of [() => server.sessions.clear(), () => void (server.opts.offline = true)]) {
+      const mm = machine()
+      delete server.opts.offline
+      value(await setup({ server, m: mm }).account.login({ identifier: 'minh', password: server.password }))
+      end()
+      expect(await setup({ server, m: mm, now: NOW + 31 * 86_400_000 }).account.bearer()).toBeNull()
+      expect(mm.files.size).toBe(0)
+    }
+    delete server.opts.offline
   })
 
   it('userId(): the held user only (main-only, for the docs Google owner); null signed out', async () => {
