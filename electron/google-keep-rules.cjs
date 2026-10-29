@@ -76,6 +76,7 @@ function createGoogleKeep(deps) {
   let timer = null
   let firstAt = 0
   let lastKey = null // what the file holds ('' = no file, null = unknown)
+  let wipes = 0 // wipe() calls: a conversion awaiting its re-read never sets a cookie a wipe is removing
   let chain = Promise.resolve()
   const run = (fn) => (chain = chain.then(fn).catch((e) => log(`[SanoVids] ${label}: failed (${e && e.name})`)))
 
@@ -110,8 +111,16 @@ function createGoogleKeep(deps) {
   /** A persistent Google cookie → the same cookie as a session one (it replaces the row before Chromium commits it). */
   async function toSession(c) {
     const e = googleEntry(c)
+    const gen = wipes
     try {
       if (!e) throw new TypeError('not settable')
+      // re-read: a cookie replaced or removed since this event has its own event, and a late set would bring it back
+      const cur = (await cookies.get({ url: cookieRemovalUrl(c), name: c.name })).find((x) => {
+        const g = googleEntry(x)
+        return g && idOf(g) === idOf(e)
+      })
+      if (!cur || cur.session !== false || cur.value !== c.value) return
+      if (gen !== wipes) return await removeCookie(c) // a wipe began meanwhile: gone, never set again
       expiries.set(idOf(e), c.expirationDate)
       await cookies.set(sessionDetails(e))
     } catch (err) {
@@ -266,6 +275,7 @@ function createGoogleKeep(deps) {
     /** Removes the Google account cookies of the store and the snapshot, then flushes. Never throws. */
     wipe() {
       stopTimer()
+      wipes++
       return run(async () => {
         expiries.clear()
         await removeGoogleAccountCookies(cookies)

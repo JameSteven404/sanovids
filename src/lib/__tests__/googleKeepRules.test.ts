@@ -35,7 +35,8 @@ const T0 = Date.UTC(2026, 9, 29)
 const inYear = () => Math.floor(Date.now() / 1000) + 365 * 86_400
 type Listener = (e: unknown, c: Ck, cause: string, removed: boolean) => void
 
-function fakeStore(initial: Ck[] = []) {
+/** lag: get / set answer a tick later, like the network service behind IPC (a cookie can change meanwhile). */
+function fakeStore(initial: Ck[] = [], o: { lag?: boolean } = {}) {
   const jar = new Map<string, Ck>()
   const key = (c: Ck) => `${c.name}\n${c.domain}\n${c.path}`
   for (const c of initial) jar.set(key(c), c)
@@ -54,8 +55,12 @@ function fakeStore(initial: Ck[] = []) {
     jar,
     calls,
     listeners,
-    get: async () => [...jar.values()].map((c) => ({ ...c })),
+    get: async () => {
+      if (o.lag) await Promise.resolve()
+      return [...jar.values()].map((c) => ({ ...c }))
+    },
     set: async (d: Record<string, unknown>) => {
+      if (o.lag) await Promise.resolve()
       calls.set.push(d)
       const hostOnly = d.domain === undefined
       const c: Ck = { name: String(d.name), value: String(d.value), domain: hostOnly ? new URL(String(d.url)).hostname : String(d.domain), hostOnly, path: String(d.path ?? '/'), secure: d.secure === true, httpOnly: d.httpOnly === true, sameSite: String(d.sameSite ?? 'unspecified'), session: d.expirationDate === undefined }
@@ -175,6 +180,43 @@ describe('createGoogleKeep', () => {
     expect(await keep.restore()).toBe(0)
     await keep.save()
     expect(snapshot(m).cookies.map((c) => c.name)).toEqual(['SID'])
+  })
+
+  it('a cookie removed, replaced or wiped before its conversion runs is never set back (no resurrection)', async () => {
+    const drop = (store: Store) => {
+      const c = store.jar.get('SID\n.google.com\n/')!
+      store.jar.delete('SID\n.google.com\n/')
+      for (const l of store.listeners) l({}, c, 'expired-overwrite', true)
+    }
+    // removed (Google's sign-out hop): no set, and the next save leaves it out
+    let store = fakeStore([], { lag: true })
+    let m = machine()
+    let keep = keepOf(store, m)
+    await keep.restore()
+    keep.start()
+    store.server(sid())
+    drop(store)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect([store.calls.set, store.jar.size, m.files.has(FILE)]).toEqual([[], 0, false])
+    // replaced by a newer session value: the newer one stays
+    store = fakeStore([], { lag: true })
+    keep = keepOf(store, (m = machine()))
+    await keep.restore()
+    keep.start()
+    store.server(sid())
+    store.server(sid({ value: `${SECRET}-v2`, session: true, expirationDate: undefined }))
+    await vi.advanceTimersByTimeAsync(2000)
+    expect([store.calls.set, store.jar.get('SID\n.google.com\n/')!.value]).toEqual([[], `${SECRET}-v2`])
+    // Đăng xuất (wipe) while the conversion waits: the cookie is gone, never set again
+    store = fakeStore([], { lag: true })
+    keep = keepOf(store, (m = machine()))
+    await keep.restore()
+    keep.start()
+    store.server(sid())
+    const wiped = keep.wipe()
+    await vi.advanceTimersByTimeAsync(2000)
+    await wiped
+    expect([store.calls.set, store.jar.size, m.files.has(FILE)]).toEqual([[], 0, false])
   })
 
   it('restore: session cookies only, right url / domain / host-only; a cookie already there wins; expired entries dropped', async () => {
