@@ -192,6 +192,13 @@ function createDocs(fx) {
       return true
     },
     /**
+     * The main window is about to close: asks when any window is open → false on "Ở lại". Destroys nothing: the page's
+     * own beforeunload can still cancel the close, and 'closed' calls closeAll once it really happened.
+     */
+    confirmClose() {
+      return !tracked.size || fx.confirm(tracked.size)
+    },
+    /**
      * did-create-window of a popup of the document `parentKey` (the key its external() calls use): tracked, or destroyed
      * here once MAX_WINDOWS are open → false.
      */

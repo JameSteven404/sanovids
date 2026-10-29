@@ -517,9 +517,10 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(mainSource).toMatch(/\n {2}if \(SANO_IN_APP && SANO_API\) \{\n {4}sanoApi = apiRules\.createApiForward\(\{ apiUrl: SANO_API, fetch: \(url, init\) => fetch\(url, init\), account, log: \(line\) => console\.error\(line\) \}\)\n {4}registerDocs\(\)\n {2}\}/)
     expect(mainSource.split('--bdp-sano-api-forward').length - 1).toBe(1)
     expect(mainSource).toContain("...(SANO_IN_APP && SANO_API ? ['--bdp-sano-api-forward'] : [])")
-    // a real main-window close asks docs.closeAll first; closed destroys what is left
+    // a real main-window close only asks (the page's beforeunload can still cancel it); closed destroys the windows
     const create = mainSource.slice(at('function createWindow() {'), at('function showMainWindow() {'))
-    expect(create).toMatch(/if \(updating \|\| hardening\.mainWindowCloseHides\(\{ platform: process\.platform, quitting, quittingForUpdate: updating \}\)\) return\s+if \(!sanoDocs\.closeAll\(\{ ask: true \}\)\) event\.preventDefault\(\)/)
+    expect(create).toMatch(/if \(updating \|\| hardening\.mainWindowCloseHides\(\{ platform: process\.platform, quitting, quittingForUpdate: updating \}\)\) return\s+if \(!sanoDocs\.confirmClose\(\)\) \{?\s*event\.preventDefault\(\)/)
+    expect(create).not.toContain('sanoDocs.closeAll({ ask: true })')
     expect(create).toContain('if (sanoDocs) sanoDocs.closeAll({ ask: false })')
     // docs IPC: SANO's page itself only
     expect(mainSource).toContain("ipcMain.handle('docs:open', (event, input) => (fromSano(event) ? sanoDocs.open(input) : accountRules.NOT_ALLOWED))")

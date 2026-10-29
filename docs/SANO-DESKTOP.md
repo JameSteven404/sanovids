@@ -239,7 +239,8 @@ có forward (`app://sano/` và `SANO_API_URL`). Mã: `electron/sano-docs-rules.c
   `signed-out`. Người dùng SANO sau không bao giờ thừa hưởng đăng nhập Google trong trình soạn của người trước.
 - **Đóng hết (`closeAll`):** người dùng tự đăng xuất SANO (trang gọi `docs.closeAll()` trước) và lần đóng thật cửa sổ
   chính (không phải lúc thoát để cập nhật) hỏi trước khi còn tài liệu mở: "Còn n tài liệu đang mở. Đóng hết? Thay đổi
-  chưa lưu lên Google sẽ mất." **Ở lại** giữ cả hai. Cửa sổ chính đã đóng thì mọi cửa sổ Tài liệu đóng theo, nên không
+  chưa lưu lên Google sẽ mất." **Ở lại** giữ cả hai. Lúc đóng cửa sổ chính chỉ hỏi (`confirmClose`), chưa đóng tài liệu: trang SANO còn có thể
+  chặn đóng (bản nháp chưa gửi). Cửa sổ chính đã đóng thật thì mọi cửa sổ Tài liệu đóng theo, nên không
   cửa sổ nào sống lâu hơn cửa sổ chính. macOS vẫn chỉ ẩn cửa sổ chính; cửa sổ Tài liệu giữ nguyên.
 - Kiểm thử: `src/lib/__tests__/sanoDocsRules.test.ts`, `sanoApiRules.test.ts` và các ghim trong `hardeningRules.test.ts`,
   `sanoAccountRules.test.ts`. Chưa kiểm trong Electron thật với máy chủ (E2E bước 4) và chưa kiểm với Google thật.

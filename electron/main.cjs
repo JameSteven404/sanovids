@@ -474,7 +474,7 @@ function createWindow() {
     win.on('close', (event) => {
       const updating = macQuitForUpdate || !!(updater && updater.isQuittingForUpdate())
       if (updating || hardening.mainWindowCloseHides({ platform: process.platform, quitting, quittingForUpdate: updating })) return
-      if (!sanoDocs.closeAll({ ask: true })) event.preventDefault()
+      if (!sanoDocs.confirmClose()) event.preventDefault()
     })
   }
 

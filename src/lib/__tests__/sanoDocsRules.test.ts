@@ -8,6 +8,7 @@ interface Docs {
   open(input: unknown): Promise<Answer>
   endSession(): Promise<void>
   closeAll(o?: { ask?: boolean }): boolean
+  confirmClose(): boolean
   track(parentKey: string, child: Win): boolean
   external(key: string, url: string): boolean
 }
@@ -323,5 +324,18 @@ describe('sano-docs-rules', () => {
     expect(state.clears).toBe(1)
     expect(docs.closeAll({ ask: false })).toBe(true) // the main window is gone: no question
     expect(asked).toEqual([2, 2])
+  })
+
+  it('confirmClose: no window → true without asking; otherwise the answer, and no window destroyed either way', async () => {
+    let answer = false
+    const { docs, windows, asked } = setup({ confirm: () => answer })
+    expect(docs.confirmClose()).toBe(true)
+    expect(asked).toEqual([])
+    expect((await open(docs, 0)).ok).toBe(true)
+    expect(docs.confirmClose()).toBe(false)
+    answer = true
+    expect(docs.confirmClose()).toBe(true)
+    expect(asked).toEqual([1, 1])
+    expect(windows.some((w) => w.destroyed)).toBe(false)
   })
 })
