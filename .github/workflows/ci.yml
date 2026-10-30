@@ -6,7 +6,7 @@ permissions: { contents: read }
 concurrency: { group: "ci-${{ github.ref }}", cancel-in-progress: true }
 jobs:
   test:
-    # Windows: the app ships for Windows first; npm ci runs install scripts so the Electron binary downloads (buildConfig.test).
+    # Windows: the app ships for Windows first.
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -15,6 +15,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: 24, cache: npm }
       - run: npm ci --no-audit --no-fund
+      # Electron 44 has no postinstall (it downloads on first use); buildConfig.test needs node_modules/electron/dist.
+      - run: node node_modules/electron/install.js
       - run: npm run typecheck
       - run: npm test
   secrets:
