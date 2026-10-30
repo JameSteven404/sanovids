@@ -1,0 +1,20 @@
+# Keyboard shortcut chords ('Ctrl+Shift+Key…') that the generic-api-key rule reads as "key" values.
+9490d9d5ea5d80e5e9430db827424ece0c59dd24:src/core/keymap.ts:generic-api-key:77
+0d97b4931d66178b4810afe55f3538dcc721019d:src/core/keymap.ts:generic-api-key:74
+0d97b4931d66178b4810afe55f3538dcc721019d:src/core/__tests__/keymapDefaults.test.ts:generic-api-key:6
+0febb806bad520552b96fe5b78baee537dc7b3dd:src/core/__tests__/keymap.test.ts:generic-api-key:72
+# Test fixtures: idempotency UUIDs, a fake key tag/hint ('a1b2c3d4e5f6', 'sv_live_' + sequential digits/letters) and a fake request-id prefix.
+cec6b6f2e6999ea68b7d3b08967d4261d09f002b:src/providers/seedvis/__tests__/seedvisRules.test.ts:generic-api-key:1035
+0198181f4decc48196fe1f7e3678aff73d2a3594:src/providers/seedvis/__tests__/seedvisRules.test.ts:generic-api-key:893
+0198181f4decc48196fe1f7e3678aff73d2a3594:src/providers/seedvis/__tests__/seedvisRules.test.ts:generic-api-key:1039
+17303516a1ba037439f4909cc4b9cb4390e0c1d4:src/core/__tests__/seedvisMigrate.test.ts:generic-api-key:60
+17303516a1ba037439f4909cc4b9cb4390e0c1d4:src/core/__tests__/seedvisMigrate.test.ts:generic-api-key:78
+17303516a1ba037439f4909cc4b9cb4390e0c1d4:src/core/__tests__/seedvisMigrate.test.ts:generic-api-key:221
+17303516a1ba037439f4909cc4b9cb4390e0c1d4:src/core/__tests__/seedvisMigrate.test.ts:generic-api-key:230
+419717ae9088b2d7f6088e5983ae606f9acfb6f5:src/providers/__tests__/fakeCanvasapp.ts:generic-api-key:117
+# Owner Ed25519 PUBLIC key pinned for dev-unlock codes (only used with crypto.createPublicKey + verify; it ships in every build).
+7a3def0e064f8186da8bd7c26c96cfee493ad34c:package.json:generic-api-key:21
+# Published test vectors: RFC 8032 §7.1 Ed25519 test public keys and the RFC 6238 Appendix B TOTP test secret.
+c45e44e9e33c2971c5b5241f3712d48f61811357:electron/devaccess-rules.cjs:generic-api-key:74
+c45e44e9e33c2971c5b5241f3712d48f61811357:src/providers/dev/devAccess.ts:generic-api-key:13
+c45e44e9e33c2971c5b5241f3712d48f61811357:src/lib/__tests__/devAccessRules.test.ts:generic-api-key:240
