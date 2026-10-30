@@ -13,7 +13,7 @@
 | Bản chỉ báo | **Portable** (và thư mục `win-unpacked`): báo có bản mới, nút **Tải bản mới** mở trang tải về |
 | Không cập nhật | Chạy từ mã nguồn (`npm run desktop`, `electron .`) và bản web |
 | Nguồn cập nhật | GitHub Releases của repo **công khai** [`JameSteven404/sanovids-releases`](https://github.com/JameSteven404/sanovids-releases/releases) — chỉ chứa file cài đặt + file cập nhật |
-| Mã nguồn | Repo `JameSteven404/sanovids` vẫn **riêng tư**. App **không chứa token** nào |
+| Mã nguồn | Repo `JameSteven404/sanovids` **công khai** từ 27/10/2026 (D251: chấp nhận mã nguồn mở; giấy phép sử dụng vẫn áp dụng). Không commit bí mật vào repo này: lịch sử công khai không thu hồi được. App **không chứa token** nào |
 | Thư viện | `electron-updater` 6.8.10 (ghim đúng bản, khớp electron-builder 26) — phụ thuộc runtime duy nhất |
 | Chữ ký số | Bản cập nhật chỉ được nhận khi ký bởi chứng chỉ có dấu vân tay ghim trong app (`package.json` → `sanovids.signers`); bộ kiểm tra riêng `electron/signature.cjs`, xem [SIGNING.md](SIGNING.md) |
 
