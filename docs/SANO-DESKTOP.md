@@ -174,10 +174,16 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
   giữ lại (lần mở sau mà mất mạng vẫn mở lại được, kể cả khi máy chủ đã thu hồi), nên `signOut()` luôn báo lỗi
   `sign-out-failed` "Phiên vẫn còn trên máy này. Kiểm tra mạng rồi thử lại, hoặc đóng hẳn Sano
   Agent rồi mở lại.", không bao giờ giả vờ đã đăng xuất (SANO-AGENT#95). Trong lúc chờ máy chủ, `status()` và lần bấm đăng xuất thứ hai
-  vẫn thấy người dùng đang đăng nhập. Phiên đăng xuất giữa lúc đang ghi file (đăng nhập, cập nhật hồ sơ) thì file vừa
-  ghi bị xoá ngay, token không nằm lại trên đĩa; Huỷ Google lúc đang ghi file cũng vậy (trả `cancelled`, phiên vừa cấp
-  kết thúc trên máy chủ); khi file vừa ghi không xoá, ghi rỗng hay đặt dấu được thì trả `sign-out-failed` thay cho
-  `cancelled` và giữ phiên, để lần đăng xuất sau thử lại. Một `/me` trả lời sau khi phiên đã đăng xuất hoặc đổi người thì bị bỏ: `status()` trả phiên đang
+  vẫn thấy người dùng đang đăng nhập. **Dọn dẹp còn treo:** sau đó `/me` (hoặc forward) trả 401/403 thì bộ nhớ bỏ phiên và
+  `status()` trả `signedIn: false`, nhưng file vẫn còn nên app nhớ là việc dọn còn treo: mọi lần `signOut()` sau đó thử
+  xoá lại và vẫn trả `sign-out-failed` (cùng thông báo trên) cho đến khi file thật sự mất (xoá, ghi rỗng hoặc đặt được
+  dấu). Mở lại app: nếu mất mạng thì phiên cũ hiện lại ở chế độ ngoại tuyến (đúng như lỗi đã báo); có mạng thì `/me` trả
+  401, app thử xoá file lần nữa, không xoá được thì lần đăng xuất sau báo lỗi y như vậy. Phiên đăng xuất giữa lúc đang
+  ghi file (đăng nhập, cập nhật hồ sơ) thì file vừa ghi bị xoá ngay, token không nằm lại trên đĩa. Huỷ Google khi file
+  `.tmp` đang ghi (trước bước đổi tên) thì xoá `.tmp`, bỏ bước đổi tên: file không bao giờ chứa phiên đó, trả
+  `cancelled`, phiên vừa cấp kết thúc trên máy chủ. Huỷ khi bước đổi tên đã chạy thì file vừa ghi bị xoá; không xoá, ghi
+  rỗng hay đặt dấu được thì trả `sign-out-failed` thay cho `cancelled` và giữ phiên, để lần đăng xuất sau thử lại. So
+  phiên theo token, nên một `status()` gia hạn (bản sao cùng token) giữa lúc đó không làm Huỷ bỏ sót phiên. Một `/me` trả lời sau khi phiên đã đăng xuất hoặc đổi người thì bị bỏ: `status()` trả phiên đang
   giữ lúc đó. Bấm Google lần nữa khi lượt trước còn chờ trình duyệt: lượt trước trả `superseded`, lượt mới vẫn chạy.
 - **Chỉ main** (forward ở mục 3, cửa sổ Tài liệu ở mục 3b): `bearer()` trả token của phiên đang giữ; không cấu hình hoặc
   không phiên thì `null`; quá `expiresAt` thì hỏi `/me` như `status()` (phiên đã trượt vẫn dùng được khi app mở liên tục
@@ -204,7 +210,8 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
     login({ identifier, password }): Promise<AccountStatus>
     register({ email, username, name, password }): Promise<{ ok: true }>
     forgot({ identifier }): Promise<{ ok: true }>
-    google(): Promise<AccountStatus> // lỗi "Đã huỷ đăng nhập Google." khi huỷ
+    google(): Promise<AccountStatus> // lỗi "Đã huỷ đăng nhập Google." khi huỷ; Huỷ lúc đang lưu phiên mà không dọn được file: lỗi sign-out-failed
+    // ("Phiên vẫn còn trên máy này. …"), phiên vẫn giữ, lần đăng xuất sau thử lại
     cancelGoogle(): Promise<void>
     signOut(): Promise<AccountStatus>
   }
