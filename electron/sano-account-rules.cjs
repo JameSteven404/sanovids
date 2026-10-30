@@ -221,7 +221,10 @@ function createAccount(fx) {
     if (!s) {
       endChat()
       await queued(remove)
-    } else lastUser = s.user.id
+    } else {
+      lastUser = s.user.id
+      filed = s.token
+    }
     return s
   }
 
@@ -284,7 +287,7 @@ function createAccount(fx) {
       await dropTmp()
       // the file may still hold the session s replaces: a restart would reopen that one (the same session's older copy may stay)
       if ((!before || before.token !== s.token) && !(await remove())) {
-        if (held === s) {
+        if (held && held.token === s.token) {
           held = before
           lastUser = before ? before.user.id : null
         }
@@ -302,7 +305,11 @@ function createAccount(fx) {
     if (!persistent()) return true
     pending = s // from now: a sign-out meanwhile (a second click) retries the removal, never answers ok
     const gone = await queued(remove)
-    if (gone && pending === s) pending = null
+    if (gone) {
+      if (pending === s) pending = null
+      // a concurrent failed sign-out held s again meanwhile: the file is gone now, so that session goes too
+      if (held && held.token === s.token) held = null
+    }
     return gone
   }
 
@@ -463,7 +470,8 @@ function createAccount(fx) {
         // file stuck (Windows lock, nothing writable beside it): an offline restart reopens it even once the server revoked
         // the token, so this is never a sign-out. The logout is still waited on (the token dies when the server is up)
         else {
-          if (held === null) held = s // the session stays: signed in meanwhile (a reload, a second click) and after
+          // the session stays, but only one the file really holds: a sign-in dropped before its rename never comes back
+          if (held === null && filed === s.token) held = s
           await logout.catch(() => undefined)
           throw new AccountError(TEXT.signOutFailed, 'sign-out-failed')
         }
