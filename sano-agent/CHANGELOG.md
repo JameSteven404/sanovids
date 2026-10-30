@@ -4,6 +4,31 @@ Mọi thay đổi đáng chú ý của Sano Agent, app SANO trên máy tính. B�
 
 Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️ lưu ý
 
+## [1.1.0-beta.2] — 2026-10-30 — Bản thử nội bộ: tài khoản SANO và máy chủ chung
+
+Bản thử cho đợt thử nội bộ M1: chỉ đưa thẳng cho người thử, không đăng lên trang tải về.
+
+✨ **Tài khoản SANO và máy chủ chung**
+- Đăng nhập ngay trong app bằng tên đăng nhập và mật khẩu, trên máy chủ `https://sa.sanogroup.tv`.
+- Ba cách có tài khoản: tự đăng ký rồi chờ QTV duyệt; QTV tạo sẵn với mật khẩu tạm (lần đầu phải đổi); hoặc Tiếp tục với Google khi máy chủ đã bật Google.
+- QTV có màn **Thành viên & vai trò** để duyệt, tạo, đặt lại mật khẩu và gán team.
+
+✨ **Chỉ còn các màn chạy thật**
+- Khi đăng nhập bằng tài khoản thật, menu chỉ còn Chat kiến thức, Tài liệu, Canvas, và Thành viên & vai trò cho QTV.
+- **Chat kiến thức** tra cứu các nguồn đã duyệt. Đợt này chưa có AI trả lời.
+- **Tài liệu** liệt kê và mở Google Docs/Sheets khi đăng nhập bằng Google.
+
+🛠️ **Giao diện gọn hơn**
+- Thanh tiêu đề Windows gộp vào thanh trên của app, cùng màu.
+- Giữ đăng nhập lâu hơn: phiên trên máy trượt theo lần dùng, tối đa 90 ngày.
+
+🐞 **Sửa lỗi so với beta.1**
+- Đăng xuất trên máy không còn báo thành công khi tệp phiên chưa xoá được; huỷ đăng nhập Google không làm phiên vừa huỷ thành phiên đang dùng (#95).
+- Kết nối Google Workspace: phản hồi của lần kết nối cũ không còn ghi đè hoặc xoá kết nối mới (#59).
+
+⚠️ **Lưu ý**
+- Máy chủ của đợt thử chạy trên máy của Minh. Máy chủ tắt thì không đăng nhập được, nhưng Canvas vẫn dùng được với tài khoản canvasapp.
+
 ---
 
 ## [1.0.0] — 2026-10-27 — Bản đầu: SANO và Canvas trong một app
