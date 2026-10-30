@@ -4,6 +4,8 @@ Mọi thay đổi đáng chú ý của Sano Agent, app SANO trên máy tính. B�
 
 Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️ lưu ý
 
+---
+
 ## [1.1.0-beta.2] — 2026-10-30 — Bản thử nội bộ: tài khoản SANO và máy chủ chung
 
 Bản thử cho đợt thử nội bộ M1: chỉ đưa thẳng cho người thử, không đăng lên trang tải về.
