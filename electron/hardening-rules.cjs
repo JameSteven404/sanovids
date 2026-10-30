@@ -405,6 +405,28 @@ function appFrames(wc) {
   }
 }
 
+/**
+ * TH-46: Sano Agent's main window (main.cjs TITLE_BAR) draws Windows' min / max / close over SANO's 44 px top bar: its
+ * top 43 px, so the bar's 1 px bottom border runs on under the buttons (a 44 px overlay hid it there).
+ */
+const TITLE_BAR_HEIGHT = 43
+/** Its colors until SANO's page sets its own: SANO's top bar (--bar-bg) and its icons (--bar-fg) of web/theme.css. */
+const TITLE_BAR_START = Object.freeze({
+  dark: Object.freeze({ color: '#17191c', symbolColor: '#edf0f5' }),
+  light: Object.freeze({ color: '#ffffff', symbolColor: '#20242c' }),
+})
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
+
+/**
+ * { color, symbolColor } (sanoDesktop.titleBar.setColors, TITLE_BAR_START) → the options of win.setTitleBarOverlay, or
+ * null unless both are exactly #rrggbb (no names, no alpha: the page never sends main anything else).
+ */
+function titleBarOverlay(colors) {
+  const { color, symbolColor } = colors && typeof colors === 'object' ? colors : {}
+  if (typeof color !== 'string' || typeof symbolColor !== 'string' || !HEX_COLOR_RE.test(color) || !HEX_COLOR_RE.test(symbolColor)) return null
+  return { color, symbolColor, height: TITLE_BAR_HEIGHT }
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Self-check of the app's own code signature ('app:signature', src/lib/appSignature.ts re-validates it)
 // ---------------------------------------------------------------------------------------------------------------
@@ -735,6 +757,9 @@ module.exports = {
   sanoFailedDialog,
   sanoFailedAction,
   appFrames,
+  TITLE_BAR_HEIGHT,
+  TITLE_BAR_START,
+  titleBarOverlay,
   APP_SIGNATURE_STATUSES,
   appSignaturePayload,
   SIGNED_DLLS,

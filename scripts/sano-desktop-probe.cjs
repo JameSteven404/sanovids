@@ -54,6 +54,7 @@ const js = (wc, code) => wc.executeJavaScript(code, true)
 async function run() {
   const wc = mainWin.webContents
   check("SANO's top frame: sanoDesktop.google = signIn, token, signOut", (await js(wc, 'Object.keys(window.sanoDesktop.google).join()')) === 'signIn,token,signOut')
+  check('a server SANO keeps the native title bar: no sanoDesktop.titleBar (TH-46: app://sano/ on Windows only)', (await js(wc, 'typeof window.sanoDesktop.titleBar')) === 'undefined')
   const sub = wc.mainFrame.frames[0]
   check("the iframe is at SANO's origin", !!sub && sub.origin === ORIGIN)
   check('SANO-origin iframe: no sanoDesktop', !!sub && (await sub.executeJavaScript('typeof window.sanoDesktop')) === 'undefined')

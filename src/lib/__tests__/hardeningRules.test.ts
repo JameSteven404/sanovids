@@ -50,6 +50,9 @@ interface Hardening {
   sanoFailedDialog(message: string, detail: string): { buttons: string[]; defaultId: number; cancelId: number; detail: string } & Record<string, unknown>
   sanoFailedAction(response: unknown): 'retry' | 'canvas' | 'quit'
   appFrames(wc: unknown): { url: string }[]
+  TITLE_BAR_HEIGHT: number
+  TITLE_BAR_START: Readonly<Record<'dark' | 'light', { color: string; symbolColor: string }>>
+  titleBarOverlay(colors: unknown): { color: string; symbolColor: string; height: number } | null
   appSignaturePayload(verdict: unknown, opts: { packaged: boolean }): Payload
   SIGNED_DLLS: readonly string[]
   MICROSOFT_DLLS: readonly string[]
@@ -652,7 +655,7 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect([...sano![1].matchAll(/^ {4}(\w+): /gm)].map((m) => m[1])).toEqual(['sanovidsUrl', 'google'])
     // D253: the account object is built in the page's world (its Errors keep their code), then exposed here; step 4:
     // apiForward and docs only with main's --bdp-sano-api-forward
-    expect(sano![1]).toMatch(/\n {4}account,\n(?: {4}\/\*\*[^\n]*\*\/\n)? {4}\.\.\.\(forward \? \{ apiForward: true, docs \} : \{\}\),$/)
+    expect(sano![1]).toMatch(/\n {4}account,\n(?: {4}\/\*\*[^\n]*\*\/\n)? {4}\.\.\.\(forward \? \{ apiForward: true, docs \} : \{\}\),\n {4}\/\*\*[^\n]*\*\/\n {4}\.\.\.\(titleBar \? \{ titleBar: [^\n]*\} : \{\}\),$/)
     expect(preloadSource).toContain('  const account = contextBridge.executeInMainWorld({')
     expect(sano![1]).toContain("sanovidsUrl: 'app://bdp/',")
     // no argument crosses: main decides the client, the endpoints and where the tokens go
@@ -662,6 +665,71 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
       "token: () => ipcRenderer.invoke('sano:googleToken'),",
       "signOut: () => ipcRenderer.invoke('sano:googleSignOut'),",
     ])
+  })
+
+  it('TH-46 titleBarOverlay: two exact #rrggbb → the 43 px overlay (above the 1 px bar border), anything else → null; the start colors pass', () => {
+    expect(h.TITLE_BAR_HEIGHT).toBe(43)
+    expect(h.titleBarOverlay({ color: '#1b1e22', symbolColor: '#EDF0F5' })).toEqual({ color: '#1b1e22', symbolColor: '#EDF0F5', height: 43 })
+    // only the two colors cross: the page never picks the height
+    expect(h.titleBarOverlay({ color: '#000000', symbolColor: '#ffffff', height: 400, x: 1 })).toEqual({ color: '#000000', symbolColor: '#ffffff', height: 43 })
+    for (const bad of ['red', '#fff', '#ffffff00', 'ffffff', '#gggggg', ' #ffffff', '#ffffff ', '#ffffff\n', 'rgb(0,0,0)', '', 0x123456, null, undefined]) {
+      expect(h.titleBarOverlay({ color: bad, symbolColor: '#ffffff' }), String(bad)).toBeNull()
+      expect(h.titleBarOverlay({ color: '#ffffff', symbolColor: bad }), String(bad)).toBeNull()
+    }
+    for (const bad of [null, undefined, '#ffffff', ['#ffffff', '#000000'], {}]) expect(h.titleBarOverlay(bad), String(bad)).toBeNull()
+    expect(Object.isFrozen(h.TITLE_BAR_START)).toBe(true)
+    // SANO web/theme.css --bar-bg / --bar-fg, so min/max/close match the bar before the page pushes its colors
+    expect(h.TITLE_BAR_START).toEqual({ dark: { color: '#17191c', symbolColor: '#edf0f5' }, light: { color: '#ffffff', symbolColor: '#20242c' } })
+    for (const theme of ['dark', 'light'] as const) {
+      expect(Object.isFrozen(h.TITLE_BAR_START[theme]), theme).toBe(true)
+      expect(h.titleBarOverlay(h.TITLE_BAR_START[theme]), theme).toEqual({ ...h.TITLE_BAR_START[theme], height: 43 })
+    }
+  })
+
+  it("TH-46 wiring: Sano Agent's main window on Windows only; the colors come from SANO's page itself (fromSano)", () => {
+    expect(mainSource).toContain("const TITLE_BAR = SANO_IN_APP && process.platform === 'win32'")
+    // the main window alone loses its frame (docs, sign-in, checkout windows keep theirs), themed like the system at first
+    const create = mainSource.slice(mainSource.indexOf('function createWindow() {'), mainSource.indexOf('function showMainWindow() {'))
+    expect(create).toContain("...(TITLE_BAR ? { titleBarStyle: 'hidden', titleBarOverlay: hardening.titleBarOverlay(hardening.TITLE_BAR_START[nativeTheme.shouldUseDarkColors ? 'dark' : 'light']) } : {}),")
+    expect(mainSource.split('titleBarStyle').length - 1).toBe(1)
+    expect(mainSource.split('titleBarOverlay:').length - 1).toBe(1)
+    // one handler, only with the overlay; the sender is checked first, then the colors; one place recolors
+    expect(mainSource).toContain('\n    if (TITLE_BAR) registerTitleBar()\n')
+    const body = mainSource.slice(mainSource.indexOf('function registerTitleBar() {'), mainSource.indexOf('/** A Google sign-in of its own'))
+    expect(body).toMatch(/ipcMain\.handle\('sano:titleBarColors', \(event, colors\) => \{\s+if \(!fromSano\(event\)\) return false\s+const overlay = hardening\.titleBarOverlay\(colors\)\s+if \(!overlay\) return false\s+mainWindow\.setTitleBarOverlay\(overlay\)\s+return true\s+\}\)/)
+    expect(mainSource.split("'sano:titleBarColors'").length - 1).toBe(1)
+    expect(mainSource.split('setTitleBarOverlay(').length - 1).toBe(1)
+    expect(mainSource.split('--bdp-sano-title-bar').length - 1).toBe(1)
+    expect(preloadSource).toContain("const titleBar = process.argv.includes('--bdp-sano-title-bar')")
+  })
+
+  it("TH-46 preload run: titleBar only in SANO's top frame with main's --bdp-sano-title-bar; two short strings cross", async () => {
+    const invoked: [string, unknown][] = []
+    let exposed: Record<string, Record<string, unknown>> = {}
+    const electron = {
+      contextBridge: { exposeInMainWorld: (key: string, api: never) => void (exposed[key] = api), executeInMainWorld: ({ func, args }: { func: (...a: unknown[]) => unknown; args: unknown[] }) => new Function(`return (${func})`)()(...args) },
+      ipcRenderer: { invoke: async (ch: string, input: unknown) => (invoked.push([ch, input]), true), on: () => undefined, removeListener: () => undefined },
+    }
+    const run = (origin: string, titleBar: boolean, isMainFrame = true) => {
+      exposed = {}
+      const argv = ['--bdp-version=1.0.0', '--bdp-sano-origin=app://sano', ...(titleBar ? ['--bdp-sano-title-bar'] : [])]
+      new Function('require', 'process', 'location', 'window', preloadSource)(() => electron, { argv, versions: { electron: '44.0.0' }, platform: 'win32', isMainFrame }, { origin }, { addEventListener: () => undefined })
+      return exposed
+    }
+    expect(run('app://sano', false).sanoDesktop).not.toHaveProperty('titleBar')
+    expect(run('app://sano', true, false)).toEqual({})
+    expect(Object.keys(run('app://bdp', true))).toEqual(['bdpDesktop'])
+    expect(exposed.bdpDesktop).not.toHaveProperty('titleBar')
+    expect(Object.keys(run('app://sano', true).sanoDesktop)).toEqual(['sanovidsUrl', 'google', 'account', 'titleBar'])
+    const bar = exposed.sanoDesktop.titleBar as { setColors: (c: unknown) => Promise<unknown> }
+    expect(Object.keys(bar)).toEqual(['setColors'])
+    expect(await bar.setColors({ color: '#1b1e22', symbolColor: '#edf0f5', height: 400 })).toBe(true)
+    expect(invoked.at(-1)).toEqual(['sano:titleBarColors', { color: '#1b1e22', symbolColor: '#edf0f5' }])
+    // cut one past #rrggbb, so main refuses an overlong value instead of a cut one
+    await bar.setColors({ color: '#1b1e22ff00', symbolColor: 7 })
+    expect(invoked.at(-1)).toEqual(['sano:titleBarColors', { color: '#1b1e22f', symbolColor: '' }])
+    await bar.setColors(null)
+    expect(invoked.at(-1)).toEqual(['sano:titleBarColors', { color: '', symbolColor: '' }])
   })
 
   it('sano-desktop.bat: SANO_URL expands inside quotes only (cmd runs & | > of a query string as operators)', () => {
@@ -1511,7 +1579,7 @@ describe('development-mode lock wiring (main.cjs / preload.cjs / devaccess*.cjs 
     const setup = idx(mainSource, "devAccess = setupDevAccess({ userDataDir: app.getPath('userData'), buildOpen: DEV_OPEN_BUILD, isAppSender: fromApp, getMainWindow: () => mainWindow })")
     expect(setup).toBeGreaterThan(ready)
     expect(setup).toBeLessThan(mainSource.indexOf('createWindow()', ready))
-    expect(mainSource).toContain("additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, `--bdp-product=${app.getName()}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : []), ...(SANO_IN_APP && SANO_API ? ['--bdp-sano-api-forward'] : [])]")
+    expect(mainSource).toContain("additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, `--bdp-product=${app.getName()}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : []), ...(SANO_IN_APP && SANO_API ? ['--bdp-sano-api-forward'] : []), ...(TITLE_BAR ? ['--bdp-sano-title-bar'] : [])]")
     expect(mainSource).toContain('if (devAccess) devAccess.attachWindow(win)')
     // only one place builds the unlock module, and nothing else in main touches its channels
     expect(mainSource.split('setupDevAccess(').length - 1).toBe(1)

@@ -79,6 +79,8 @@ if (sanoArg && process.isMainFrame && location.origin === sanoArg.slice('--bdp-s
         args: [{ open: (i) => ipcRenderer.invoke('docs:open', { id: cut(i && i.id, 200), kind: cut(i && i.kind, 9) }), closeAll: () => ipcRenderer.invoke('docs:closeAll') }, 'Chưa mở được tài liệu.'],
       })
     : undefined
+  // TH-46 (main.cjs TITLE_BAR): only while Windows' buttons are drawn over SANO's top bar, so the page can feature-detect it.
+  const titleBar = process.argv.includes('--bdp-sano-title-bar')
   contextBridge.exposeInMainWorld('sanoDesktop', {
     sanovidsUrl: 'app://bdp/',
     /** Sign-in in the default browser (main.cjs registerGoogleSignIn). Only the ID token crosses, never the refresh token. */
@@ -97,6 +99,8 @@ if (sanoArg && process.isMainFrame && location.origin === sanoArg.slice('--bdp-s
     account,
     /** → apiForward: true; docs: { open({ id, kind }) → undefined, closeAll() → boolean } (sano-docs-rules.cjs) */
     ...(forward ? { apiForward: true, docs } : {}),
+    /** → titleBar: { setColors({ color, symbolColor }) → true, or false when main refused (each must be #rrggbb) } */
+    ...(titleBar ? { titleBar: { setColors: (c) => ipcRenderer.invoke('sano:titleBarColors', { color: cut(c && c.color, 7), symbolColor: cut(c && c.symbolColor, 7) }) } } : {}),
   })
 }
 const expose = location.origin === 'app://bdp' ? (key, api) => contextBridge.exposeInMainWorld(key, api) : () => undefined
