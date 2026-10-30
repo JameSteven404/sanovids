@@ -20,6 +20,9 @@ interface Account {
   google(): Promise<Answer<Status>>
   cancelGoogle(): Promise<Answer<undefined>>
   signOut(): Promise<Answer<Status>>
+  bearer(): Promise<string | null>
+  ended(token: string, reason?: string): Promise<void>
+  userId(): string | null
 }
 interface Rules {
   TIMEOUT_MS: number
@@ -50,7 +53,7 @@ function fakeServer(password = pw()) {
   const codes = new Map<string, { challenge: string; redirect: string }>()
   const sessions = new Set<string>()
   const secrets: string[] = [password]
-  const opts: { offline?: boolean; meStatus?: number; state?: string; redirect?: string; hang?: string; gate?: Promise<unknown>; raw?: Response } = {}
+  const opts: { offline?: boolean; meStatus?: number; meExpiresAt?: string; state?: string; redirect?: string; hang?: string; gate?: Promise<unknown>; raw?: Response } = {}
   const issue = (body: Record<string, unknown>) => {
     const code = `code-${randomUUID()}`
     secrets.push(code)
@@ -90,7 +93,7 @@ function fakeServer(password = pw()) {
       case 'GET /api/auth/me': {
         if (opts.meStatus) return json(opts.meStatus, { error: 'x' })
         const ok = sessions.has(String(headers.Authorization).replace('Bearer ', ''))
-        return ok ? json(200, user) : json(401, { error: 'Phiên đăng nhập đã hết hạn. Đăng nhập lại.' })
+        return ok ? json(200, opts.meExpiresAt ? { ...user, expiresAt: opts.meExpiresAt } : user) : json(401, { error: 'Phiên đăng nhập đã hết hạn. Đăng nhập lại.' })
       }
       case 'POST /api/auth/logout':
         sessions.delete(String(headers.Authorization).replace('Bearer ', ''))
@@ -153,7 +156,7 @@ function fakeGoogle(result: () => Promise<GoogleResult> = async () => ({ ok: tru
 }
 
 const logs: string[] = []
-function setup(o: { server?: ReturnType<typeof fakeServer>; m?: ReturnType<typeof machine>; google?: ReturnType<typeof fakeGoogle>; apiUrl?: string | null; now?: number; onSessionEnd?: () => unknown } = {}) {
+function setup(o: { server?: ReturnType<typeof fakeServer>; m?: ReturnType<typeof machine>; google?: ReturnType<typeof fakeGoogle>; apiUrl?: string | null; now?: number; onSessionEnd?: (reason?: unknown) => unknown } = {}) {
   const server = o.server ?? fakeServer()
   const m = o.m ?? machine()
   const google = o.google ?? fakeGoogle()
@@ -337,14 +340,14 @@ describe('createAccount (fake SANO account server)', () => {
     }
   })
 
-  it('expired by expiresAt: signed out without asking the server; a damaged file: signed out and deleted', async () => {
+  it('expired by expiresAt: one /me (no later expiresAt: signed out); a damaged file: signed out and deleted', async () => {
     const server = fakeServer()
     const m = machine()
     value(await setup({ server, m }).account.login({ identifier: 'minh', password: server.password }))
     const later = setup({ server, m, now: NOW + 31 * 86_400_000 })
     const n = server.calls.length
     expect(value(await later.account.status()).signedIn).toBe(false)
-    expect(server.calls.length).toBe(n)
+    expect(server.calls.length).toBe(n + 1) // the session may have slid on the server: /me asked once
     expect(m.files.size).toBe(0)
     m.files.set(FILE, Buffer.from('garbage'))
     expect(value(await setup({ server, m }).account.status()).signedIn).toBe(false)
@@ -517,8 +520,11 @@ describe('createAccount (fake SANO account server)', () => {
     const login = t.account.login({ identifier: 'minh', password: t.server.password })
     await atRename
     t.server.opts.offline = true
-    expect(value(await t.account.signOut()).signedIn).toBe(false)
+    const out = t.account.signOut() // signed out in memory now; its delete waits for that write
+    await new Promise((r) => setTimeout(r, 0))
+    expect(value(await t.account.status()).signedIn).toBe(false)
     release()
+    expect(value(await out).signedIn).toBe(false)
     await login
     expect(t.m.files.size).toBe(0)
     expect(value(await setup({ server: t.server, m: t.m }).account.status()).signedIn).toBe(false)
@@ -737,6 +743,245 @@ describe('createAccount (fake SANO account server)', () => {
     expect(logs).toContain('[SanoVids] account: chat sign-out failed')
   })
 
+  it('bearer(): null unconfigured / signed out / expired (expired clears, onSessionEnd runs); token otherwise', async () => {
+    expect(await setup({ apiUrl: null }).account.bearer()).toBeNull()
+    const { account, server, m } = setup()
+    expect(await account.bearer()).toBeNull()
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    const tok = server.secrets.filter((x) => x.startsWith('sano_')).at(-1)
+    const n = server.calls.length
+    expect(await account.bearer()).toBe(tok)
+    expect(await setup({ server, m }).account.bearer()).toBe(tok) // a restart reads the file
+    expect(server.calls.length).toBe(n) // no /me: the forwarded call's own answer decides
+    let ends = 0
+    const later = setup({ server, m, now: NOW + 31 * 86_400_000, onSessionEnd: () => void ends++ })
+    expect(await later.account.bearer()).toBeNull()
+    expect([ends, m.files.size, server.calls.length]).toEqual([1, 0, n + 1]) // one /me: no later expiresAt
+    expect(value(await later.account.status()).signedIn).toBe(false)
+    // an unexpected error (a broken clock): null, logged by name only
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    const broken = R.createAccount({ apiUrl: API, fetch: server.fetch, file: FILE, fs: m.fs, safeStorage: m.safeStorage, now: () => { throw new RangeError('clock') }, random: () => new Uint8Array(32), google: fakeGoogle(), log: (line: string) => void logs.push(line) })
+    expect(await broken.bearer()).toBeNull()
+    expect(logs).toContain('[SanoVids] account: unexpected RangeError')
+  })
+
+  it("onSessionEnd's reason: 'forbidden' for a /me 403 (the account turned off); none for a 401, expiry or sign-out", async () => {
+    const reasons: unknown[] = []
+    const { account, server } = setup({ onSessionEnd: (reason) => void reasons.push(reason) })
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    reasons.length = 0 // the first sign-in of the run ends whoever was before
+    server.opts.meStatus = 403
+    expect(value(await account.status()).signedIn).toBe(false)
+    expect(reasons).toEqual(['forbidden'])
+    delete server.opts.meStatus
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    server.sessions.clear()
+    expect(value(await account.status()).signedIn).toBe(false)
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    value(await account.signOut())
+    expect(reasons.length).toBeGreaterThan(1)
+    expect(reasons.slice(1).every((r) => r === undefined)).toBe(true)
+  })
+
+  it('status(): a later expiresAt from /me (a desktop session slid on use) is saved with the session; an earlier or bad one is not', async () => {
+    const { account, server, m } = setup()
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    const saved = () => JSON.parse(Buffer.from(m.files.get(FILE)!.toString().slice(3), 'base64').toString()) as { expiresAt: string; token: string }
+    const first = saved()
+    for (const bad of [new Date(NOW + 10 * 86_400_000).toISOString(), 'not a date', first.expiresAt]) {
+      server.opts.meExpiresAt = bad
+      expect(value(await account.status()).signedIn).toBe(true)
+      expect(saved()).toEqual(first)
+    }
+    const later = new Date(NOW + 40 * 86_400_000).toISOString()
+    server.opts.meExpiresAt = later
+    expect(value(await account.status()).signedIn).toBe(true)
+    expect(saved()).toEqual({ ...first, expiresAt: later })
+    // 35 days after sign-in, past the first 30: still signed in at the next start
+    delete server.opts.meExpiresAt
+    expect(value(await setup({ server, m, now: NOW + 35 * 86_400_000 }).account.status()).signedIn).toBe(true)
+  })
+
+  it('past the saved expiresAt, the app left open: bearer() / status() ask /me; a slid session goes on (saved), 401 / offline end it', async () => {
+    const server = fakeServer()
+    const m = machine()
+    value(await setup({ server, m }).account.login({ identifier: 'minh', password: server.password }))
+    const tok = server.secrets.filter((x) => x.startsWith('sano_')).at(-1)
+    const saved = () => JSON.parse(Buffer.from(m.files.get(FILE)!.toString().slice(3), 'base64').toString()) as { expiresAt: string }
+    const slidTo = new Date(NOW + 60 * 86_400_000).toISOString()
+    server.opts.meExpiresAt = slidTo
+    let ends = 0
+    const later = setup({ server, m, now: NOW + 31 * 86_400_000, onSessionEnd: () => void ends++ })
+    const n = server.calls.length
+    expect(await later.account.bearer()).toBe(tok)
+    expect([ends, saved().expiresAt, server.calls.length]).toEqual([0, slidTo, n + 1])
+    expect(await later.account.bearer()).toBe(tok) // the later expiresAt is held: no second /me
+    expect(server.calls.length).toBe(n + 1)
+    expect(value(await setup({ server, m, now: NOW + 31 * 86_400_000 }).account.status()).signedIn).toBe(true)
+    // revoked on the server meanwhile: ended at the next expiry
+    for (const end of [() => server.sessions.clear(), () => void (server.opts.offline = true)]) {
+      const mm = machine()
+      delete server.opts.offline
+      value(await setup({ server, m: mm }).account.login({ identifier: 'minh', password: server.password }))
+      end()
+      expect(await setup({ server, m: mm, now: NOW + 31 * 86_400_000 }).account.bearer()).toBeNull()
+      expect(mm.files.size).toBe(0)
+    }
+    delete server.opts.offline
+  })
+
+  it("a renewal (/me past the saved expiresAt) that outlives its session answers null, never the next account's token", async () => {
+    for (const next of ['another user', 'signed out'] as const) {
+      const server = fakeServer()
+      const m = machine()
+      value(await setup({ server, m }).account.login({ identifier: 'minh', password: server.password }))
+      server.opts.meExpiresAt = new Date(NOW + 60 * 86_400_000).toISOString() // A's session slid on the server
+      const later = setup({ server, m, now: NOW + 31 * 86_400_000 })
+      let answer!: () => void
+      server.opts.hang = '/api/auth/me'
+      server.opts.gate = new Promise<void>((r) => (answer = r))
+      const renewing = later.account.bearer() // the forward of a request A started
+      await new Promise((r) => setTimeout(r, 0))
+      if (next === 'another user') {
+        Object.assign(server.user, { id: 'u-b', name: 'B' })
+        value(await later.account.login({ identifier: 'minh', password: server.password }))
+      } else value(await later.account.signOut())
+      answer()
+      expect(await renewing, next).toBeNull()
+      expect(later.account.userId(), next).toBe(next === 'another user' ? 'u-b' : null)
+    }
+  })
+
+  it('renewals of one session at the same time (two forwards, or status() and a forward) all get its token; the file keeps it', async () => {
+    const pairs = { 'bearer + bearer': (a: Account) => [a.bearer(), a.bearer()], 'status + bearer': (a: Account) => [a.status().then((s) => value(s).signedIn), a.bearer()] }
+    for (const [name, pair] of Object.entries(pairs)) {
+      const server = fakeServer()
+      const m = machine()
+      value(await setup({ server, m }).account.login({ identifier: 'minh', password: server.password }))
+      const tok = server.secrets.filter((x) => x.startsWith('sano_')).at(-1)
+      const slidTo = new Date(NOW + 60 * 86_400_000).toISOString()
+      server.opts.meExpiresAt = slidTo
+      const later = setup({ server, m, now: NOW + 31 * 86_400_000 })
+      let answer!: () => void
+      server.opts.hang = '/api/auth/me'
+      server.opts.gate = new Promise<void>((r) => (answer = r))
+      const both = Promise.all(pair(later.account))
+      await new Promise((r) => setTimeout(r, 0))
+      answer() // both /me answer together, past the saved expiresAt
+      const [a, b] = await both
+      expect([a === (name === 'bearer + bearer' ? tok : true), b === tok], name).toEqual([true, true]) // compared, never printed
+      const saved = JSON.parse(Buffer.from(m.files.get(FILE)!.toString().slice(3), 'base64').toString()) as { token: string; expiresAt: string }
+      expect([saved.token === tok, saved.expiresAt], name).toEqual([true, slidTo]) // a restart stays signed in
+    }
+  })
+
+  it('a renewed copy of the session saved while a renewal is still writing (status() sliding it again): the file is kept', async () => {
+    const server = fakeServer()
+    const m = machine()
+    value(await setup({ server, m }).account.login({ identifier: 'minh', password: server.password }))
+    const tok = server.secrets.filter((x) => x.startsWith('sano_')).at(-1)
+    server.opts.meExpiresAt = new Date(NOW + 60 * 86_400_000).toISOString()
+    const later = setup({ server, m, now: NOW + 31 * 86_400_000 })
+    const write = m.fs.writeFile
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    m.fs.writeFile = async (p, b) => {
+      m.fs.writeFile = write // only the renewal's write waits
+      await gate
+      return write(p, b)
+    }
+    const renewing = later.account.bearer()
+    await new Promise((r) => setTimeout(r, 0)) // its write is waiting
+    server.opts.meExpiresAt = new Date(NOW + 61 * 86_400_000).toISOString()
+    const checked = later.account.status() // saves a renewed copy meanwhile: its write waits for the renewal's
+    await new Promise((r) => setTimeout(r, 0))
+    release()
+    expect(value(await checked).signedIn).toBe(true)
+    expect((await renewing) === tok).toBe(true)
+    const saved = JSON.parse(Buffer.from(m.files.get(FILE)?.toString().slice(3) ?? '', 'base64').toString() || 'null') as { token: string } | null
+    expect(saved?.token === tok).toBe(true) // a restart stays signed in
+  })
+
+  it("an account switch (sign-out, then B signs in) while a renewal of A is inside save(): null for A's request, never B's token; B's file kept", async () => {
+    const server = fakeServer()
+    const m = machine()
+    value(await setup({ server, m }).account.login({ identifier: 'minh', password: server.password }))
+    const tokA = server.secrets.filter((x) => x.startsWith('sano_')).at(-1)
+    server.opts.meExpiresAt = new Date(NOW + 60 * 86_400_000).toISOString() // A's session slid on the server
+    const later = setup({ server, m, now: NOW + 31 * 86_400_000 })
+    const write = m.fs.writeFile
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let reached!: () => void
+    const inSave = new Promise<void>((r) => (reached = r))
+    m.fs.writeFile = async (p, b) => {
+      m.fs.writeFile = write // only the renewal's write waits
+      reached()
+      await gate
+      return write(p, b)
+    }
+    const renewing = later.account.bearer() // the forward of a request A started
+    await inSave // /me answered: save(n) is writing A's renewed session
+    const out = later.account.signOut() // its delete waits for that write
+    Object.assign(server.user, { id: 'u-b', name: 'B' })
+    const signIn = later.account.login({ identifier: 'minh', password: server.password })
+    while (later.account.userId() !== 'u-b') await new Promise((r) => setTimeout(r, 0)) // B held, A's write still waiting
+    release()
+    value(await out)
+    value(await signIn)
+    const tokB = server.secrets.filter((x) => x.startsWith('sano_')).at(-1)
+    const used = await renewing
+    expect([used === null, used === tokB]).toEqual([true, false]) // compared, never printed
+    expect(later.account.userId()).toBe('u-b') // the renewal never ends B's session
+    const raw = m.files.get(FILE)?.toString().slice(3)
+    const saved = raw ? (JSON.parse(Buffer.from(raw, 'base64').toString()) as { token: string }) : null
+    expect([saved?.token === tokA, saved?.token === tokB]).toEqual([false, true]) // A's signed-out token never stays on disk; B's does
+    const restart = setup({ server, m }).account
+    expect([(await restart.bearer()) === tokB, restart.userId()]).toEqual([true, 'u-b']) // a restart stays signed in as B
+  })
+
+  it('userId(): the held user only (main-only, for the docs Google owner); null signed out', async () => {
+    const { account, server, m } = setup()
+    expect(account.userId()).toBeNull()
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    expect(account.userId()).toBe(server.user.id)
+    const restart = setup({ server, m })
+    expect(restart.account.userId()).toBeNull() // the file is read on first use
+    await restart.account.bearer()
+    expect(restart.account.userId()).toBe(server.user.id)
+    value(await account.signOut())
+    expect(account.userId()).toBeNull()
+  })
+
+  it('ended(token): clears only that session + onSessionEnd; a newer session survives', async () => {
+    let ends = 0
+    const { account, server, m } = setup({ onSessionEnd: () => void ends++ })
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    const old = (await account.bearer())!
+    value(await account.login({ identifier: 'minh', password: server.password })) // the same user again: a newer session
+    const tok = (await account.bearer())!
+    expect(tok).not.toBe(old)
+    ends = 0
+    await account.ended(old) // a late 401 for the old token
+    expect([await account.bearer(), ends, m.files.size]).toEqual([tok, 0, 1])
+    await account.ended(tok)
+    expect([await account.bearer(), ends, m.files.size]).toEqual([null, 1, 0])
+    expect(value(await account.status()).signedIn).toBe(false)
+    await account.ended(tok) // twice: nothing more
+    expect(ends).toBe(1)
+  })
+
+  it("ended(token, 'forbidden') (the forward's 403 not-provisioned): onSessionEnd('forbidden'); a 401's ended(token) passes none", async () => {
+    const reasons: unknown[] = []
+    const { account, server } = setup({ onSessionEnd: (reason) => void reasons.push(reason) })
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    reasons.length = 0
+    await account.ended((await account.bearer())!, 'forbidden')
+    value(await account.login({ identifier: 'minh', password: server.password }))
+    await account.ended((await account.bearer())!)
+    expect(reasons).toEqual(['forbidden', undefined])
+  })
+
   it('logs: never a password, token, code or verifier', async () => {
     const { account, server } = setup()
     await account.login({ identifier: 'minh', password: server.password })
@@ -762,6 +1007,15 @@ describe('IPC: every account:* call checks the sender (fromSano), and the preloa
     expect(await handlers.get('account:login')!('sano', { identifier: 'a' })).toEqual({ ok: true, value: { identifier: 'a' } })
   })
 
+  it('CALLS unchanged: bearer/ended/userId not registered over IPC', () => {
+    expect(R.CALLS).toEqual(['status', 'login', 'register', 'forgot', 'google', 'cancelGoogle', 'signOut'])
+    const { account } = setup()
+    expect(Object.keys(account)).toEqual([...R.CALLS, 'bearer', 'ended', 'userId'])
+    const channels: string[] = []
+    R.registerAccountIpc({ handle: (ch) => void channels.push(ch) }, account, () => true)
+    expect(channels).toEqual(R.CALLS.map((c) => `account:${c}`))
+  })
+
   it('main: SANO mode only, fromSano on every call, Node fetch (no Origin), the profile file, the env / baked server', () => {
     expect(mainSource).toContain('\n    if (SANO) registerAccount()\n')
     const body = mainSource.slice(mainSource.indexOf('function registerAccount() {'), mainSource.indexOf('async function sanoDesktopClientId()'))
@@ -770,8 +1024,28 @@ describe('IPC: every account:* call checks the sender (fromSano), and the preloa
     expect(body).not.toContain('net.fetch')
     expect(body).toContain("file: path.join(profile.dir, 'sano-account.bin'),")
     expect(body).toContain('google: newGoogleSignIn(),')
-    // the chat's Google (registerGoogleSignIn's instance, not the account's own) ends with the SANO session
-    expect(body).toContain('onSessionEnd: () => chatGoogle && chatGoogle.signOut(),')
+    // the chat's Google (registerGoogleSignIn's instance, not the account's own) and the docs windows end with the SANO session
+    // (the docs' kept Google sign-in is wiped only when the account was turned off)
+    expect(body).toMatch(/onSessionEnd: \(reason\) => \{\s+chatGoogle && chatGoogle\.signOut\(\)\s+if \(sanoDocs\) void sanoDocs\.endSession\(\{ wipe: reason === 'forbidden' \}\)\s+\},/)
+    // main-only bearer() / ended(): the module-scope account feeds the forward and the docs windows, never IPC
+    expect(body).toContain('const account = (sanoAccount = accountRules.createAccount({')
+    expect(body).toContain('signedIn: async () => !!(sanoAccount && (await sanoAccount.bearer())),')
+    expect(body).toContain('clearPartition: () => ses.clearStorageData().then(() => ses.clearCache()),')
+    // the docs partition's rules are set at registration, before any window (not on the first clear)
+    const docs = body.slice(body.indexOf('function registerDocs() {'))
+    const at = (s: string) => docs.indexOf(s)
+    for (const s of ['ses.setPermissionRequestHandler(', 'ses.setPermissionCheckHandler(', 'ses.setDevicePermissionHandler(() => false)', "ses.on('will-download'"]) {
+      expect(at(s), s).toBeGreaterThan(at('const ses = session.fromPartition(docsRules.PARTITION)'))
+      expect(at(s), s).toBeLessThan(at('sanoDocs = docsRules.createDocs({'))
+    }
+    expect(docs).not.toContain('const partition = ')
+    // Google's kept sign-in of the docs windows: bound to the server and the SANO user (a hash, never the id itself)
+    expect(docs).toContain("file: path.join(profile.dir, 'google-docs.bin'),")
+    expect(docs).toContain('cookies: ses.cookies,')
+    expect(docs).toContain("return id ? crypto.createHash('sha256').update(`${SANO_API}\\n${id}`).digest('hex') : null")
+    expect(docs).toContain('saveGoogle: () => capped(googleKeepDocs.save()).then(() => googleKeepDocs.detach()),')
+    expect(docs).toContain('wipeGoogle: () => capped(googleKeepDocs.wipe()).then(() => googleKeepDocs.detach()),')
+    expect(docs).toContain('const capped = (p) => Promise.race([p, new Promise((resolve) => setTimeout(resolve, GOOGLE_SAVE_CAP_MS))])')
     expect(mainSource).toContain('  const google = (chatGoogle = newGoogleSignIn())\n')
     expect(mainSource).toContain('\n    if (SANO) registerGoogleSignIn()\n')
     expect(body).toContain("safeStorage.getSelectedStorageBackend() === 'basic_text'") // Linux plain text: memory only
@@ -790,18 +1064,43 @@ describe('IPC: every account:* call checks the sender (fromSano), and the preloa
   it('preload: SANO top frame only; inputs cut one past the limit; { ok: false } → Error(message) with code', async () => {
     const invoked: [string, unknown][] = []
     let answer: unknown = { ok: true, value: { signedIn: false } }
-    const exposed: Record<string, { account: Record<string, (i?: unknown) => Promise<unknown>> }> = {}
+    type Bridge = Record<string, (i?: unknown) => Promise<unknown>>
+    let exposed: Record<string, { account: Bridge; docs?: Bridge; apiForward?: true }> = {}
     const electron = {
       contextBridge: { exposeInMainWorld: (key: string, api: never) => void (exposed[key] = api), executeInMainWorld: ({ func, args }: { func: (...a: unknown[]) => unknown; args: unknown[] }) => new Function(`return (${func})`)()(...args) },
       ipcRenderer: { invoke: async (ch: string, input: unknown) => (invoked.push([ch, input]), answer), on: () => undefined, removeListener: () => undefined },
     }
-    const run = (isMainFrame: boolean) => {
-      const proc = { argv: ['--bdp-version=1.0.0', '--bdp-sano-origin=app://sano'], versions: { electron: '44.0.0' }, platform: 'win32', isMainFrame }
+    const run = (isMainFrame: boolean, forward = false) => {
+      exposed = {}
+      const proc = { argv: ['--bdp-version=1.0.0', '--bdp-sano-origin=app://sano', ...(forward ? ['--bdp-sano-api-forward'] : [])], versions: { electron: '44.0.0' }, platform: 'win32', isMainFrame }
       new Function('require', 'process', 'location', 'window', preloadSource)(() => electron, proc, { origin: 'app://sano' }, { addEventListener: () => undefined })
     }
+    // step 4: apiForward and docs only for SANO's top frame with main's --bdp-sano-api-forward
+    run(false, true)
+    expect(exposed.sanoDesktop).toBeUndefined()
+    run(true, true)
+    expect(Object.keys(exposed.sanoDesktop)).toEqual(['sanovidsUrl', 'google', 'account', 'apiForward', 'docs'])
+    expect(exposed.sanoDesktop.apiForward).toBe(true)
+    const docs = exposed.sanoDesktop.docs!
+    expect(Object.keys(docs)).toEqual(['open', 'closeAll'])
+    answer = { ok: true, value: undefined }
+    expect(await docs.open({ id: 'i'.repeat(300), kind: 'k'.repeat(20), extra: 'dropped' })).toBeUndefined()
+    expect(invoked.at(-1)).toEqual(['docs:open', { id: 'i'.repeat(201), kind: 'k'.repeat(10) }])
+    await docs.open(null)
+    expect(invoked.at(-1)).toEqual(['docs:open', { id: '', kind: '' }])
+    answer = { ok: true, value: false }
+    expect(await docs.closeAll()).toBe(false)
+    expect(invoked.at(-1)).toEqual(['docs:closeAll', undefined])
+    answer = { ok: false, error: 'Đang mở quá nhiều tài liệu. Đóng bớt rồi thử lại.', code: 'too-many' }
+    const d = (await docs.open({ id: 'x', kind: 'docs' }).catch((x) => x)) as Error & { code?: string }
+    expect([d instanceof Error, d.message, d.code]).toEqual([true, 'Đang mở quá nhiều tài liệu. Đóng bớt rồi thử lại.', 'too-many'])
+    answer = null
+    await expect(docs.open({ id: 'x', kind: 'docs' })).rejects.toThrow('Chưa mở được tài liệu.')
     run(false)
     expect(exposed.sanoDesktop).toBeUndefined()
     run(true)
+    expect(Object.keys(exposed.sanoDesktop)).toEqual(['sanovidsUrl', 'google', 'account'])
+    answer = { ok: true, value: { signedIn: false } }
     const a = exposed.sanoDesktop.account
     expect(Object.keys(a)).toEqual(['status', 'login', 'register', 'forgot', 'google', 'cancelGoogle', 'signOut'])
     expect(await a.status()).toEqual({ signedIn: false })

@@ -199,6 +199,22 @@ sau khi mở app, hoặc đăng nhập tài khoản khác trên trang mà không
 quay lại hàng chờ (`deferred`, `SESSION_CHANGED_TEXT`): không lưu gì của phiên cũ (bản tải ảnh, canvas đọc lại), không PUT
 canvas dựng từ trạng thái vừa xoá (sẽ bỏ node của job đang chạy), không POST — lần sau tìm lại cầu nối theo tên.
 
+**Giữ đăng nhập Google** (`electron/google-keep-rules.cjs`, theo cùng công tắc Giữ đăng nhập) — cookie tài khoản Google
+mà nút "Đăng nhập bằng Google" của canvasapp đặt trong `persist:canvasapp` (gồm "Không hỏi lại trên máy tính này", nên
+lần sau không hỏi mật khẩu và xác minh 2 bước) không còn bị xoá sau mỗi lần đăng nhập. Fuse `EnableCookieEncryption` vẫn
+tắt (docs/SIGNING.md §8), nên các cookie đó chỉ sống dạng **cookie phiên** trong Chromium, không bao giờ xuống tệp
+`Cookies` (dạng rõ): main theo dõi kho cookie ngay từ lúc đăng ký cổng (trước mọi lần chờ safeStorage), cookie Google lưu
+lâu bị đặt lại thành cookie phiên ngay (đọc lại trước, cookie đã bị Google đổi hay xoá thì không đặt lại), và giữ bản sao
+mã hoá `google-canvasapp.bin` (safeStorage; ghi chậm 1 s, tối đa 10 s; giữ hạn gốc của từng cookie; không dùng 90 ngày thì
+xoá). Lần chạy sau đặt lại bản sao trong cùng lần chờ 3 s của giữ đăng nhập, rồi dọn cookie Google lưu lâu còn sót (bản cũ,
+app bị tắt ngang, SanoVids 1.0.0). Lưu bản sao cả khi đóng cửa sổ cuối, khi ⌘Q trên macOS (sau khi mọi cửa sổ đã đóng),
+khi cài bản cập nhật và khi Windows đăng xuất/tắt máy (tối đa 1,5 s, không chặn thoát; mở lại app trong lúc đó thì app tự
+mở lại sau khi thoát). Tắt công tắc, mã hoá lỗi hoặc **Đăng xuất** → cookie Google bị xoá cùng bản sao, như trước; không
+xoá được tệp thì ghi đè thành rỗng (lần mở sau xoá, không đặt lại), vẫn không được thì Đăng xuất / tắt công tắc báo như với
+bản sao canvasapp. Portable **chưa tự chọn** (`keepLoginCopyRule` → 'leave') không đặt lại, không lưu và không xoá bản sao
+Google của bản cài; cookie Google của lần chạy đó vẫn bị xoá sau khi đăng nhập, chỉ Đăng xuất mới xoá bản sao. Không đổi hạn 30 ngày của giữ đăng nhập
+canvasapp: hết hạn thì canvasapp hỏi lại, còn Google chỉ cần chọn tài khoản.
+
 **Đăng xuất** — `canvasapp:logout`: từ dòng đầu chặn mở lượt tải video mới (`canvasappDownloadsBlocked` → 'busy') và
 từ chối yêu cầu mới (`canvasappLoggingOut` → 'logged-out' = như 401, chưa gửi gì), đóng mọi lượt tải, huỷ và **chờ**
 mọi yêu cầu đang chạy — cả `net.request` của lượt tải video cho tới khi Electron báo đã xong (tối đa 5 s) —, xoá bản sao

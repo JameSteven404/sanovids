@@ -152,7 +152,7 @@ function hashFileSync(file) {
  * portableFile: the portable .exe this run came from (main.cjs portableFile(): the Portable stub's variable, trusted and
  * already removed from process.env), else undefined. pendingClearRetryMs: tests only (main.cjs never passes it).
  */
-function setupUpdater({ isAppSender, getMainWindow, profileSource, portableFile, pendingClearRetryMs = PENDING_CLEAR_RETRY_MS }) {
+function setupUpdater({ isAppSender, getMainWindow, profileSource, portableFile, beforeInstall, pendingClearRetryMs = PENDING_CLEAR_RETRY_MS }) {
   const userData = app.getPath('userData')
   const appName = app.getName()
   const stem = rules.updaterStem(appName)
@@ -711,6 +711,8 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource, portableFile,
       const failure = signatureFailure(checked.reason)
       return fail(failure.code, failure.message)
     }
+    // main's capped save (Google's kept cookies, the cookie files): the installer taskkills the app, no clean quit follows
+    if (beforeInstall) await Promise.resolve().then(beforeInstall).catch(() => undefined)
     if (quittingForUpdate) return OK
     if (state.status !== 'ready') return fail('not-ready', MSG.installNotReady)
     recordAttempt()

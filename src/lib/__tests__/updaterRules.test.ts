@@ -1567,8 +1567,8 @@ describe('packaging guarantees (package.json, preload, main)', () => {
     for (const later of ['app.enableSandbox()', "app.setPath('userData'", 'requestSingleInstanceLock', 'app.whenReady()']) expect(strip, later).toBeLessThan(mainSource.indexOf(later))
     expect(mainSource.split('updaterRules.trustedPortableFile(').length - 1).toBe(1)
     expect(mainSource).toContain('portable: portableEnv,')
-    expect(mainSource.split('portableFile: portableFile(),').length - 1).toBe(2)
-    expect(mainSource).toContain('setupUpdater({ isAppSender: fromApp, getMainWindow: () => mainWindow, profileSource: profile.source, portableFile: portableFile() })')
+    expect(mainSource.split('portableFile: portableFile(),').length - 1).toBe(3) // + setupUpdater's, before beforeInstall
+    expect(mainSource).toContain('setupUpdater({ isAppSender: fromApp, getMainWindow: () => mainWindow, profileSource: profile.source, portableFile: portableFile(), beforeInstall: () => saveGoogle(GOOGLE_SAVE_CAP_MS) })')
     const code = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
     for (const src of [mainSource, updaterSource]) expect(code(src)).not.toContain('process.env.PORTABLE_EXECUTABLE')
     expect(updaterSource).toContain('    portableFile,\n    execPath: process.execPath,')

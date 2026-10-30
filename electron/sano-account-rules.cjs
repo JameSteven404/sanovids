@@ -120,8 +120,9 @@ async function envelope(run, log) {
 /**
  * fx: { apiUrl (accountApiUrl's origin, or null), fetch(url, init), file, fs: fs.promises-like { readFile, writeFile,
  * rename, rm }, safeStorage: { isEncryptionAvailable, encryptString, decryptString }, now(), random(n) → bytes,
- * google: a createGoogleSignIn of its own { signIn, signOut }, log(line), onSessionEnd() (optional: main's chat Google
- * sign-out) }. Every method answers an envelope.
+ * google: a createGoogleSignIn of its own { signIn, signOut }, log(line), onSessionEnd(reason) (optional: main's chat
+ * Google sign-out and docs windows; reason 'forbidden' when /me answered 403 — the account was turned off — else
+ * undefined) }. Every CALLS method answers an envelope; bearer() / ended(token) / userId() are main's own (never over IPC).
  *
  * Invariant (SANO TH-44, docs/SANO-DESKTOP.md §3a): whenever the SANO session ends or changes hands — a sign-out, a
  * session dropped (401/403, expired, a damaged or foreign file), a sign-in for another user than the last one —
@@ -134,10 +135,17 @@ function createAccount(fx) {
   let cancels = 0 // cancelGoogle bumps it: a Google sign-in still exchanging its token is dropped
   let lastUser = null // id of the last user held: a sign-in for anyone else ends the chat's Google session
   const marker = fx.file + '.forget' // beside a session file a sign-out could neither delete nor empty
-  /** fx.onSessionEnd, best effort: its failure never blocks or fails an account call. */
-  const endChat = () => {
+  let disk = Promise.resolve() // the session file's writes and deletes, one at a time in call order
+  /** fn after every earlier write or delete of the session file: a late one (a renewal signed out) never undoes a newer one. */
+  const queued = (fn) => {
+    const run = disk.then(fn)
+    disk = run.catch(() => undefined)
+    return run
+  }
+  /** fx.onSessionEnd(reason), best effort: its failure never blocks or fails an account call. */
+  const endChat = (reason) => {
     try {
-      Promise.resolve(fx.onSessionEnd && fx.onSessionEnd()).catch(() => fx.log('[SanoVids] account: chat sign-out failed'))
+      Promise.resolve(fx.onSessionEnd && fx.onSessionEnd(reason)).catch(() => fx.log('[SanoVids] account: chat sign-out failed'))
     } catch {
       fx.log('[SanoVids] account: chat sign-out failed')
     }
@@ -207,7 +215,7 @@ function createAccount(fx) {
     }
     if (!s) {
       endChat()
-      await remove()
+      await queued(remove)
     } else lastUser = s.user.id
     return s
   }
@@ -250,12 +258,17 @@ function createAccount(fx) {
     lastUser = s.user.id
     const before = held
     held = s
-    if (!persistent()) return
+    if (persistent()) await queued(() => write(s, before))
+  }
+
+  /** save()'s disk part, queued: the checks of held run once this write has landed. */
+  async function write(s, before) {
     try {
       await fx.fs.writeFile(fx.file + '.tmp', fx.safeStorage.encryptString(JSON.stringify(s)))
       await fx.fs.rename(fx.file + '.tmp', fx.file)
       await fx.fs.rm(marker, { force: true }) // the file is this session now, not the one signed out
-      if (held !== s) await remove() // signed out (or replaced) while writing: never leave this token on disk
+      // signed out (or replaced) while writing: never leave this token on disk. A renewed copy of s (same token) keeps it
+      if (!held || held.token !== s.token) await remove()
     } catch (e) {
       fx.log(`[SanoVids] account: session kept in memory only (${e && e.code})`)
       await Promise.resolve(fx.fs.rm(fx.file + '.tmp', { force: true })).catch(() => undefined) // never leave a token beside the file
@@ -270,12 +283,37 @@ function createAccount(fx) {
     }
   }
 
-  /** Forgets s, memory first → false only when its token is still in the file. */
-  async function clear(s) {
+  /** Forgets s, memory first → false only when its token is still in the file. `reason` goes to onSessionEnd. */
+  async function clear(s, reason) {
     if (held !== s) return true // signed in again meanwhile
     held = null
-    endChat()
-    return persistent() ? remove() : true
+    endChat(reason)
+    return persistent() ? queued(remove) : true
+  }
+
+  /**
+   * s is past its saved expiresAt, but SANO slides a desktop session on use (authenticate): /me decides → the session
+   * (its later expiresAt saved), or null (ended: 401 / 403 / offline / no later expiresAt, as before the slide).
+   */
+  async function slid(s) {
+    let r = null
+    try {
+      r = await call('GET', '/api/auth/me', null, s.token)
+    } catch {
+      /* offline: ended, as before */
+    }
+    const user = r && r.ok ? readUser(r.json) : null
+    const later = user && typeof r.json.expiresAt === 'string' && Date.parse(r.json.expiresAt) > fx.now() ? r.json.expiresAt : null
+    if (!later) {
+      await clear(s, r && r.status === 403 ? 'forbidden' : undefined)
+      return null
+    }
+    // signed out or replaced meanwhile: the request this renewal serves never gets another session's token. By token, not
+    // identity: a renewal of s at the same time (another forward, status()) already holds (and saves) a renewed copy of s
+    if (held !== s) return held && held.token === s.token ? held : null
+    const n = { ...s, user, expiresAt: later }
+    await save(n)
+    return held && held.token === s.token ? held : null
   }
 
   /** login / google: authorize params → code (our state) → token, with a fresh verifier per attempt. */
@@ -314,7 +352,7 @@ function createAccount(fx) {
       const s = await current()
       if (!s) return status(null)
       if (Date.parse(s.expiresAt) <= fx.now()) {
-        await clear(s)
+        await slid(s)
         return status(held)
       }
       let r = null
@@ -328,12 +366,14 @@ function createAccount(fx) {
       if (!r) return status(s, { offline: true })
       // 401: revoked or expired; 403: the account was turned off (the request carries no Origin, the only other 403)
       if (r.status === 401 || r.status === 403) {
-        await clear(s)
+        await clear(s, r.status === 403 ? 'forbidden' : undefined)
         return status(held)
       }
       const user = r.ok ? readUser(r.json) : null
       if (!user) return status(s, { offline: true })
-      if (JSON.stringify(user) !== JSON.stringify(s.user)) await save({ ...s, user })
+      // a desktop session slides on use (SANO authenticate): a later expiresAt is kept with the session
+      const later = typeof r.json.expiresAt === 'string' && Date.parse(r.json.expiresAt) > Date.parse(s.expiresAt) ? r.json.expiresAt : s.expiresAt
+      if (JSON.stringify(user) !== JSON.stringify(s.user) || later !== s.expiresAt) await save({ ...s, user, expiresAt: later })
       return status(held)
     },
     async login(input) {
@@ -364,6 +404,23 @@ function createAccount(fx) {
       cancels++
       fx.google.signOut() // a sign-in waiting on the browser ends 'cancelled'
     },
+    /** Main only (the SANO API forward, the docs windows): the live session's token, or null. Expiry asks /me, as status(). */
+    async bearer() {
+      if (!fx.apiUrl) return null
+      const s = await current()
+      if (!s) return null
+      if (Date.parse(s.expiresAt) <= fx.now()) {
+        const n = await slid(s)
+        return n ? n.token : null
+      }
+      return s.token
+    },
+    /** Main only (the docs' Google owner): id of the user whose session is held, or null. */
+    userId: () => (held ? held.user.id : null),
+    /** Main only: the server refused `token` (401; 403 not-provisioned → reason 'forbidden') → that session ends; a newer one survives. */
+    async ended(token, reason) {
+      if (held && held.token === token) await clear(held, reason)
+    },
     async signOut() {
       endChat() // first, and even with no session held or a sign-out that fails: ending the chat is always safe
       epoch++
@@ -384,7 +441,17 @@ function createAccount(fx) {
       return status(null)
     },
   }
-  return Object.fromEntries(CALLS.map((name) => [name, (input) => envelope(() => api[name](input), fx.log)]))
+  /** bearer / ended throw nothing: an unexpected error is logged by name only and answers null. */
+  const quiet = (name) => async (...args) => {
+    try {
+      return await api[name](...args)
+    } catch (e) {
+      fx.log(`[SanoVids] account: unexpected ${e && e.name}`)
+      return null
+    }
+  }
+  // bearer / ended / userId are not in CALLS, so registerAccountIpc never exposes them to a page
+  return Object.assign(Object.fromEntries(CALLS.map((name) => [name, (input) => envelope(() => api[name](input), fx.log)])), { bearer: quiet('bearer'), ended: quiet('ended'), userId: api.userId })
 }
 
 /** ipcMain.handle('account:<call>') for every call; `allowed(event)` (main's fromSano) is checked on each one. */

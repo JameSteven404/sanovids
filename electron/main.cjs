@@ -50,6 +50,8 @@ const updaterRules = require('./updater-rules.cjs')
 const hardening = require('./hardening-rules.cjs')
 const googleSignInRules = require('./google-signin-rules.cjs')
 const accountRules = require('./sano-account-rules.cjs')
+const apiRules = require('./sano-api-rules.cjs')
+const docsRules = require('./sano-docs-rules.cjs')
 /**
  * Packaged app? Not app.isPackaged alone: Electron decides that from the exe NAME, so a copy of SanoVids.exe renamed
  * electron.exe would run the real app.asar with every packaged-only protection off. With the OnlyLoadAppFromAsar fuse
@@ -197,6 +199,8 @@ let mainWindowShown = false
  */
 let quitting = false
 let macQuitForUpdate = false
+/** The quit waits on saveGoogle (Windows / Linux: the last window closed; macOS: will-quit); a second launch then relaunches after it. */
+let quitAfterSave = false
 /** macOS: the main window's hidden-work rules (hardening-rules createHiddenWork; set in createWindow, null elsewhere). */
 let mainWindowWork = null
 
@@ -248,7 +252,16 @@ if (!app.requestSingleInstanceLock()) {
     }
   }
   // A second launch brings THE SanoVids window forward (never a canvasapp login / checkout window).
-  app.on('second-instance', () => showMainWindow())
+  app.on('second-instance', () => {
+    // no window to bring back and the quit is coming: start again once it is done (the lock is held until then)
+    if (quitAfterSave) {
+      quitAfterSave = false
+      const exe = portableFile() // Portable: the .exe itself, not the temp copy this run is deleted with
+      app.relaunch(exe ? { execPath: exe, args: [] } : undefined)
+      return
+    }
+    showMainWindow()
+  })
   // Every web page SanoVids ever creates (main window, canvasapp login and its popups, checkout): no <webview>, and
   // Web Bluetooth never picks a device (Electron would otherwise select the first one). Exactly one handler each.
   app.on('web-contents-created', (_event, wc) => {
@@ -283,7 +296,8 @@ if (!app.requestSingleInstanceLock()) {
     // default browser); nothing in the default session needs them, in either mode (same data folder).
     void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies)
     try {
-      updater = setupUpdater({ isAppSender: fromApp, getMainWindow: () => mainWindow, profileSource: profile.source, portableFile: portableFile() })
+      // the installer taskkills the app (no clean quit): Google's snapshots and the cookie files are saved first
+      updater = setupUpdater({ isAppSender: fromApp, getMainWindow: () => mainWindow, profileSource: profile.source, portableFile: portableFile(), beforeInstall: () => saveGoogle(GOOGLE_SAVE_CAP_MS) })
     } catch (e) {
       console.error('[SanoVids] auto-updater disabled:', e)
     }
@@ -304,13 +318,24 @@ if (!app.requestSingleInstanceLock()) {
     }
   })
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit()
+    if (process.platform !== 'darwin') {
+      quitAfterSave = true
+      void saveGoogle(GOOGLE_SAVE_CAP_MS).finally(() => app.quit())
+    }
   })
   if (process.platform === 'darwin') {
     // ⌘Q / app.quit(): the main window really closes now (its close button otherwise only hides it).
     app.on('before-quit', () => {
       quitting = true
       if (mainWindowWork) mainWindowWork.stop()
+    })
+    // ⌘Q: every window closed, nothing can veto any more: Google's snapshots are written first, as Windows' last window
+    // does (an update's quit saved them in beforeInstall)
+    app.on('will-quit', (event) => {
+      if (quitAfterSave || macQuitForUpdate) return
+      quitAfterSave = true
+      event.preventDefault()
+      void saveGoogle(GOOGLE_SAVE_CAP_MS).finally(() => app.quit())
     })
   }
   // A downloaded update installs silently when the app quits (electron-updater, in this same 'quit' event, exit code 0):
@@ -337,8 +362,10 @@ async function serveDist(request) {
   } catch {
     return new Response('Bad request', { status: 400 })
   }
-  // No SANO server in the app (1.0 has no API): its API answers like nginx's /api/ 404, never index.html parsed as JSON.
+  // With SANO_API_URL: /api/assistant/* goes to that server with the account's bearer (sano-api-rules.cjs). No SANO
+  // server in the app (1.0 has no API): its API answers like nginx's /api/ 404, never index.html parsed as JSON.
   if (sano && /^\/api(?:\/|$)/.test(rel)) {
+    if (sanoApi) return sanoApi.forward(request, url)
     return new Response(JSON.stringify({ error: 'Bản Sano Agent này chưa có máy chủ SANO.' }), { status: 404, headers: { 'content-type': MIME['.json'], 'cache-control': 'no-store' } })
   }
   const root = sano ? SANO_DIST : DIST
@@ -437,7 +464,7 @@ function createWindow() {
       spellcheck: false,
       // Hover previews / the take viewer may start with sound before any click (the speaker switch decides).
       autoplayPolicy: 'no-user-gesture-required',
-      additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, `--bdp-product=${app.getName()}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : [])],
+      additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, `--bdp-product=${app.getName()}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : []), ...(SANO_IN_APP && SANO_API ? ['--bdp-sano-api-forward'] : [])],
     },
   })
 
@@ -450,7 +477,10 @@ function createWindow() {
     if (mainWindow === win) mainWindow = null
     if (work) work.stop()
     if (mainWindowWork === work) mainWindowWork = null
+    if (sanoDocs) sanoDocs.closeAll({ ask: false }) // no document window outlives the main window
   })
+  // Windows sign-out / shut-down: nothing runs reliably after it, so Google's cookies are saved now (never vetoed)
+  win.on('query-session-end', () => void saveGoogle(GOOGLE_SAVE_CAP_MS))
   if (process.platform === 'darwin') {
     // macOS: the red button / ⌘W only hide the window — the app keeps running and the takes being made go on — until
     // ⌘Q or an update quits it; the Dock icon brings it back (app 'activate' → showMainWindow).
@@ -463,6 +493,17 @@ function createWindow() {
     win.on('show', () => work.show())
     // A page that crashed or reloads says again what it is doing ('app:busy' when it starts): nothing is being made now.
     win.webContents.on('render-process-gone', () => work.setBusy(false))
+  }
+  // A real close (not macOS hiding it, not an update's quit) asks first when documents are open: "Ở lại" keeps both.
+  if (sanoDocs) {
+    win.on('close', (event) => {
+      const updating = macQuitForUpdate || !!(updater && updater.isQuittingForUpdate())
+      if (updating || hardening.mainWindowCloseHides({ platform: process.platform, quitting, quittingForUpdate: updating })) return
+      if (!sanoDocs.confirmClose()) {
+        event.preventDefault()
+        if (process.platform === 'darwin') quitting = false // this ⌘Q is cancelled: the red button hides again
+      }
+    })
   }
 
   // Portable build: a pinned window relaunches the portable .exe itself, not the temp copy it runs from (updater-rules
@@ -835,8 +876,12 @@ function newGoogleSignIn() {
  * Sano Agent's in-app sign-in (D253): window.sanoDesktop.account → these handlers → SANO's account server, called with
  * Node's fetch (no Origin header, no Chromium cookie). Only SANO's page itself may call (fromSano, on every call).
  */
+let sanoAccount = null // main-only bearer() / ended() for the API forward and the docs windows
+let sanoApi = null // the /api/assistant/* forward (SANO_IN_APP with SANO_API only)
+let sanoDocs = null // the "Tài liệu" windows (same condition)
+let googleKeepDocs = null // their Google sign-in, kept encrypted (registerDocs)
 function registerAccount() {
-  const account = accountRules.createAccount({
+  const account = (sanoAccount = accountRules.createAccount({
     apiUrl: SANO_API,
     fetch: (url, init) => fetch(url, init),
     file: path.join(profile.dir, 'sano-account.bin'),
@@ -851,10 +896,125 @@ function registerAccount() {
     random: (n) => crypto.randomBytes(n),
     google: newGoogleSignIn(),
     log: (line) => console.error(line),
-    // the SANO session ended or changed hands: the previous user's chat Google token must not serve the next one
-    onSessionEnd: () => chatGoogle && chatGoogle.signOut(),
-  })
+    // the SANO session ended or changed hands: the previous user's chat Google token and docs editor sign-in must not
+    // serve the next one. The docs' kept Google sign-in (bound to the user) stays, unless the account was turned off (403);
+    // canvasapp's is never touched
+    onSessionEnd: (reason) => {
+      chatGoogle && chatGoogle.signOut()
+      if (sanoDocs) void sanoDocs.endSession({ wipe: reason === 'forbidden' })
+    },
+  }))
   accountRules.registerAccountIpc(ipcMain, account, fromSano)
+  if (SANO_IN_APP && SANO_API) {
+    sanoApi = apiRules.createApiForward({ apiUrl: SANO_API, fetch: (url, init) => fetch(url, init), account, log: (line) => console.error(line) })
+    registerDocs()
+  }
+}
+
+/**
+ * Sano Agent "Tài liệu" (SANO TH-45, sano-docs-rules.cjs, docs/SANO-DESKTOP.md §3b): "Mở" opens the document in
+ * Google's own editor in a window of its own: no preload, the in-memory partition (Google's sign-in kept encrypted in
+ * <profile>/google-docs.bin, bound to the SANO user), Google's pages only, the default Electron user agent (never
+ * setUserAgent: Google blocks a spoofed Chrome). Only SANO's page itself may ask (fromSano).
+ */
+function registerDocs() {
+  // The partition, its permission and download rules set once, here, before any window
+  const ses = session.fromPartition(docsRules.PARTITION)
+  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(docsRules.permissionAllowed(permission)))
+  ses.setPermissionCheckHandler((_wc, permission) => docsRules.permissionAllowed(permission))
+  ses.setDevicePermissionHandler(() => false)
+  // Docs' own exports only; the Save dialog stays Electron's (no setSavePath)
+  ses.on('will-download', (_event, item) => {
+    const url = item.getURLChain().at(-1) || item.getURL()
+    if (docsRules.downloadAllowed(url)) return
+    item.cancel()
+    console.error(`[SanoVids] docs: download refused ${docsRules.hostLabel(url)}`)
+  })
+  // Google's sign-in of the SANO user (google-keep-rules): a snapshot of another user, or of another server, is deleted unread
+  googleKeepDocs = googleKeepRules.createGoogleKeep({
+    label: 'google-docs',
+    file: path.join(profile.dir, 'google-docs.bin'),
+    cookies: ses.cookies,
+    crypto: asyncSafeStorage,
+    fs: fs.promises,
+    now: Date.now,
+    log: (line) => console.error(line),
+    owner: () => {
+      const id = sanoAccount && sanoAccount.userId()
+      return id ? crypto.createHash('sha256').update(`${SANO_API}\n${id}`).digest('hex') : null
+    },
+  })
+  const capped = (p) => Promise.race([p, new Promise((resolve) => setTimeout(resolve, GOOGLE_SAVE_CAP_MS))])
+  const options = () => ({
+    width: 1200,
+    height: 900,
+    show: false,
+    autoHideMenuBar: true,
+    title: 'Tài liệu — Sano Agent',
+    webPreferences: { partition: docsRules.PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false, webviewTag: false, safeDialogs: true, navigateOnDragDrop: false, spellcheck: false, devTools: DEVTOOLS },
+  })
+  const refused = (url) => console.error(`[SanoVids] docs: refused ${docsRules.hostLabel(url)}`)
+  /** A document window or one of its popups: Google's pages stay, links go to the default browser (docs.external). */
+  const guard = (win, key) => {
+    const wc = win.webContents
+    win.once('ready-to-show', () => win.show())
+    // a first load that fails or is refused paints nothing, so no ready-to-show: shown blank, the user can close it
+    wc.on('did-fail-load', (_e, _code, _desc, _url, isMainFrame) => {
+      if (isMainFrame && !win.isDestroyed() && !win.isVisible()) win.show()
+    })
+    wc.on('will-navigate', (event, url) => {
+      if (docsRules.navigationAllowed(url)) return
+      event.preventDefault()
+      refused(url)
+      sanoDocs.external(key, url)
+    })
+    // a redirect is the server's, never opened in the browser
+    wc.on('will-redirect', (event, url) => {
+      if (!event.isMainFrame || docsRules.navigationAllowed(url)) return
+      event.preventDefault()
+      refused(url)
+    })
+    wc.setWindowOpenHandler(({ url }) => {
+      const decision = docsRules.popupDecision(url)
+      if (decision === 'allow') return { action: 'allow', overrideBrowserWindowOptions: options() }
+      if (decision === 'external') sanoDocs.external(key, url)
+      else refused(url)
+      return { action: 'deny' }
+    })
+    // tracked (the cap counts popups too) or destroyed by track itself
+    wc.on('did-create-window', (child) => {
+      if (sanoDocs.track(key, handle(child))) guard(child, key)
+    })
+    wc.on('will-prevent-unload', (event) => {
+      const choice = dialog.showMessageBoxSync(win, { type: 'question', buttons: ['Ở lại', 'Vẫn đóng'], defaultId: 0, cancelId: 0, message: 'Tài liệu còn thay đổi chưa lưu lên Google. Vẫn đóng cửa sổ?' })
+      if (choice === 1) event.preventDefault()
+      else if (process.platform === 'darwin' && !macQuitForUpdate) quitting = false // "Ở lại" cancels a ⌘Q too
+    })
+  }
+  const handle = (win) => ({ focus: () => win.focus(), destroy: () => win.destroy(), isDestroyed: () => win.isDestroyed(), onClosed: (cb) => win.on('closed', cb) })
+  sanoDocs = docsRules.createDocs({
+    openWindow: (url, key) => {
+      const win = new BrowserWindow(options())
+      guard(win, key)
+      win.loadURL(url).catch(() => undefined) // a refused redirect aborts the load: logged by host in guard
+      return handle(win)
+    },
+    clearPartition: () => ses.clearStorageData().then(() => ses.clearCache()),
+    restoreGoogle: () => googleKeepDocs.restore(),
+    startGoogle: () => googleKeepDocs.start(),
+    saveGoogle: () => capped(googleKeepDocs.save()).then(() => googleKeepDocs.detach()),
+    wipeGoogle: () => capped(googleKeepDocs.wipe()).then(() => googleKeepDocs.detach()),
+    signedIn: async () => !!(sanoAccount && (await sanoAccount.bearer())),
+    confirm: (n) => {
+      const opts = { type: 'question', buttons: ['Ở lại', 'Đóng hết'], defaultId: 0, cancelId: 0, message: `Còn ${n} tài liệu đang mở. Đóng hết? Thay đổi chưa lưu lên Google sẽ mất.` }
+      return (mainWindow && !mainWindow.isDestroyed() ? dialog.showMessageBoxSync(mainWindow, opts) : dialog.showMessageBoxSync(opts)) === 1
+    },
+    openExternal: (url) => shell.openExternal(url),
+    now: Date.now,
+    log: (line) => console.error(line),
+  })
+  ipcMain.handle('docs:open', (event, input) => (fromSano(event) ? sanoDocs.open(input) : accountRules.NOT_ALLOWED))
+  ipcMain.handle('docs:closeAll', (event) => (fromSano(event) ? { ok: true, value: sanoDocs.closeAll({ ask: true }) } : accountRules.NOT_ALLOWED))
 }
 
 /**
@@ -903,11 +1063,14 @@ function registerAppBridge() {
 // Đăng xuất refuses new requests and new video downloads, aborts and awaits the ones in
 // flight (API requests, and the net.requests of video downloads until Electron reports them over), deletes the copy
 // (and says so when it cannot), asks canvasapp to end the session (POST /api/auth/logout, like its own button) and
-// clears the partition. No quit hook: saving happens when the cookies change. Separately, once canvasapp confirms a
-// login, the Google account cookies "Đăng nhập bằng Google" leaves in this partition (plaintext, ~2 years) are removed.
+// clears the partition. No quit hook: saving happens when the cookies change. Separately, the Google account cookies
+// "Đăng nhập bằng Google" leaves in this partition (its "do not ask again" device trust) are session cookies only and
+// kept in an encrypted userData/google-canvasapp.bin while keep-login is on (google-keep-rules.cjs); keep-login off,
+// they are removed once canvasapp confirms a login, as before.
 // ---------------------------------------------------------------------------------------------------------------
 
 const keepLoginRules = require('./keeplogin-rules.cjs')
+const googleKeepRules = require('./google-keep-rules.cjs')
 const CANVASAPP_ORIGIN = 'https://canvasapp.io.vn'
 const CANVASAPP_HOST = 'canvasapp.io.vn'
 const CANVASAPP_PARTITION = 'persist:canvasapp'
@@ -919,6 +1082,9 @@ const CANVASAPP_JOBS_MIN_MS = 15_000
 const CANVASAPP_JOBS_FRESH_MS = 5_000
 const CANVASAPP_LOGIN_FILE = 'canvasapp-login.bin'
 const CANVASAPP_PREFS_FILE = 'canvasapp-prefs.json'
+const GOOGLE_CANVASAPP_FILE = 'google-canvasapp.bin'
+/** A quit, an update install or a Windows sign-out waits at most this long for Google's cookies to be saved. */
+const GOOGLE_SAVE_CAP_MS = 1500
 /** Main-only (never in CANVASAPP_ROUTES: the page cannot call it) — what canvasapp's own "Đăng xuất" button sends. */
 const CANVASAPP_LOGOUT_PATH = '/api/auth/logout'
 
@@ -1005,8 +1171,10 @@ let canvasappLogoutPromise = null
 let canvasappLogoutEpoch = 0
 /** Every canvasapp request from its start (lane wait included) to its end: Đăng xuất aborts and awaits them. */
 const canvasappInFlight = new Set()
-/** Google account cookies left from an earlier run were removed after the first confirmed session (canvasappLoginConfirmed). */
-let canvasappGoogleCleaned = false
+/** Google's cookies in the canvasapp partition (google-keep-rules createGoogleKeep), created with the gateway. */
+let googleKeepCanvasapp = null
+/** Google account cookies were saved or removed after the first confirmed session of the run (canvasappLoginConfirmed). */
+let canvasappGoogleSettled = false
 
 function canvasappSession() {
   return session.fromPartition(CANVASAPP_PARTITION)
@@ -2011,8 +2179,8 @@ function canvasappLogin(parent) {
         // A confirmed login: keep it now (encrypted, flushed — an app killed right after login stays logged in).
         const kept = st.ok && st.authenticated && canvasappKeep ? (await canvasappKeep.loggedIn()).kept : false
         if (DEVTOOLS) void logCanvasappCookieShape()
-        // "Đăng nhập bằng Google" is over: Google's account cookies are not needed in this partition any more.
-        if (st.ok && st.authenticated) await keepLoginRules.removeGoogleAccountCookies(canvasappSession().cookies)
+        // "Đăng nhập bằng Google" is over: Google's account cookies are kept (keep-login on) or removed.
+        if (st.ok && st.authenticated) await settleCanvasappGoogle()
         if (closeWindow && !win.isDestroyed()) win.close()
         resolve(st.ok && st.authenticated ? { ...st, keepLogin: kept } : st)
       }
@@ -2072,17 +2240,19 @@ async function canvasappLogout() {
             await canvasappServerLogout()
             await ses.clearStorageData()
             await ses.clearCache()
+            const googleRemoved = await googleKeepCanvasapp.wipe() // the kept Google sign-in goes too
             try {
               await ses.cookies.flushStore()
             } catch {
               /* shutting down */
             }
+            return googleRemoved
           }
-          const { copyRemoved } = canvasappKeep ? await canvasappKeep.forget(clear) : (await clear(), { copyRemoved: true })
+          const { copyRemoved, result: googleRemoved } = canvasappKeep ? await canvasappKeep.forget(clear) : { copyRemoved: true, result: await clear() }
           canvasappJobListCache.clear()
           // anything that slipped in while the session was being wiped ends too
           canvasappDownloads.closeAll()
-          return copyRemoved ? { ok: true } : gatewayError('keep-login-not-cleared', keepLoginRules.KEEP_LOGIN_NOT_CLEARED_TEXT)
+          return copyRemoved && googleRemoved ? { ok: true } : gatewayError('keep-login-not-cleared', keepLoginRules.KEEP_LOGIN_NOT_CLEARED_TEXT)
         } finally {
           canvasappLoggingOut = false
         }
@@ -2140,25 +2310,61 @@ async function canvasappServerLogout() {
 }
 
 /**
- * canvasapp confirmed the session (200 /api/me, /api/auth/state authenticated): once per run, Google account cookies a
- * past "Đăng nhập bằng Google" left in the partition are removed (plaintext, ~2 years; logins that end in the login
- * window remove them in `finish`). Never while the login window is open: a Google sign-in may be under way there.
+ * canvasapp confirmed the session (200 /api/me, /api/auth/state authenticated): once per run, the Google account cookies
+ * a past "Đăng nhập bằng Google" left in the partition are saved or removed (settleCanvasappGoogle; logins that end in
+ * the login window do it in `finish`). Never while the login window is open: a Google sign-in may be under way there.
  */
 function canvasappLoginConfirmed() {
-  if (canvasappGoogleCleaned || (canvasappLoginWin && !canvasappLoginWin.isDestroyed())) return
-  canvasappGoogleCleaned = true
-  void keepLoginRules.removeGoogleAccountCookies(canvasappSession().cookies)
+  if (canvasappGoogleSettled || (canvasappLoginWin && !canvasappLoginWin.isDestroyed())) return
+  canvasappGoogleSettled = true
+  void settleCanvasappGoogle()
 }
 
-/** The kept login is put back once, before the first canvasapp use of the run (at most 3 s), then changes are watched. */
+/** Google's cookies in the canvasapp partition are kept only with keep-login: on, and encryption not failed in this run. */
+function canvasappGoogleKept() {
+  const st = canvasappKeep ? canvasappKeep.state() : null
+  return !!st && st.available && st.enabled
+}
+
+/**
+ * Keep-login off only by the placement default, never chosen (Portable / temp copy share userData with Setup): the
+ * Google snapshot may be the installed app's, so it is neither put back nor deleted (keepLoginCopyRule 'leave').
+ */
+function canvasappGoogleLeft() {
+  const st = canvasappKeep ? canvasappKeep.state() : null
+  return !!st && keepLoginRules.keepLoginCopyRule(st.enabled, canvasappKeepPrefs !== null) === 'leave'
+}
+
+/** After a confirmed canvasapp login: Google's account cookies are kept (saved now) or, keep-login off, removed. */
+function settleCanvasappGoogle() {
+  return canvasappGoogleKept() ? googleKeepCanvasapp.save() : googleKeepCanvasapp.wipe({ keepSnapshot: canvasappGoogleLeft() })
+}
+
+/**
+ * Before the app goes (window-all-closed, an update install, a Windows sign-out): Google's snapshots written and the
+ * cookie stores flushed, waited for at most capMs (never blocks the quit). Never rejects.
+ */
+function saveGoogle(capMs) {
+  const flush = (ses) => Promise.resolve().then(() => ses.cookies.flushStore()).catch(() => undefined)
+  const all = Promise.allSettled([googleKeepCanvasapp && googleKeepCanvasapp.save(), googleKeepDocs && googleKeepDocs.save(), flush(session.defaultSession), flush(canvasappSession())])
+  return Promise.race([all, new Promise((resolve) => setTimeout(resolve, capMs))])
+}
+
+/**
+ * The kept login and the kept Google cookies are put back once, before the first canvasapp use of the run (together at
+ * most 3 s), then the kept login's changes are watched (Google's are from registerCanvasappGateway on).
+ */
 function ensureCanvasappRestored() {
   if (!canvasappRestore) {
-    const done = canvasappKeep
+    const keep = canvasappKeep
       ? canvasappKeep
           .restore()
           .then(() => canvasappSession().cookies.on('changed', canvasappKeep.onChanged))
           .catch(() => undefined)
       : Promise.resolve()
+    // restore before sweep: a leftover persistent cookie (newer) wins over the snapshot, then joins it
+    const google = googleKeepCanvasapp.restore().then(() => googleKeepCanvasapp.sweep())
+    const done = Promise.all([keep, google])
     canvasappRestore = Promise.race([done, new Promise((resolve) => setTimeout(resolve, keepLoginRules.KEEP_LOGIN_RESTORE_CAP_MS))])
   }
   return canvasappRestore
@@ -2200,14 +2406,16 @@ function keepLoginPlacementKind() {
  * Linux's plain-text backend counts as unavailable (nothing kept). The start-up sweep only stats the copy: an expired
  * one (or one the switch / Đăng xuất said to forget) is deleted unread, even if canvasapp is never used in this run.
  */
+/** The crypto of keep-login and of Google's kept cookies (canvasapp, Tài liệu). */
+const asyncSafeStorage = {
+  // the async encryptor (initialized lazily on its first use); Linux's plain-text backend counts as unavailable
+  isEncryptionAvailable: async () => (await safeStorage.isAsyncEncryptionAvailable()) && !(process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text'),
+  encryptStringAsync: (text) => safeStorage.encryptStringAsync(text),
+  decryptStringAsync: (bytes) => safeStorage.decryptStringAsync(bytes),
+}
+
 function startCanvasappKeepLogin() {
   canvasappKeepPrefs = readCanvasappKeepPrefs()
-  const asyncSafeStorage = {
-    // the async encryptor (initialized lazily on its first use); Linux's plain-text backend counts as unavailable
-    isEncryptionAvailable: async () => (await safeStorage.isAsyncEncryptionAvailable()) && !(process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text'),
-    encryptStringAsync: (text) => safeStorage.encryptStringAsync(text),
-    decryptStringAsync: (bytes) => safeStorage.decryptStringAsync(bytes),
-  }
   canvasappKeep = keepLoginRules.createCanvasappKeepLogin({
     cookies: canvasappSession().cookies,
     crypto: asyncSafeStorage,
@@ -2238,13 +2446,14 @@ async function canvasappSetKeepLogin(on) {
   if (typeof on !== 'boolean') return gatewayError('bad-request', 'Lựa chọn không hợp lệ.')
   if (!canvasappKeep) return gatewayError('unavailable', 'Chưa sẵn sàng — thử lại sau giây lát.')
   const { copyRemoved } = await canvasappKeep.setEnabled(on)
+  const googleRemoved = on ? (await googleKeepCanvasapp.save(), true) : await googleKeepCanvasapp.wipe() // Google's sign-in follows the switch
   canvasappKeepPrefs = { keepLogin: on }
   try {
     await storeCanvasappKeepPrefs(on)
   } catch {
     return gatewayError('prefs-not-saved', keepLoginRules.KEEP_LOGIN_PREFS_NOT_SAVED_TEXT)
   }
-  if (!copyRemoved) return gatewayError('keep-login-not-cleared', keepLoginRules.KEEP_LOGIN_OFF_NOT_CLEARED_TEXT)
+  if (!copyRemoved || !googleRemoved) return gatewayError('keep-login-not-cleared', keepLoginRules.KEEP_LOGIN_OFF_NOT_CLEARED_TEXT)
   return canvasappKeepLoginState()
 }
 
@@ -2535,6 +2744,19 @@ function restrictCanvasappPermissions() {
 
 function registerCanvasappGateway() {
   restrictCanvasappPermissions()
+  googleKeepCanvasapp = googleKeepRules.createGoogleKeep({
+    label: 'google-canvasapp',
+    file: path.join(app.getPath('userData'), GOOGLE_CANVASAPP_FILE),
+    cookies: canvasappSession().cookies,
+    crypto: asyncSafeStorage,
+    fs: fs.promises,
+    now: Date.now,
+    log: (line) => console.error(line),
+    allowed: canvasappGoogleKept,
+    leave: canvasappGoogleLeft,
+  })
+  // watched before any safeStorage wait: a Google sign-in never reaches the cookie file, even when restore is slow
+  googleKeepCanvasapp.start()
   try {
     startCanvasappKeepLogin()
   } catch (e) {

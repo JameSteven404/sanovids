@@ -56,18 +56,29 @@ if (sanoArg && process.isMainFrame && location.origin === sanoArg.slice('--bdp-s
     cancelGoogle: () => ipcRenderer.invoke('account:cancelGoogle'),
     signOut: () => ipcRenderer.invoke('account:signOut'),
   }
+  /** Runs in the page's world: each call → its value, or throws Error(error) with its code. */
+  const inPage = (calls, offline) => {
+    const answer = (r) => {
+      if (r && r.ok) return r.value
+      throw Object.assign(new Error(r && typeof r.error === 'string' ? r.error : offline), r && r.code ? { code: r.code } : {})
+    }
+    const api = {}
+    for (const name of Object.keys(calls)) api[name] = (input) => calls[name](input).then(answer)
+    return api
+  }
   const account = contextBridge.executeInMainWorld({
-    func: (calls, offline) => {
-      const answer = (r) => {
-        if (r && r.ok) return r.value
-        throw Object.assign(new Error(r && typeof r.error === 'string' ? r.error : offline), r && r.code ? { code: r.code } : {})
-      }
-      const account = {}
-      for (const name of Object.keys(calls)) account[name] = (input) => calls[name](input).then(answer)
-      return account
-    },
+    func: inPage,
     args: [invoke, 'Không kết nối được máy chủ tài khoản. Kiểm tra mạng rồi thử lại.'],
   })
+  // SANO TH-44 step 4 (main.cjs registerAccount): only app://sano/ with SANO_API_URL. Main forwards the page's
+  // /api/assistant/* with the account's bearer (apiForward), and "Tài liệu" opens documents in its own window (docs).
+  const forward = process.argv.includes('--bdp-sano-api-forward')
+  const docs = forward
+    ? contextBridge.executeInMainWorld({
+        func: inPage,
+        args: [{ open: (i) => ipcRenderer.invoke('docs:open', { id: cut(i && i.id, 200), kind: cut(i && i.kind, 9) }), closeAll: () => ipcRenderer.invoke('docs:closeAll') }, 'Chưa mở được tài liệu.'],
+      })
+    : undefined
   contextBridge.exposeInMainWorld('sanoDesktop', {
     sanovidsUrl: 'app://bdp/',
     /** Sign-in in the default browser (main.cjs registerGoogleSignIn). Only the ID token crosses, never the refresh token. */
@@ -84,6 +95,8 @@ if (sanoArg && process.isMainFrame && location.origin === sanoArg.slice('--bdp-s
     },
     /** → { status, login, register, forgot, google, cancelGoogle, signOut } (window.sanoDesktop.account, D253) */
     account,
+    /** → apiForward: true; docs: { open({ id, kind }) → undefined, closeAll() → boolean } (sano-docs-rules.cjs) */
+    ...(forward ? { apiForward: true, docs } : {}),
   })
 }
 const expose = location.origin === 'app://bdp' ? (key, api) => contextBridge.exposeInMainWorld(key, api) : () => undefined

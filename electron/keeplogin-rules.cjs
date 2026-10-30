@@ -11,8 +11,9 @@
 //
 // Never: Cloudflare's cookies, another host's (Google, SePay…), plaintext, a cookie value in a log / IPC payload / error,
 // a cookie turned persistent, a quit hook.
-// Separately: once canvasapp has confirmed a login, the Google account cookies "Đăng nhập bằng Google" left in the
-// canvasapp partition (plaintext, ~2 years) are removed (removeGoogleAccountCookies).
+// Separately: the Google account cookies "Đăng nhập bằng Google" leaves in the canvasapp partition are kept as session
+// cookies + an encrypted snapshot while keep-login is on (google-keep-rules.cjs), else removed once canvasapp has
+// confirmed a login (removeGoogleAccountCookies).
 //
 // No require (main.cjs and the tests share it; app.asar cannot resolve npm helpers from electron/), no electron, no fs:
 // every dependency of createCanvasappKeepLogin is injected, so src/providers/__tests__/canvasappKeepLogin.test.ts runs it
@@ -94,7 +95,13 @@ function keepLoginPlacement({ platform, kind, inApplications }) {
 /** A session cookie of `host` that a restart would lose → the plain entry SanoVids keeps, else null. */
 function keptCookieEntry(c, host) {
   if (!isHostCookie(c, host) || c.session !== true || c.expirationDate !== undefined) return null
-  if (typeof c.name !== 'string' || !COOKIE_NAME_RE.test(c.name) || isCloudflareCookie(c.name)) return null
+  if (typeof c.name !== 'string' || isCloudflareCookie(c.name)) return null
+  return cookieEntryFields(c)
+}
+
+/** What cookies.set needs to put a cookie back exactly (name, value, host-only, path, flags, sameSite), or null. */
+function cookieEntryFields(c) {
+  if (typeof c.name !== 'string' || !COOKIE_NAME_RE.test(c.name)) return null
   if (typeof c.value !== 'string' || c.value.length > KEEP_LOGIN_MAX_VALUE) return null
   const hostOnly = c.hostOnly === true
   const path = typeof c.path === 'string' && c.path.startsWith('/') && c.path.length <= 1024 ? c.path : '/'
@@ -189,12 +196,12 @@ function cookieShapeLine(c, now) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Google account cookies (a separate cleanup, once canvasapp has confirmed the login)
+// Google account cookies (google-keep-rules.cjs keeps or removes them)
 // ---------------------------------------------------------------------------------------------------------------
 
 /**
  * A Google account cookie. "Đăng nhập bằng Google" runs in the canvasapp partition, so Google's long-lived account
- * cookies (~2 years) would sit there in plaintext (CookieEncryption is off) until Đăng xuất. Google's own domains
+ * cookies (~2 years) would sit there in plaintext (CookieEncryption is off) unless made session cookies. Google's own domains
  * (google.com and its subdomains, country domains like google.com.vn / google.vn / google.co.uk) and YouTube's (Google's
  * sign-in sets them too). Never canvasapp.io.vn, SePay or anything else: `evilgoogle.com`, `google.com.evil.com`,
  * `my-youtube.com` are not Google.
@@ -647,6 +654,7 @@ module.exports = {
   defaultKeepLogin,
   keepLoginPlacement,
   keptCookieEntry,
+  cookieEntryFields,
   loginSnapshot,
   loginSnapshotKey,
   parseLoginSnapshot,
