@@ -179,6 +179,18 @@ const value = <T,>(a: Answer<T>) => {
   if (!a.ok) throw new Error(`expected ok, got ${a.error}`)
   return a.value
 }
+/** A new instance on the same machine and server (the app reopened). */
+const restart = (t: ReturnType<typeof setup>) => setup({ server: t.server, m: t.m }).account
+/** `what` refuses `paths` with EPERM (a Windows lock) → unlock, restoring the fs as it was before this call. */
+const lock = (m: ReturnType<typeof machine>, what: ('rm' | 'writeFile')[], paths = [FILE, MARK]) => {
+  const { rm, writeFile } = m.fs
+  const locked = (p: string) => {
+    if (paths.includes(p)) throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+  }
+  if (what.includes('rm')) m.fs.rm = async (p: string) => (locked(p), rm(p))
+  if (what.includes('writeFile')) m.fs.writeFile = async (p: string, b: Buffer) => (locked(p), writeFile(p, b))
+  return () => Object.assign(m.fs, { rm, writeFile })
+}
 
 afterEach(() => {
   logs.length = 0
@@ -428,17 +440,7 @@ describe('createAccount (fake SANO account server)', () => {
     expect(t.m.files.size).toBe(0)
   })
 
-  it('sign-out with the session file locked (Windows EPERM): emptied, else the server must revoke it, else an honest error', async () => {
-    const restart = (t: ReturnType<typeof setup>) => setup({ server: t.server, m: t.m }).account
-    const lock = (m: ReturnType<typeof machine>, what: ('rm' | 'writeFile')[], paths = [FILE, MARK]) => {
-      const { rm, writeFile } = m.fs
-      const locked = (p: string) => {
-        if (paths.includes(p)) throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
-      }
-      if (what.includes('rm')) m.fs.rm = async (p: string) => (locked(p), rm(p))
-      if (what.includes('writeFile')) m.fs.writeFile = async (p: string, b: Buffer) => (locked(p), writeFile(p, b))
-      return () => Object.assign(m.fs, { rm, writeFile })
-    }
+  it('sign-out with the session file locked (Windows EPERM): emptied, else marked, else an honest error', async () => {
     // rm fails, overwrite works: the file is emptied, logout still not waited on
     const a = setup()
     value(await a.account.login({ identifier: 'minh', password: a.server.password }))
@@ -466,22 +468,17 @@ describe('createAccount (fake SANO account server)', () => {
     value(await again.login({ identifier: 'minh', password: a2.server.password }))
     expect(a2.m.files.has(MARK)).toBe(false)
     expect(value(await restart(a2).status()).signedIn).toBe(true)
-    // nothing can be written beside it either, the server is up: logout awaited, the token revoked, a restart finds no session
-    const b = setup()
-    value(await b.account.login({ identifier: 'minh', password: b.server.password }))
-    lock(b.m, ['rm', 'writeFile'])
-    expect(value(await b.account.signOut()).signedIn).toBe(false)
-    expect(b.server.sessions.size).toBe(0)
-    expect(value(await restart(b).status()).signedIn).toBe(false)
-    // nothing can be written, the server is down: an error, never a fake sign-out (memory and a restart agree)
+    // nothing can be written beside it either (the server up: the #95 tests below), the server is down: an error, never a
+    // fake sign-out (memory and a restart agree)
     const c = setup()
     value(await c.account.login({ identifier: 'minh', password: c.server.password }))
-    lock(c.m, ['rm', 'writeFile'])
+    const unlockC = lock(c.m, ['rm', 'writeFile'])
     c.server.opts.offline = true
     expect(await c.account.signOut()).toEqual({ ok: false, error: R.TEXT.signOutFailed, code: 'sign-out-failed' })
     expect(value(await c.account.status())).toMatchObject({ signedIn: true, offline: true })
     expect(value(await restart(c).status())).toMatchObject({ signedIn: true, offline: true })
-    // back online, the retry signs out
+    // the lock gone and back online, the retry signs out
+    unlockC()
     c.server.opts.offline = false
     expect(value(await c.account.signOut()).signedIn).toBe(false)
     expect(value(await restart(c).status()).signedIn).toBe(false)
@@ -499,10 +496,71 @@ describe('createAccount (fake SANO account server)', () => {
     await new Promise((r) => setTimeout(r, 0))
     expect(value(await d.account.status()).signedIn).toBe(true)
     answer()
-    expect(value(await first).signedIn).toBe(false)
-    expect(value(await second).signedIn).toBe(false)
+    // the server revoked it, but the file still holds it: both report the session still here (#95)
+    expect(await first).toEqual({ ok: false, error: R.TEXT.signOutFailed, code: 'sign-out-failed' })
+    expect(await second).toEqual({ ok: false, error: R.TEXT.signOutFailed, code: 'sign-out-failed' })
+    // online, /me answers 401 for the revoked token
     expect(value(await d.account.status()).signedIn).toBe(false)
     expect(value(await restart(d).status()).signedIn).toBe(false)
+  })
+
+  // SANO-AGENT#95 (sanovids #44 review): a session a restart can still reopen, offline, is never reported signed out or cancelled
+  const failed = { ok: false, error: R.TEXT.signOutFailed, code: 'sign-out-failed' }
+  it('#95: nothing can be deleted, emptied or marked, the server revokes the token: still sign-out-failed (an offline restart reopens it)', async () => {
+    const t = setup()
+    value(await t.account.login({ identifier: 'minh', password: t.server.password }))
+    lock(t.m, ['rm', 'writeFile'])
+    expect(await t.account.signOut()).toEqual(failed)
+    expect(t.server.sessions.size).toBe(0) // logout still sent and waited on
+    t.server.opts.offline = true
+    expect(value(await restart(t).status())).toMatchObject({ signedIn: true, offline: true })
+  })
+
+  it('#95: a marker that cannot be read (EACCES) counts as there: no restart reopens the session, offline included', async () => {
+    const t = setup()
+    value(await t.account.login({ identifier: 'minh', password: t.server.password }))
+    lock(t.m, ['rm', 'writeFile'], [FILE])
+    expect(value(await t.account.signOut()).signedIn).toBe(false)
+    expect(t.m.files.has(MARK)).toBe(true)
+    const { readFile } = t.m.fs
+    t.m.fs.readFile = async (p: string) => {
+      if (p === MARK) throw Object.assign(new Error('EACCES'), { code: 'EACCES' })
+      return readFile(p)
+    }
+    t.server.opts.offline = true
+    expect(value(await restart(t).status()).signedIn).toBe(false)
+  })
+
+  it.each(['writeFile', 'rename'] as const)('#95: Huỷ Google during %s, then nothing can be cleaned up and logout is offline: sign-out-failed, not cancelled; a later sign-out retries', async (step) => {
+    const t = setup()
+    const original = t.m.fs[step] as (a: string, b: never) => Promise<void>
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let reached!: () => void
+    const at = new Promise<void>((r) => (reached = r))
+    t.m.fs[step] = (async (a: string, b: never) => {
+      reached()
+      await gate
+      return original(a, b)
+    }) as never
+    const g = t.account.google()
+    await at
+    value(await t.account.cancelGoogle())
+    // the write lands; then the file cannot be deleted or emptied and no marker can be written beside it
+    const unlock = lock(t.m, ['rm'], [FILE])
+    lock(t.m, ['writeFile'], [FILE, MARK])
+    t.server.opts.offline = true
+    release()
+    expect(await g).toEqual(failed)
+    expect(value(await t.account.status())).toMatchObject({ signedIn: true, offline: true })
+    expect(value(await restart(t).status())).toMatchObject({ signedIn: true, offline: true })
+    // the lock gone and back online, signing out ends it here and on the server
+    unlock()
+    t.server.opts.offline = false
+    expect(value(await t.account.signOut()).signedIn).toBe(false)
+    expect(t.m.files.has(FILE)).toBe(false)
+    t.server.opts.offline = true
+    expect(value(await restart(t).status()).signedIn).toBe(false)
   })
 
   it('a sign-out while a sign-in is still writing the session file: the token never lands on disk afterwards', async () => {

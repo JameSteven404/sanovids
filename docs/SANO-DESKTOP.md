@@ -168,15 +168,16 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
   `expiresAt` đã lưu thì hỏi `/me` một lần: phiên đã trượt thì tiếp tục (lưu hạn mới); 401/403, mất mạng hoặc không có
   hạn muộn hơn thì coi như đã đăng xuất. `signOut()` xoá bộ nhớ rồi xoá file, gửi `POST logout` nhưng không chờ. Không xoá được
   file (Windows khoá, `EPERM`) thì ghi đè file thành rỗng; không ghi đè được thì đặt dấu `sano-account.bin.forget` cạnh
-  file: lần mở sau thấy dấu thì không bao giờ mở lại phiên đó (kể cả khi mất mạng), lần lưu phiên mới thì xoá dấu. Không
-  đặt được dấu (cả thư mục không ghi được) thì chờ `POST logout` (20 giây): máy chủ
-  thu hồi (2xx hoặc 401) thì vẫn là đã đăng xuất (token vẫn nằm trong file: lần mở sau mà mất mạng thì app hiện lại
-  người dùng cũ ở chế độ ngoại tuyến cho đến khi `/me` trả 401), còn không thì phiên được giữ lại (lần mở sau cũng thấy)
-  và `signOut()` báo lỗi `sign-out-failed` "Phiên vẫn còn trên máy này. Kiểm tra mạng rồi thử lại, hoặc đóng hẳn Sano
-  Agent rồi mở lại.", không bao giờ giả vờ đã đăng xuất. Trong lúc chờ máy chủ, `status()` và lần bấm đăng xuất thứ hai
+  file: lần mở sau thấy dấu thì không bao giờ mở lại phiên đó (kể cả khi mất mạng), lần lưu phiên mới thì xoá dấu. Dấu
+  có mà không đọc được (lỗi khác `ENOENT`, ví dụ `EACCES`) thì coi như có dấu, không mở lại phiên. Không
+  đặt được dấu (cả thư mục không ghi được) thì vẫn chờ `POST logout` (20 giây) để máy chủ thu hồi token, nhưng phiên được
+  giữ lại (lần mở sau mà mất mạng vẫn mở lại được, kể cả khi máy chủ đã thu hồi), nên `signOut()` luôn báo lỗi
+  `sign-out-failed` "Phiên vẫn còn trên máy này. Kiểm tra mạng rồi thử lại, hoặc đóng hẳn Sano
+  Agent rồi mở lại.", không bao giờ giả vờ đã đăng xuất (SANO-AGENT#95). Trong lúc chờ máy chủ, `status()` và lần bấm đăng xuất thứ hai
   vẫn thấy người dùng đang đăng nhập. Phiên đăng xuất giữa lúc đang ghi file (đăng nhập, cập nhật hồ sơ) thì file vừa
   ghi bị xoá ngay, token không nằm lại trên đĩa; Huỷ Google lúc đang ghi file cũng vậy (trả `cancelled`, phiên vừa cấp
-  kết thúc trên máy chủ). Một `/me` trả lời sau khi phiên đã đăng xuất hoặc đổi người thì bị bỏ: `status()` trả phiên đang
+  kết thúc trên máy chủ); khi file vừa ghi không xoá, ghi rỗng hay đặt dấu được thì trả `sign-out-failed` thay cho
+  `cancelled` và giữ phiên, để lần đăng xuất sau thử lại. Một `/me` trả lời sau khi phiên đã đăng xuất hoặc đổi người thì bị bỏ: `status()` trả phiên đang
   giữ lúc đó. Bấm Google lần nữa khi lượt trước còn chờ trình duyệt: lượt trước trả `superseded`, lượt mới vẫn chạy.
 - **Chỉ main** (forward ở mục 3, cửa sổ Tài liệu ở mục 3b): `bearer()` trả token của phiên đang giữ; không cấu hình hoặc
   không phiên thì `null`; quá `expiresAt` thì hỏi `/me` như `status()` (phiên đã trượt vẫn dùng được khi app mở liên tục

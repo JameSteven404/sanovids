@@ -208,7 +208,8 @@ function createAccount(fx) {
     }
     let s = null
     try {
-      const forgotten = await fx.fs.readFile(marker).then(() => true, () => false)
+      // only a marker surely absent lets the file reopen: one that cannot be read (EACCES…) counts as there
+      const forgotten = await fx.fs.readFile(marker).then(() => true, (e) => !(e && e.code === 'ENOENT'))
       if (!forgotten) s = readSession(JSON.parse(fx.safeStorage.decryptString(bytes)))
     } catch {
       // another computer's key, a damaged file: signed out
@@ -338,8 +339,14 @@ function createAccount(fx) {
     }
     if (dropped()) {
       // signed out (or Huỷ) while this ran, its file write included: the new session is dropped, and ended on the server too
-      await clear(s)
+      const gone = await clear(s)
       end()
+      // still in the file (nothing could be deleted, emptied or marked): a restart reopens it, so never 'cancelled'. Held
+      // again, as signOut() does, so the page shows it and a sign-out retries
+      if (!gone) {
+        if (held === null) held = s
+        throw new AccountError(TEXT.signOutFailed, 'sign-out-failed')
+      }
       if (epoch === started) throw new AccountError(TEXT.googleCancelled, 'cancelled')
       return status(null)
     }
@@ -431,11 +438,12 @@ function createAccount(fx) {
         const logout = fx.apiUrl ? call('POST', '/api/auth/logout', {}, s.token) : Promise.reject(new Error('no server'))
         // file gone: best effort, never awaited, so an offline sign-out still signs out here
         if (gone) logout.catch(() => undefined)
-        // file stuck (Windows lock): the server revoking the token stops an online next start from reopening it (offline, it reopens as ngoại tuyến until /me answers 401)
+        // file stuck (Windows lock, nothing writable beside it): an offline restart reopens it even once the server revoked
+        // the token, so this is never a sign-out. The logout is still waited on (the token dies when the server is up)
         else {
-          if (held === null) held = s // the token stays in the file until the server revokes it: signed in meanwhile (a reload, a second click)
-          if (!(await logout.then((r) => r.ok || r.status === 401, () => false))) throw new AccountError(TEXT.signOutFailed, 'sign-out-failed')
-          if (held === s) held = null
+          if (held === null) held = s // the session stays: signed in meanwhile (a reload, a second click) and after
+          await logout.catch(() => undefined)
+          throw new AccountError(TEXT.signOutFailed, 'sign-out-failed')
         }
       }
       return status(null)
