@@ -130,6 +130,10 @@ async function envelope(run, log) {
  */
 function createAccount(fx) {
   let held = null // { token, expiresAt, user }
+  // a session cleared from memory (a 401, a forward's 401, a failed sign-out) whose file could not be removed: an offline
+  // restart reopens it, so every sign-out retries the removal and fails until it works (SANO-AGENT#95)
+  let pending = null
+  let filed = null // token of the last session renamed into the file: a dropped sign-in that never got there is not on disk
   let loaded = null // the session file, read once
   let epoch = 0 // signOut bumps it: a sign-in that finishes after it is dropped
   let cancels = 0 // cancelGoogle bumps it: a Google sign-in still exchanging its token is dropped
@@ -208,7 +212,8 @@ function createAccount(fx) {
     }
     let s = null
     try {
-      const forgotten = await fx.fs.readFile(marker).then(() => true, () => false)
+      // only a marker surely absent lets the file reopen: one that cannot be read (EACCES…) counts as there
+      const forgotten = await fx.fs.readFile(marker).then(() => true, (e) => !(e && e.code === 'ENOENT'))
       if (!forgotten) s = readSession(JSON.parse(fx.safeStorage.decryptString(bytes)))
     } catch {
       // another computer's key, a damaged file: signed out
@@ -216,7 +221,10 @@ function createAccount(fx) {
     if (!s) {
       endChat()
       await queued(remove)
-    } else lastUser = s.user.id
+    } else {
+      lastUser = s.user.id
+      filed = s.token
+    }
     return s
   }
 
@@ -253,28 +261,33 @@ function createAccount(fx) {
   }
 
   /** Holds s and writes it; another session it replaces never stays reopenable on disk, else AccountError not-saved. */
-  async function save(s) {
+  async function save(s, dropped = () => false) {
     if (s.user.id !== lastUser) endChat()
     lastUser = s.user.id
     const before = held
     held = s
-    if (persistent()) await queued(() => write(s, before))
+    if (persistent()) await queued(() => write(s, before, dropped))
   }
 
-  /** save()'s disk part, queued: the checks of held run once this write has landed. */
-  async function write(s, before) {
+  /** save()'s disk part, queued: the checks of held run once this write has landed. `dropped`: exchange's Huỷ / sign-out. */
+  async function write(s, before, dropped) {
+    const tmp = fx.file + '.tmp'
+    const dropTmp = () => Promise.resolve(fx.fs.rm(tmp, { force: true })).catch(() => undefined) // never leave a token beside the file
+    // signed out, replaced or Huỷ while writing: never leave this token on disk. A renewed copy of s (same token) keeps it
+    const gone = () => !held || held.token !== s.token || dropped()
     try {
-      await fx.fs.writeFile(fx.file + '.tmp', fx.safeStorage.encryptString(JSON.stringify(s)))
-      await fx.fs.rename(fx.file + '.tmp', fx.file)
+      await fx.fs.writeFile(tmp, fx.safeStorage.encryptString(JSON.stringify(s)))
+      if (gone()) return await dropTmp() // known before the rename: the file never holds s
+      await fx.fs.rename(tmp, fx.file)
+      filed = s.token
       await fx.fs.rm(marker, { force: true }) // the file is this session now, not the one signed out
-      // signed out (or replaced) while writing: never leave this token on disk. A renewed copy of s (same token) keeps it
-      if (!held || held.token !== s.token) await remove()
+      if (gone()) await remove()
     } catch (e) {
       fx.log(`[SanoVids] account: session kept in memory only (${e && e.code})`)
-      await Promise.resolve(fx.fs.rm(fx.file + '.tmp', { force: true })).catch(() => undefined) // never leave a token beside the file
+      await dropTmp()
       // the file may still hold the session s replaces: a restart would reopen that one (the same session's older copy may stay)
       if ((!before || before.token !== s.token) && !(await remove())) {
-        if (held === s) {
+        if (held && held.token === s.token) {
           held = before
           lastUser = before ? before.user.id : null
         }
@@ -285,10 +298,19 @@ function createAccount(fx) {
 
   /** Forgets s, memory first → false only when its token is still in the file. `reason` goes to onSessionEnd. */
   async function clear(s, reason) {
-    if (held !== s) return true // signed in again meanwhile
+    // signed out or in again meanwhile. By token, not identity: a renewal (status(), a forward) may hold a copy of s
+    if ((held || pending || {}).token !== s.token) return true
     held = null
     endChat(reason)
-    return persistent() ? queued(remove) : true
+    if (!persistent()) return true
+    pending = s // from now: a sign-out meanwhile (a second click) retries the removal, never answers ok
+    const gone = await queued(remove)
+    if (gone) {
+      if (pending === s) pending = null
+      // a concurrent failed sign-out held s again meanwhile: the file is gone now, so that session goes too
+      if (held && held.token === s.token) held = null
+    }
+    return gone
   }
 
   /**
@@ -305,7 +327,8 @@ function createAccount(fx) {
     const user = r && r.ok ? readUser(r.json) : null
     const later = user && typeof r.json.expiresAt === 'string' && Date.parse(r.json.expiresAt) > fx.now() ? r.json.expiresAt : null
     if (!later) {
-      await clear(s, r && r.status === 403 ? 'forbidden' : undefined)
+      // by identity: a renewal of s at the same time that slid it holds a copy, and its answer wins over this one
+      if (held === s) await clear(s, r && r.status === 403 ? 'forbidden' : undefined)
       return null
     }
     // signed out or replaced meanwhile: the request this renewal serves never gets another session's token. By token, not
@@ -328,9 +351,10 @@ function createAccount(fx) {
     const end = () => call('POST', '/api/auth/logout', {}, s.token).catch(() => undefined) // best effort
     const dropped = () => epoch !== started || cancelled()
     await current() // the file read first: its clean-up never deletes the session written below
+    const before = held // the session s replaces, still in the file if s never reaches it
     if (!dropped()) {
       try {
-        await save(s)
+        await save(s, dropped)
       } catch (e) {
         end()
         throw e
@@ -338,8 +362,20 @@ function createAccount(fx) {
     }
     if (dropped()) {
       // signed out (or Huỷ) while this ran, its file write included: the new session is dropped, and ended on the server too
-      await clear(s)
+      const prior = pending
+      const gone = await clear(s)
       end()
+      // the file could not be cleaned but never held s (Huỷ before the rename): s is not kept, and the session the file
+      // still holds (a failed sign-out's, or the one s replaced) is the cleanup every later sign-out retries
+      if (!gone && filed !== s.token) {
+        if (pending === s) pending = prior || before
+      }
+      // still in the file (nothing could be deleted, emptied or marked): a restart reopens it, so never 'cancelled'. Held
+      // again, as signOut() does, so the page shows it and a sign-out retries
+      else if (!gone) {
+        if (held === null) held = s
+        throw new AccountError(TEXT.signOutFailed, 'sign-out-failed')
+      }
       if (epoch === started) throw new AccountError(TEXT.googleCancelled, 'cancelled')
       return status(null)
     }
@@ -424,18 +460,20 @@ function createAccount(fx) {
     async signOut() {
       endChat() // first, and even with no session held or a sign-out that fails: ending the chat is always safe
       epoch++
-      const s = await current()
+      const s = (await current()) || pending
       fx.google.signOut()
       if (s) {
         const gone = await clear(s)
         const logout = fx.apiUrl ? call('POST', '/api/auth/logout', {}, s.token) : Promise.reject(new Error('no server'))
         // file gone: best effort, never awaited, so an offline sign-out still signs out here
         if (gone) logout.catch(() => undefined)
-        // file stuck (Windows lock): the server revoking the token stops an online next start from reopening it (offline, it reopens as ngoại tuyến until /me answers 401)
+        // file stuck (Windows lock, nothing writable beside it): an offline restart reopens it even once the server revoked
+        // the token, so this is never a sign-out. The logout is still waited on (the token dies when the server is up)
         else {
-          if (held === null) held = s // the token stays in the file until the server revokes it: signed in meanwhile (a reload, a second click)
-          if (!(await logout.then((r) => r.ok || r.status === 401, () => false))) throw new AccountError(TEXT.signOutFailed, 'sign-out-failed')
-          if (held === s) held = null
+          // the session stays, but only one the file really holds: a sign-in dropped before its rename never comes back
+          if (held === null && filed === s.token) held = s
+          await logout.catch(() => undefined)
+          throw new AccountError(TEXT.signOutFailed, 'sign-out-failed')
         }
       }
       return status(null)

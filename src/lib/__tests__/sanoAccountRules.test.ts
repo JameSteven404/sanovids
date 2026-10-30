@@ -179,6 +179,21 @@ const value = <T,>(a: Answer<T>) => {
   if (!a.ok) throw new Error(`expected ok, got ${a.error}`)
   return a.value
 }
+/** A new instance on the same machine and server (the app reopened). */
+const restart = (t: ReturnType<typeof setup>) => setup({ server: t.server, m: t.m }).account
+/**
+ * `what` refuses `paths` with EPERM (a Windows lock; deleting a path that is not there still succeeds, as fs.rm({ force })
+ * does) → unlock, restoring the fs as it was before this call.
+ */
+const lock = (m: ReturnType<typeof machine>, what: ('rm' | 'writeFile')[], paths = [FILE, MARK]) => {
+  const { rm, writeFile } = m.fs
+  const locked = (p: string) => {
+    if (paths.includes(p)) throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+  }
+  if (what.includes('rm')) m.fs.rm = async (p: string) => (m.files.has(p) && locked(p), rm(p))
+  if (what.includes('writeFile')) m.fs.writeFile = async (p: string, b: Buffer) => (locked(p), writeFile(p, b))
+  return () => Object.assign(m.fs, { rm, writeFile })
+}
 
 afterEach(() => {
   logs.length = 0
@@ -428,17 +443,7 @@ describe('createAccount (fake SANO account server)', () => {
     expect(t.m.files.size).toBe(0)
   })
 
-  it('sign-out with the session file locked (Windows EPERM): emptied, else the server must revoke it, else an honest error', async () => {
-    const restart = (t: ReturnType<typeof setup>) => setup({ server: t.server, m: t.m }).account
-    const lock = (m: ReturnType<typeof machine>, what: ('rm' | 'writeFile')[], paths = [FILE, MARK]) => {
-      const { rm, writeFile } = m.fs
-      const locked = (p: string) => {
-        if (paths.includes(p)) throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
-      }
-      if (what.includes('rm')) m.fs.rm = async (p: string) => (locked(p), rm(p))
-      if (what.includes('writeFile')) m.fs.writeFile = async (p: string, b: Buffer) => (locked(p), writeFile(p, b))
-      return () => Object.assign(m.fs, { rm, writeFile })
-    }
+  it('sign-out with the session file locked (Windows EPERM): emptied, else marked, else an honest error', async () => {
     // rm fails, overwrite works: the file is emptied, logout still not waited on
     const a = setup()
     value(await a.account.login({ identifier: 'minh', password: a.server.password }))
@@ -466,22 +471,17 @@ describe('createAccount (fake SANO account server)', () => {
     value(await again.login({ identifier: 'minh', password: a2.server.password }))
     expect(a2.m.files.has(MARK)).toBe(false)
     expect(value(await restart(a2).status()).signedIn).toBe(true)
-    // nothing can be written beside it either, the server is up: logout awaited, the token revoked, a restart finds no session
-    const b = setup()
-    value(await b.account.login({ identifier: 'minh', password: b.server.password }))
-    lock(b.m, ['rm', 'writeFile'])
-    expect(value(await b.account.signOut()).signedIn).toBe(false)
-    expect(b.server.sessions.size).toBe(0)
-    expect(value(await restart(b).status()).signedIn).toBe(false)
-    // nothing can be written, the server is down: an error, never a fake sign-out (memory and a restart agree)
+    // nothing can be written beside it either (the server up: the #95 tests below), the server is down: an error, never a
+    // fake sign-out (memory and a restart agree)
     const c = setup()
     value(await c.account.login({ identifier: 'minh', password: c.server.password }))
-    lock(c.m, ['rm', 'writeFile'])
+    const unlockC = lock(c.m, ['rm', 'writeFile'])
     c.server.opts.offline = true
     expect(await c.account.signOut()).toEqual({ ok: false, error: R.TEXT.signOutFailed, code: 'sign-out-failed' })
     expect(value(await c.account.status())).toMatchObject({ signedIn: true, offline: true })
     expect(value(await restart(c).status())).toMatchObject({ signedIn: true, offline: true })
-    // back online, the retry signs out
+    // the lock gone and back online, the retry signs out
+    unlockC()
     c.server.opts.offline = false
     expect(value(await c.account.signOut()).signedIn).toBe(false)
     expect(value(await restart(c).status()).signedIn).toBe(false)
@@ -499,10 +499,191 @@ describe('createAccount (fake SANO account server)', () => {
     await new Promise((r) => setTimeout(r, 0))
     expect(value(await d.account.status()).signedIn).toBe(true)
     answer()
-    expect(value(await first).signedIn).toBe(false)
-    expect(value(await second).signedIn).toBe(false)
+    // the server revoked it, but the file still holds it: both report the session still here (#95)
+    expect(await first).toEqual({ ok: false, error: R.TEXT.signOutFailed, code: 'sign-out-failed' })
+    expect(await second).toEqual({ ok: false, error: R.TEXT.signOutFailed, code: 'sign-out-failed' })
+    // online, /me answers 401 for the revoked token
     expect(value(await d.account.status()).signedIn).toBe(false)
     expect(value(await restart(d).status()).signedIn).toBe(false)
+  })
+
+  // SANO-AGENT#95 (sanovids #44 review): a session a restart can still reopen, offline, is never reported signed out or cancelled
+  const failed = { ok: false, error: R.TEXT.signOutFailed, code: 'sign-out-failed' }
+  it('#95: nothing can be deleted, emptied or marked, the server revokes the token: still sign-out-failed (an offline restart reopens it)', async () => {
+    const t = setup()
+    value(await t.account.login({ identifier: 'minh', password: t.server.password }))
+    lock(t.m, ['rm', 'writeFile'])
+    expect(await t.account.signOut()).toEqual(failed)
+    expect(t.server.sessions.size).toBe(0) // logout still sent and waited on
+    t.server.opts.offline = true
+    expect(value(await restart(t).status())).toMatchObject({ signedIn: true, offline: true })
+  })
+
+  it('#95: a marker that cannot be read (EACCES) counts as there: no restart reopens the session, offline included', async () => {
+    const t = setup()
+    value(await t.account.login({ identifier: 'minh', password: t.server.password }))
+    lock(t.m, ['rm', 'writeFile'], [FILE])
+    expect(value(await t.account.signOut()).signedIn).toBe(false)
+    expect(t.m.files.has(MARK)).toBe(true)
+    const { readFile } = t.m.fs
+    t.m.fs.readFile = async (p: string) => {
+      if (p === MARK) throw Object.assign(new Error('EACCES'), { code: 'EACCES' })
+      return readFile(p)
+    }
+    t.server.opts.offline = true
+    expect(value(await restart(t).status()).signedIn).toBe(false)
+  })
+
+  it.each(['status', 'ended'] as const)('#95 round 2: after a failed sign-out the server revoked, a %s 401 clears memory, but every later sign-out (a restart too) retries and fails until the file is gone', async (via) => {
+    const t = setup()
+    value(await t.account.login({ identifier: 'minh', password: t.server.password }))
+    const tok = (await t.account.bearer())!
+    const unlock = lock(t.m, ['rm', 'writeFile'])
+    expect(await t.account.signOut()).toEqual(failed) // the server revoked the token (logout waited on)
+    if (via === 'ended') await t.account.ended(tok) // a forward's 401
+    expect(value(await t.account.status()).signedIn).toBe(false) // /me 401
+    expect(await t.account.signOut()).toEqual(failed)
+    expect(await t.account.signOut()).toEqual(failed) // every retry, not only the first
+    // a restart online: its /me 401 tries to remove the file, cannot, and its sign-out fails the same way
+    const again = restart(t)
+    expect(value(await again.status()).signedIn).toBe(false)
+    expect(await again.signOut()).toEqual(failed)
+    t.server.opts.offline = true
+    expect(value(await restart(t).status())).toMatchObject({ signedIn: true, offline: true }) // what each failure warned of
+    // the lock gone: the retry removes the file, for good
+    unlock()
+    t.server.opts.offline = false
+    expect(value(await t.account.signOut()).signedIn).toBe(false)
+    expect(t.m.files.has(FILE)).toBe(false)
+    t.server.opts.offline = true
+    expect(value(await restart(t).status()).signedIn).toBe(false)
+  })
+
+  it('#95 round 2: Huỷ Google while a status() renewal holds a copy of the new session (same token): cancelled, nothing kept in memory or on disk', async () => {
+    const t = setup()
+    const { rename } = t.m.fs
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let reached!: () => void
+    const at = new Promise<void>((r) => (reached = r))
+    t.m.fs.rename = async (a: string, b: string) => {
+      t.m.fs.rename = rename // only the new session's own write waits
+      reached()
+      await gate
+      return rename(a, b)
+    }
+    const g = t.account.google()
+    await at
+    t.server.opts.meExpiresAt = new Date(NOW + 31 * 86_400_000).toISOString() // /me slides it: status() holds a renewed copy
+    const checked = t.account.status()
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0))
+    value(await t.account.cancelGoogle())
+    release()
+    expect(await g).toEqual({ ok: false, error: R.TEXT.googleCancelled, code: 'cancelled' })
+    expect(value(await checked).signedIn).toBe(false)
+    expect(value(await t.account.status()).signedIn).toBe(false)
+    expect(t.m.files.size).toBe(0)
+    t.server.opts.offline = true
+    expect(value(await restart(t).status()).signedIn).toBe(false)
+  })
+
+  it('#95 round 2: Huỷ Google while the .tmp is written, cleanup refused and offline: the rename is skipped, the file never holds the session: cancelled', async () => {
+    const t = setup()
+    const { writeFile } = t.m.fs
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let reached!: () => void
+    const at = new Promise<void>((r) => (reached = r))
+    t.m.fs.writeFile = async (p: string, b: Buffer) => {
+      reached()
+      await gate
+      return writeFile(p, b)
+    }
+    const g = t.account.google()
+    await at
+    value(await t.account.cancelGoogle())
+    lock(t.m, ['rm'], [FILE])
+    lock(t.m, ['writeFile'], [FILE, MARK])
+    t.server.opts.offline = true
+    release()
+    expect(await g).toEqual({ ok: false, error: R.TEXT.googleCancelled, code: 'cancelled' })
+    expect([t.m.files.has(FILE), t.m.files.has(`${FILE}.tmp`)]).toEqual([false, false])
+    expect(value(await t.account.status()).signedIn).toBe(false)
+    expect(value(await restart(t).status()).signedIn).toBe(false)
+  })
+
+  it.each(['pending', 'held'] as const)("#95 round 3: the file stuck on an earlier session (%s), Huỷ Google while the .tmp is written: cancelled, the cancelled session never held, later sign-outs still fail until that file is gone", async (was) => {
+    const t = setup()
+    value(await t.account.login({ identifier: 'minh', password: t.server.password }))
+    const tokA = (await t.account.bearer())!
+    const unlock = lock(t.m, ['rm', 'writeFile'])
+    if (was === 'pending') {
+      expect(await t.account.signOut()).toEqual(failed) // the server revoked A, the file still holds it
+      expect(value(await t.account.status()).signedIn).toBe(false) // /me 401: cleanup pending
+    } // 'held': A still signed in, the Google sign-in replaces it
+    const { writeFile } = t.m.fs
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let reached!: () => void
+    const at = new Promise<void>((r) => (reached = r))
+    t.m.fs.writeFile = async (p: string, b: Buffer) => {
+      t.m.fs.writeFile = writeFile // only the new session's .tmp waits
+      reached()
+      await gate
+      return writeFile(p, b)
+    }
+    const g = t.account.google()
+    await at
+    value(await t.account.cancelGoogle())
+    t.server.opts.offline = true
+    release()
+    // the new session never reached the file (A's stuck file is no reason to keep it): cancelled, not held
+    expect(await g).toEqual({ ok: false, error: R.TEXT.googleCancelled, code: 'cancelled' })
+    expect(value(await t.account.status()).signedIn).toBe(false)
+    expect(await t.account.bearer()).toBeNull()
+    expect(JSON.parse(t.m.safeStorage.decryptString(t.m.files.get(FILE)!)).token).toBe(tokA)
+    expect(t.m.files.has(`${FILE}.tmp`)).toBe(false)
+    // A's cleanup is still pending: a sign-out fails until its file is gone
+    expect(await t.account.signOut()).toEqual(failed)
+    expect(await t.account.bearer()).toBe(tokA)
+    unlock()
+    t.server.opts.offline = false
+    expect(value(await t.account.signOut()).signedIn).toBe(false)
+    expect(t.m.files.has(FILE)).toBe(false)
+    t.server.opts.offline = true
+    expect(value(await restart(t).status()).signedIn).toBe(false)
+  })
+
+  it('#95: Huỷ Google while the new session is renamed into place, then nothing can be cleaned up and logout is offline: sign-out-failed, not cancelled; a later sign-out retries', async () => {
+    const t = setup()
+    const { rename } = t.m.fs
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let reached!: () => void
+    const at = new Promise<void>((r) => (reached = r))
+    t.m.fs.rename = async (a: string, b: string) => {
+      reached()
+      await gate
+      return rename(a, b)
+    }
+    const g = t.account.google()
+    await at
+    value(await t.account.cancelGoogle())
+    // the rename lands; then the file cannot be deleted or emptied and no marker can be written beside it
+    const unlock = lock(t.m, ['rm'], [FILE])
+    lock(t.m, ['writeFile'], [FILE, MARK])
+    t.server.opts.offline = true
+    release()
+    expect(await g).toEqual(failed)
+    expect(value(await t.account.status())).toMatchObject({ signedIn: true, offline: true })
+    expect(value(await restart(t).status())).toMatchObject({ signedIn: true, offline: true })
+    // the lock gone and back online, signing out ends it here and on the server
+    unlock()
+    t.server.opts.offline = false
+    expect(value(await t.account.signOut()).signedIn).toBe(false)
+    expect(t.m.files.has(FILE)).toBe(false)
+    t.server.opts.offline = true
+    expect(value(await restart(t).status()).signedIn).toBe(false)
   })
 
   it('a sign-out while a sign-in is still writing the session file: the token never lands on disk afterwards', async () => {
@@ -992,6 +1173,137 @@ describe('createAccount (fake SANO account server)', () => {
     await account.signOut()
     expect(logs.length).toBeGreaterThan(0)
     for (const line of logs) for (const s of server.secrets) expect(line).not.toContain(s)
+  })
+})
+
+// #95 round 4: a session the file does not hold never becomes the live one again; a successful removal ends it everywhere.
+describe('#95: only a session the file really holds stays live after a failed sign-out or a cancelled sign-in', () => {
+  const failed = { ok: false, error: R.TEXT.signOutFailed, code: 'sign-out-failed' }
+  const eperm = () => {
+    throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+  }
+  type M = ReturnType<typeof machine>
+  /** A Windows lock on FILE: rm (when present), writeFile and rename onto it refused; MARK cannot be created either. */
+  const winLock = (m: M) => {
+    const { rm, writeFile, rename } = m.fs
+    m.fs.rm = async (p: string) => (p === FILE && m.files.has(p) ? eperm() : rm(p))
+    m.fs.writeFile = async (p: string, b: Buffer) => (p === FILE || p === MARK ? eperm() : writeFile(p, b))
+    m.fs.rename = async (a: string, b: string) => (b === FILE && m.files.has(FILE) ? eperm() : rename(a, b))
+    return () => Object.assign(m.fs, { rm, writeFile, rename })
+  }
+  const tokenOnDisk = (m: M) => {
+    if (m.files.has(MARK)) return null
+    const b = m.files.get(FILE)
+    if (!b || !b.length) return null
+    return JSON.parse(m.safeStorage.decryptString(b)).token as string
+  }
+  const lastToken = (server: ReturnType<typeof fakeServer>) => [...server.secrets].reverse().find((s) => s.startsWith('sano_')) ?? null
+  const tick = async (n = 5) => {
+    for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r))
+  }
+  /** Holds the first .tmp call of fs[step] → { at: reached, release }. */
+  const gateTmp = (m: M, step: 'writeFile' | 'rename') => {
+    const f = m.fs as unknown as Record<string, (a: string, b?: unknown) => Promise<void>>
+    const prev = f[step]
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let reached!: () => void
+    const at = new Promise<void>((r) => (reached = r))
+    f[step] = async (a: string, b?: unknown) => {
+      if (!String(a).endsWith('.tmp')) return prev(a, b)
+      f[step] = prev
+      reached()
+      await gate
+      return prev(a, b)
+    }
+    return { at, release }
+  }
+
+  it.each(['pending', 'held'] as const)('a Google sign-in already ended by a 401 during its .tmp write, then Huỷ (%s): the next failed sign-out does not hold it', async (was) => {
+    const t = setup()
+    value(await t.account.login({ identifier: 'minh', password: t.server.password }))
+    const unlock = winLock(t.m)
+    if (was === 'pending') expect(await t.account.signOut()).toEqual(failed)
+    const { at, release } = gateTmp(t.m, 'writeFile')
+    const g = t.account.google()
+    await at
+    const tokG = lastToken(t.server)!
+    const viaEnded = t.account.ended(tokG)
+    value(await t.account.cancelGoogle())
+    release()
+    await g
+    await viaEnded
+    expect(await t.account.signOut()).toEqual(failed)
+    expect(await t.account.bearer()).not.toBe(tokG)
+    unlock()
+  })
+
+  it.each(['pending', 'held'] as const)('Huỷ and a sign-out during the .tmp write while A is stuck, offline (%s): G never becomes the live session, online or not', async (was) => {
+    const t = setup()
+    value(await t.account.login({ identifier: 'minh', password: t.server.password }))
+    const tokA = (await t.account.bearer())!
+    const unlock = winLock(t.m)
+    if (was === 'pending') expect(await t.account.signOut()).toEqual(failed)
+    const { at, release } = gateTmp(t.m, 'writeFile')
+    const g = t.account.google()
+    await at
+    const tokG = lastToken(t.server)!
+    value(await t.account.cancelGoogle())
+    t.server.opts.offline = true
+    const so = t.account.signOut()
+    await tick(2)
+    release()
+    await g
+    expect(await so).toEqual(failed) // A's file is still there: never a sign-out
+    expect(await t.account.bearer()).not.toBe(tokG)
+    expect(tokenOnDisk(t.m)).toBe(tokA)
+    t.server.opts.offline = false
+    expect(value(await t.account.status()).signedIn).toBe(false)
+    expect(await t.account.bearer()).not.toBe(tokG)
+    unlock()
+  })
+
+  it('Huỷ at a refused rename while a status() renewal holds a copy of G: not-saved, and A (what the file holds) is the session again', async () => {
+    const t = setup()
+    value(await t.account.login({ identifier: 'minh', password: t.server.password }))
+    const tokA = (await t.account.bearer())!
+    const unlock = winLock(t.m)
+    const { at, release } = gateTmp(t.m, 'rename')
+    const g = t.account.google()
+    await at
+    const tokG = lastToken(t.server)!
+    t.server.opts.meExpiresAt = new Date(NOW + 31 * 86_400_000).toISOString()
+    const checked = t.account.status()
+    await tick()
+    value(await t.account.cancelGoogle())
+    t.server.opts.offline = true
+    release()
+    const out = await g
+    await checked
+    expect(out).toMatchObject({ ok: false, code: 'not-saved' })
+    expect(await t.account.bearer()).toBe(tokA)
+    expect(tokenOnDisk(t.m)).toBe(tokA)
+    unlock()
+  })
+
+  it('two overlapping sign-outs, the first removal refused and the second one done: no session comes back', async () => {
+    const t = setup()
+    value(await t.account.login({ identifier: 'minh', password: t.server.password }))
+    // the first removal and both fallbacks refused, every later one allowed (the lock goes away in between)
+    const { rm, writeFile } = t.m.fs
+    let refusals = 3
+    const refuse = () => refusals-- > 0
+    t.m.fs.rm = async (p: string) => (p === FILE && t.m.files.has(p) && refuse() ? eperm() : rm(p))
+    t.m.fs.writeFile = async (p: string, b: Buffer) => ((p === FILE || p === MARK) && refuse() ? eperm() : writeFile(p, b))
+    const first = t.account.signOut()
+    const second = t.account.signOut()
+    expect(await first).toEqual(failed)
+    expect(value(await second).signedIn).toBe(false)
+    expect(await t.account.bearer()).toBeNull()
+    t.server.opts.offline = true
+    expect(value(await t.account.status()).signedIn).toBe(false)
+    expect(value(await restart(t).status()).signedIn).toBe(false)
+    Object.assign(t.m.fs, { rm, writeFile })
   })
 })
 
