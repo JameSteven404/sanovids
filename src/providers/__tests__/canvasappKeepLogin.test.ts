@@ -1460,14 +1460,22 @@ describe('keep-login wiring (electron/main.cjs)', () => {
     expect(reg).not.toMatch(/\.restore\(|safeStorage/)
     const start = fnBody('startCanvasappKeepLogin')
     expect(start).not.toMatch(/\.restore\(|readFile\(|ensureCanvasappRestored/)
-    // safeStorage appears only in the require line and inside the injected crypto object of startCanvasappKeepLogin
+    // safeStorage appears only in the require line, inside the injected crypto object of startCanvasappKeepLogin, and
+    // in Sano Agent's account object (sano-account-rules.cjs, D253: used on a status() call, never at start)
     const cryptoObj = start.slice(start.indexOf('const asyncSafeStorage = {'), blockAt(start, start.indexOf('const asyncSafeStorage = {'))[1])
-    expect(count(mainCode, 'safeStorage')).toBe(count(cryptoObj, 'safeStorage') + 1)
+    const account = fnBody('registerAccount')
+    const accountObj = account.slice(account.indexOf('safeStorage: {'), blockAt(account, account.indexOf('safeStorage: {'))[1])
+    expect(count(mainCode, 'safeStorage')).toBe(count(cryptoObj, 'safeStorage') + count(account, 'safeStorage') + 1)
+    expect(count(account, 'safeStorage')).toBe(count(accountObj, 'safeStorage'))
     expect(mainCode).toMatch(/const \{ app, BrowserWindow, Menu, dialog, ipcMain, net, protocol, safeStorage, session, shell \} = require\('electron'\)/)
-    // only inside arrow functions (called later by the keep-login object, never at start)
-    for (const line of cryptoObj.split('\n').filter((l) => l.includes('safeStorage'))) expect(line).toMatch(/^\s+\w+: (async )?\([^)]*\) => /)
+    // only inside arrow functions (called later by the keep-login object or the account, never at start)
+    for (const obj of [cryptoObj, accountObj]) {
+      for (const line of obj.split('\n').filter((l) => l.includes('safeStorage') && !l.includes('safeStorage: {'))) expect(line).toMatch(/^\s+\w+: (async )?\([^)]*\) => /)
+    }
     expect(cryptoObj).toContain('await safeStorage.isAsyncEncryptionAvailable()')
-    expect(mainCode).not.toMatch(/encryptString\(|decryptString\(|setUsePlainTextEncryption/)
+    // the sync encryptor only for the account (its rules call it on sign-in), Linux plain text counted as unavailable
+    expect(accountObj).toContain("safeStorage.getSelectedStorageBackend() === 'basic_text'")
+    expect(mainCode.replace(accountObj, '')).not.toMatch(/encryptString\(|decryptString\(|setUsePlainTextEncryption/)
     expect(cryptoObj).toContain("safeStorage.getSelectedStorageBackend() === 'basic_text'")
     expect(start).toContain('enabled: keepLoginRules.resolveKeepLogin(canvasappKeepPrefs, keepLoginPlacementKind())')
     // an unset default off (Portable shares userData with Setup) must not delete the installed app's copy
@@ -1578,9 +1586,9 @@ describe('keep-login wiring (electron/main.cjs)', () => {
       'canvasappGoogleCleaned = true',
       'void keepLoginRules.removeGoogleAccountCookies(canvasappSession().cookies)',
     ])
-    // + SANO desktop's Google sign-in popup, on the default session when it closes (guardGooglePopup) and at start
-    expect(count(mainCode, 'removeGoogleAccountCookies(')).toBe(4)
-    expect(mainCode).toContain("child.once('closed', () => void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies))")
+    // + the default session at start: what the in-app Google popup of earlier SANO desktop runs left (TH-36 removed it)
+    expect(count(mainCode, 'removeGoogleAccountCookies(')).toBe(3)
+    expect(mainCode).toContain('\n    void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies)\n')
     expect(mainCode).not.toMatch(/cookies\.remove\(/) // only through the rules (Google cookies only)
   })
 

@@ -318,9 +318,6 @@ function contentSecurityPolicy(html, frameAncestors = "'none'") {
   ].join('; ')
 }
 
-/** SANO desktop: Google's sign-in pages, the only places its Google sign-in popup may go (main.cjs guardGooglePopup). */
-const GOOGLE_SIGN_IN = /^https:\/\/accounts\.(google|youtube)\.com\//
-
 /** Sano Agent (D240): SANO's web app packed in the app (sano-dist/), served by main.cjs serveDist at this address. */
 const SANO_IN_APP_URL = 'app://sano/'
 const SANO_IN_APP_ORIGIN = 'app://sano'
@@ -738,7 +735,6 @@ module.exports = {
   sanoFailedDialog,
   sanoFailedAction,
   appFrames,
-  GOOGLE_SIGN_IN,
   APP_SIGNATURE_STATUSES,
   appSignaturePayload,
   SIGNED_DLLS,

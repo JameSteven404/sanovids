@@ -20,6 +20,8 @@ const productArg = process.argv.find((a) => a.startsWith('--bdp-product='))
 
 /** Plain data only: a string (or '') — the main process validates everything again. */
 const str = (v) => (typeof v === 'string' ? v : '')
+/** A string cut one past main's limit (sano-account-rules LIMITS), so main refuses an overlong value instead of a cut one. */
+const cut = (v, max) => str(v).slice(0, max + 1)
 /** [{ name, bytes | text }] for the files:* calls (at most 8; main allows fewer). */
 const fileList = (files) =>
   Array.isArray(files)
@@ -37,10 +39,53 @@ const trashItems = (items) =>
     ? items.slice(0, 256).map((i) => ({ takeId: str(i && i.takeId), groupIds: Array.isArray(i && i.groupIds) ? i.groupIds.slice(0, 32).map(str) : [] }))
     : []
 
-// SANO desktop (main.cjs SANO): this preload runs in every frame of SANO's page. SANO's own page only learns where
-// SanoVids is; the bridge below goes to SanoVids' page alone (main checks the sending frame again: fromApp).
+// SANO desktop (main.cjs SANO): this preload runs in every frame of SANO's page. SANO's own page (its top frame only)
+// learns where SanoVids is and gets "Đăng nhập bằng Google" (main checks the sending frame again: fromSano); the
+// bridge below goes to SanoVids' page alone (fromApp).
 const sanoArg = process.argv.find((a) => a.startsWith('--bdp-sano-origin='))
-if (sanoArg && location.origin === sanoArg.slice('--bdp-sano-origin='.length)) contextBridge.exposeInMainWorld('sanoDesktop', { sanovidsUrl: 'app://bdp/' })
+if (sanoArg && process.isMainFrame && location.origin === sanoArg.slice('--bdp-sano-origin='.length)) {
+  // Sano Agent's own sign-in (D253, main.cjs registerAccount): the form is SANO's page, the server calls are main's. Main
+  // answers { ok: true, value } | { ok: false, error, code? }; the Error is made in the page's world, since one thrown
+  // here crosses contextBridge with its message only (its code would be lost).
+  const invoke = {
+    status: () => ipcRenderer.invoke('account:status'),
+    login: (i) => ipcRenderer.invoke('account:login', { identifier: cut(i && i.identifier, 254), password: cut(i && i.password, 128) }),
+    register: (i) => ipcRenderer.invoke('account:register', { email: cut(i && i.email, 254), username: cut(i && i.username, 32), name: cut(i && i.name, 100), password: cut(i && i.password, 128) }),
+    forgot: (i) => ipcRenderer.invoke('account:forgot', { identifier: cut(i && i.identifier, 254) }),
+    google: () => ipcRenderer.invoke('account:google'),
+    cancelGoogle: () => ipcRenderer.invoke('account:cancelGoogle'),
+    signOut: () => ipcRenderer.invoke('account:signOut'),
+  }
+  const account = contextBridge.executeInMainWorld({
+    func: (calls, offline) => {
+      const answer = (r) => {
+        if (r && r.ok) return r.value
+        throw Object.assign(new Error(r && typeof r.error === 'string' ? r.error : offline), r && r.code ? { code: r.code } : {})
+      }
+      const account = {}
+      for (const name of Object.keys(calls)) account[name] = (input) => calls[name](input).then(answer)
+      return account
+    },
+    args: [invoke, 'Không kết nối được máy chủ tài khoản. Kiểm tra mạng rồi thử lại.'],
+  })
+  contextBridge.exposeInMainWorld('sanoDesktop', {
+    sanovidsUrl: 'app://bdp/',
+    /** Sign-in in the default browser (main.cjs registerGoogleSignIn). Only the ID token crosses, never the refresh token. */
+    google: {
+      /** → { ok: true, idToken } | { ok: false, code: 'cancelled'|'timeout'|'superseded'|'not-configured'|'failed'|'not-allowed', message } */
+      signIn: () => ipcRenderer.invoke('sano:googleSignIn'),
+      /**
+       * → the ID token (renewed when under 5 minutes are left), or null: signed out, show "Đăng nhập" again.
+       * Rejects when Google did not answer the renewal: still signed in, fail only this request.
+       */
+      token: () => ipcRenderer.invoke('sano:googleToken'),
+      /** Forgets the tokens in main's memory (no revoke); a sign-in still waiting ends 'cancelled'. → true */
+      signOut: () => ipcRenderer.invoke('sano:googleSignOut'),
+    },
+    /** → { status, login, register, forgot, google, cancelGoogle, signOut } (window.sanoDesktop.account, D253) */
+    account,
+  })
+}
 const expose = location.origin === 'app://bdp' ? (key, api) => contextBridge.exposeInMainWorld(key, api) : () => undefined
 // SANO removing SanoVids' frame (or sending it elsewhere) gives main no event of its own: the page ends its downloads as it goes.
 if (location.origin === 'app://bdp') window.addEventListener('pagehide', () => void ipcRenderer.invoke('canvasapp:downloadCloseAll').catch(() => undefined))

@@ -33,6 +33,8 @@ Có hai cách, đều từ mã nguồn:
 2. Chạy `sano-desktop.bat` như trên. File bat dựng lại SanoVids rồi mở SANO.
 3. Trong SANO: **Canvas**. Take mới vẫn chạy ở *chế độ Phát triển* (giả lập, không tốn credit). Muốn tạo
    video thật: Cài đặt của SanoVids → cổng canvasapp → bật, rồi **Đăng nhập** trên trang thật canvasapp.io.vn.
+4. Đăng nhập tài khoản SANO ngay trong app (D253, mục 3a): thêm `SANO_API_URL=<máy chủ tài khoản SANO>` trước khi chạy,
+   ví dụ `set SANO_API_URL=http://127.0.0.1:8787`. Không đặt thì app chạy như bản 1.0 (không có màn đăng nhập).
 
 ## 3. Cách hoạt động
 
@@ -49,11 +51,35 @@ Có hai cách, đều từ mã nguồn:
 - Thông báo main gửi tới trang (`devAccess:state`, `updates:state`) đi tới khung `app://bdp` (`hardening-rules.appFrames`),
   không bao giờ tới trang SANO.
 - Cửa sổ chính mở trang SANO và chỉ ở origin đó, kể cả khi máy chủ chuyển hướng; link ngoài mở trình duyệt.
-- Riêng popup `https://accounts.google.com/` (“Đăng nhập bằng Google” của SANO) mở thành cửa sổ con. Popup chỉ đi trong các
-  trang đăng nhập của Google (`accounts.google.com`, `accounts.youtube.com`); link và popup con của nó mở trình duyệt. Đóng
-  popup thì cookie tài khoản Google nó để lại trong thư mục dữ liệu bị xoá (SANO đã nhận token).
-- Trang SANO thấy `window.sanoDesktop = { sanovidsUrl: 'app://bdp/' }` và đặt khung Dựng phim vào địa chỉ đó: bản SanoVids
-  nằm trong app (`dist/`), không tải từ máy chủ SANO.
+- Trang SANO thấy `window.sanoDesktop = { sanovidsUrl: 'app://bdp/', google: { signIn, token, signOut }, account }`
+  (`account`: mục 3a) và đặt khung
+  Dựng phim vào `sanovidsUrl`: bản SanoVids nằm trong app (`dist/`), không tải từ máy chủ SANO. Chỉ khung chính của trang
+  SANO nhận `sanoDesktop` (preload kiểm `process.isMainFrame`); main kiểm lại khung gửi của mọi lời gọi Google (`fromSano`:
+  khung chính của cửa sổ chính, đúng origin SANO). Kiểm hai cổng này trong Electron thật (không chạy trong CI, không đăng
+  nhập): `npx electron scripts/sano-desktop-probe.cjs`.
+- **Đăng nhập bằng Google** (TH-36) chạy trong trình duyệt mặc định, không trong cửa sổ app (Google chặn trình duyệt nhúng):
+  - `google.signIn()`: main lấy client ID từ `googleDesktopClientId` của `/api/assistant/status` trên máy chủ tài khoản
+    (`SANO_API_URL`, mục 3a; không có thì trên origin SANO, nên `app://sano/` không có API thì là `not-configured`) (trang
+    không đưa được client ID hay địa chỉ nào vào), mở trang đăng nhập Google (địa chỉ cố định trong
+    `electron/google-signin-rules.cjs`) bằng trình duyệt và chờ Google chuyển về `http://127.0.0.1:<cổng ngẫu nhiên>/`, có
+    PKCE S256 và `state`. Request sai đường trả 404; thiếu hoặc sai `state` trả 400 và vẫn chờ; 5 phút không xong thì hết giờ;
+    bấm lại thì lượt cũ bị hủy. Đổi code xong, trình duyệt hiện trang tĩnh (không chứa token) và cửa sổ app được gọi lên.
+    Kết quả: `{ ok: true, idToken }` hoặc `{ ok: false, code, message }` (`cancelled`, `timeout`, `superseded`,
+    `not-configured`, `failed`, `not-allowed`).
+  - `google.token()`: ID token đang giữ; còn dưới 5 phút thì main gia hạn bằng refresh token (nhiều lời gọi dùng chung một
+    lần). Google từ chối (4xx trừ 408/429: `invalid_grant`, `invalid_client`, `unauthorized_client`…) hoặc không trả ID
+    token: `null`, trang hiện lại nút đăng nhập. Google không trả lời (mất mạng, lỗi máy chủ, 408, 429, quá 15 giây):
+    giữ token cũ khi còn hạn; hết hạn thì lời gọi báo lỗi (không phải `null`, vẫn đăng nhập), trang chỉ hỏng request đó.
+    Lần gọi sau thử lại.
+  - `google.signOut()`: xoá token trong bộ nhớ, không thu hồi ở Google (Google thu hồi theo cả project). Lượt đăng nhập
+    đang chờ trình duyệt kết thúc với `cancelled`, kết quả về muộn bị bỏ.
+  - Lấy client ID từ máy chủ SANO cũng dừng sau 15 giây (coi như chưa bật: `not-configured`).
+  - Refresh token chỉ nằm trong bộ nhớ của main, không xuống đĩa và không qua cầu sang trang. Token có scope ngoài đăng nhập
+    (`openid`, `email`, `profile`) bị bỏ.
+  - `SANO_GOOGLE_DESKTOP_CLIENT_SECRET` (tuỳ chọn): chỉ đặt trên máy chạy SANO desktop nếu Google bắt client Desktop gửi secret
+    (bài test T1 của TH-36).
+- Link `accounts.google.com` trên trang SANO mở trình duyệt như mọi link ngoài. Cookie tài khoản Google mà popup đăng nhập
+  trong app của các bản cũ để lại vẫn được xoá mỗi lần khởi động.
 - Preload chạy ở mọi khung (`nodeIntegrationInSubFrames`), nhưng chỉ trang `app://bdp` nhận `window.bdpDesktop`. Mọi lời gọi
   cổng vẫn bị main kiểm khung gửi (`fromApp`: chỉ `app://bdp/…`). SANO và SanoVids khác origin: trang SANO không đọc hay
   điều khiển được trang SanoVids.
@@ -65,11 +91,90 @@ Có hai cách, đều từ mã nguồn:
 - CSP của trang SanoVids đổi đúng một chỉ thị: `frame-ancestors <origin SANO>` thay `'none'`. Khung Dựng phim của SANO
   cho SanoVids dùng toàn màn hình và chép vào clipboard (`allow="fullscreen; clipboard-write"`).
 
+## 3a. Tài khoản SANO trong app (D253)
+
+Form đăng nhập (email hoặc tên người dùng + mật khẩu), **Tạo tài khoản** và **Quên mật khẩu** nằm ngay trong cửa sổ
+Sano Agent (trang SANO vẽ form). Chỉ **Tiếp tục với Google** mở trình duyệt hệ thống (RFC 8252, như TH-36). Máy chủ là
+API tài khoản của SANO (TH-44: `/api/auth/*`). Mã: `electron/sano-account-rules.cjs` (logic, mọi thứ được tiêm vào để
+test), `main.cjs` `registerAccount`, `preload.cjs`.
+
+- **Máy chủ:** từ mã nguồn `SANO_API_URL`; bản đóng gói chỉ đọc `sanoAgent.apiUrl` trong `package.json` của nó, do
+  `sano-agent/electron-builder.cjs` nướng từ `SANO_API_URL` lúc build (`npm run dist:sano-agent`). Chỉ nhận
+  `https://host[:port]`, hoặc `http://127.0.0.1|localhost|[::1]:<cổng>`; không đường dẫn, query, `#` hay user:pass.
+  Không đặt thì bản cài không có `apiUrl`: `configured: false`, app y như 1.0. Đặt sai: từ mã nguồn thì in một dòng lỗi
+  và tắt đăng nhập; lúc build thì build dừng. `release:check:sano-agent` so `sanoAgent` của bản build với cấu hình, nên
+  chạy nó với cùng `SANO_API_URL` đã dùng khi build. Bản phát hành chỉ nhận `apiUrl` `https://` (release check từ
+  chối bản nướng loopback): `http://127.0.0.1…` chỉ để thử trên máy, nên xoá `SANO_API_URL` (`set SANO_API_URL=`)
+  trước khi `dist:sano-agent` trong shell đã dùng để chạy từ mã nguồn.
+- **Đường đi:** trang SANO có CSP `connect-src 'self'`, không gọi được máy chủ. Mọi lời gọi đi trang → preload
+  (`window.sanoDesktop.account`) → main → máy chủ, bằng `fetch` của Node (không gửi `Origin`, không cookie). Main kiểm
+  khung gửi ở **mọi** lời gọi (`fromSano`: khung chính của cửa sổ chính, đúng origin SANO); nơi khác nhận
+  `not-allowed`. Mỗi request: JSON, 20 giây, không theo chuyển hướng (`redirect: 'manual'` → lỗi).
+- **Đăng nhập mật khẩu:** mỗi lần một `code_verifier` (32 byte ngẫu nhiên, base64url) và `state` mới; `POST login` với
+  `client: 'desktop'`, `redirect_uri`, `code_challenge` (S256), `state`; lấy `code` trong `redirect` máy chủ trả (kiểm
+  đúng `state` và đúng địa chỉ), rồi `POST token`. `redirect_uri` cố định `http://127.0.0.1:9/callback` và **không bao
+  giờ được mở**: `authorizeField` của SANO chỉ cần loopback có cổng, bước đổi mã phải gửi lại đúng giá trị đó, còn thứ
+  gắn mã vào app là `code_verifier` chỉ main giữ.
+- **Google:** một lượt đăng nhập Google riêng (cùng `google-signin-rules.cjs`) lấy ID token trong trình duyệt, rồi
+  `POST google { credential, …tham số authorize }` → mã → phiên như trên. Token Google (cả refresh token) bị bỏ ngay sau
+  đó; `google` của TH-36 vẫn chạy riêng như cũ. Hết 5 phút thì hết giờ; `cancelGoogle()` huỷ lượt đang chờ, kể cả khi
+  trình duyệt đã trả về và main đang đổi mã với máy chủ (phiên vừa cấp bị bỏ và kết thúc trên máy chủ).
+- **Phiên:** `{ token: 'sano_…', expiresAt, user }` (30 ngày) mã hoá bằng `safeStorage.encryptString` ở
+  `<thư mục dữ liệu>/sano-account.bin` (theo `SANOVIDS_PROFILE_DIR` nếu có). Máy không mã hoá được (cả Linux không có keyring,
+  backend `basic_text`) thì chỉ giữ trong bộ nhớ (`persistent: false`, mở lại app phải đăng nhập lại); ghi file lỗi
+  (ví dụ antivirus khoá) cũng vậy, và không để lại `sano-account.bin.tmp`; file của phiên trước (người dùng khác) bị bỏ
+  như khi đăng xuất, để lần mở sau không quay về tài khoản cũ, còn không bỏ được thì đăng nhập báo lỗi `not-saved` "Không
+  lưu được phiên đăng nhập trên máy này. Đóng hẳn Sano Agent, mở lại rồi đăng nhập lại." và phiên cũ vẫn giữ. `status()` hỏi `GET /api/auth/me`: 401 hoặc 403 thì xoá
+  phiên; mất mạng / máy chủ lỗi thì vẫn đăng nhập với người dùng đã lưu (`offline: true`); quá `expiresAt` thì coi như
+  đã đăng xuất, không hỏi máy chủ. `signOut()` xoá bộ nhớ rồi xoá file, gửi `POST logout` nhưng không chờ. Không xoá được
+  file (Windows khoá, `EPERM`) thì ghi đè file thành rỗng; không ghi đè được thì đặt dấu `sano-account.bin.forget` cạnh
+  file: lần mở sau thấy dấu thì không bao giờ mở lại phiên đó (kể cả khi mất mạng), lần lưu phiên mới thì xoá dấu. Không
+  đặt được dấu (cả thư mục không ghi được) thì chờ `POST logout` (20 giây): máy chủ
+  thu hồi (2xx hoặc 401) thì vẫn là đã đăng xuất (token vẫn nằm trong file: lần mở sau mà mất mạng thì app hiện lại
+  người dùng cũ ở chế độ ngoại tuyến cho đến khi `/me` trả 401), còn không thì phiên được giữ lại (lần mở sau cũng thấy)
+  và `signOut()` báo lỗi `sign-out-failed` "Phiên vẫn còn trên máy này. Kiểm tra mạng rồi thử lại, hoặc đóng hẳn Sano
+  Agent rồi mở lại.", không bao giờ giả vờ đã đăng xuất. Trong lúc chờ máy chủ, `status()` và lần bấm đăng xuất thứ hai
+  vẫn thấy người dùng đang đăng nhập. Phiên đăng xuất giữa lúc đang ghi file (đăng nhập, cập nhật hồ sơ) thì file vừa
+  ghi bị xoá ngay, token không nằm lại trên đĩa; Huỷ Google lúc đang ghi file cũng vậy (trả `cancelled`, phiên vừa cấp
+  kết thúc trên máy chủ). Một `/me` trả lời sau khi phiên đã đăng xuất hoặc đổi người thì bị bỏ: `status()` trả phiên đang
+  giữ lúc đó. Bấm Google lần nữa khi lượt trước còn chờ trình duyệt: lượt trước trả `superseded`, lượt mới vẫn chạy.
+- **Phiên Google của chat đi theo phiên SANO (bất biến):** mỗi khi phiên tài khoản SANO kết thúc hoặc đổi chủ, main
+  đăng xuất luôn phiên Google của chat (`sanoDesktop.google` của TH-36, "Chat → Máy chủ"; `onSessionEnd` →
+  `chatGoogle.signOut()`), trước mọi việc khác: mỗi lần `signOut()` (cả khi không còn phiên, cả khi trả
+  `sign-out-failed`), khi `status()`/lần đọc file bỏ phiên (401/403, quá `expiresAt`, file hỏng hoặc của máy khác), và
+  khi đăng nhập lưu phiên của người dùng khác người dùng cuối cùng. Nhờ vậy người dùng sau không dùng lại token Google
+  (và quyền) của người trước. Lỗi của bước này chỉ ghi log, không bao giờ chặn hay làm hỏng lời gọi tài khoản.
+- **Cầu nối** (khớp SANO web, TH-44 bước 3):
+  ```ts
+  type AccountUser = { id: string; name: string; email: string; username: string | null; admin: boolean }
+  type AccountStatus = { configured: boolean; signedIn: boolean; user: AccountUser | null; persistent: boolean; offline?: boolean }
+  window.sanoDesktop.account: {
+    status(): Promise<AccountStatus>
+    login({ identifier, password }): Promise<AccountStatus>
+    register({ email, username, name, password }): Promise<{ ok: true }>
+    forgot({ identifier }): Promise<{ ok: true }>
+    google(): Promise<AccountStatus> // lỗi "Đã huỷ đăng nhập Google." khi huỷ
+    cancelGoogle(): Promise<void>
+    signOut(): Promise<AccountStatus>
+  }
+  ```
+  Lỗi là `Error` có `message` tiếng Việt (của máy chủ, hoặc "Không kết nối được máy chủ tài khoản. Kiểm tra mạng rồi
+  thử lại.", "Bản Sano Agent này chưa nối máy chủ tài khoản.") và `code` khi có (`not-configured`, `offline`,
+  `bad-input`, `state-mismatch`, `cancelled`, `superseded`, `timeout`, `not-allowed`, `sign-out-failed`, `not-saved`…). Error ném trong preload qua `contextBridge`
+  chỉ còn `message`, nên preload dựng object `account` trong world của trang (`contextBridge.executeInMainWorld`) và
+  Error được tạo ở đó. Preload cắt mỗi trường ở giới hạn + 1 ký tự; main kiểm lại (chỉ chuỗi; `identifier`/`email` ≤ 254,
+  `password` ≤ 128, `name` ≤ 100, `username` ≤ 32).
+- Không bao giờ ghi log mật khẩu, token hay mã. Kiểm thử: `src/lib/__tests__/sanoAccountRules.test.ts` (máy chủ, safeStorage,
+  Google giả) và `npx electron scripts/sano-desktop-probe.cjs` (cầu nối trong Electron thật, không máy chủ).
+
 ## 4. Giới hạn
 
 - Không mở cùng lúc SanoVids và SANO desktop (cùng thư mục dữ liệu: lần mở thứ hai chỉ đưa cửa sổ đang mở lên trước).
-- Google có thể từ chối đăng nhập trong cửa sổ app. Khi đó SANO ở chế độ demo; Dựng phim với canvasapp vẫn chạy vì không cần
-  đăng nhập SANO. Tài khoản Google Workspace đăng nhập qua nhà cung cấp riêng (SSO) bị chặn ở bước chuyển hướng đó.
+- Đăng nhập Google cần máy chủ SANO có `SANO_GOOGLE_DESKTOP_CLIENT_ID` và trang SANO bản gọi `sanoDesktop.google` (TH-36:
+  web và máy chủ cập nhật trước, desktop sau). Thiếu thì SANO ở chế độ demo; Dựng phim với canvasapp vẫn chạy vì không cần
+  đăng nhập SANO.
+- Token Google của `sanoDesktop.google` (TH-36) chỉ ở bộ nhớ: mỗi lần mở app phải bấm đăng nhập Google một lần (trình duyệt thường đã nhớ tài khoản, chỉ cần chọn). Phiên tài khoản SANO thì được lưu (mục 3a).
+- Trên Windows, sau khi đăng nhập cửa sổ app có thể chỉ nhấp nháy ở taskbar; trang trong trình duyệt nhắc quay lại app.
 - Địa chỉ SANO (`SANO_URL`, hoặc địa chỉ nướng sẵn của Sano Agent) phải là địa chỉ cuối: máy chủ chuyển hướng ngay lần mở
   đầu thì cửa sổ báo "SANO tại … chuyển hướng sang …" với **Thử lại / Mở Canvas / Thoát** (từ mã nguồn: in cả lỗi ra
   console).
@@ -117,12 +222,13 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
   `scripts/build-sano.mjs` trước electron-builder:
   - Lấy đúng commit ghim trong `sano-agent/sano.json` (`{ repo, commit }`) từ một checkout SANO trên máy: biến môi
     trường `SANO_REPO`, mặc định `E:/SANO-AGENT-wt-docker` (một worktree của repo SANO; worktree nào cũng đọc được commit
-    ghim). Hiện ghim đầu PR SANO #70 (03089b2: dữ liệu mẫu trung tính, D242/D249, nối sau #68). Sau khi Minh merge các
+    ghim). Hiện TẠM ghim b62623d, đầu nhánh SANO `claude/dang-nhap-trong-app-20261028` chưa merge (nối sau PR SANO #80, D253: trang đăng nhập trong app); trước khi merge PR này phải ghim lại commit SANO đã lên main (trước đó ghim 03089b2, đầu #70). Sau khi Minh merge các
     PR SANO bằng "Create a merge commit", giữ nguyên ghim nếu
     `git -C "$SANO_REPO" merge-base --is-ancestor <commit trong sano.json> origin/main` trả 0; chỉ đổi ghim (rồi dựng
     và thử lại) khi #70 không vào main nguyên vẹn (squash, rebase). Có thể trỏ `SANO_REPO` vào checkout `main`.
   - `git archive` chỉ lấy file cần để build web (`package.json`, lockfile, `tsconfig.json`, `vite.config.ts`,
-    `index.html`, `public/`, `web/`, `shared/`). Không lấy `knowledge/`, `context/`, máy chủ.
+    `index.html`, `login.html` (trang đăng nhập web TH-44, từ PR SANO #80), `public/`, `web/`, `shared/`). Không lấy
+    `knowledge/`, `context/`, máy chủ.
   - Build trong thư mục tạm bằng lockfile của SANO (`npm ci --ignore-scripts`, `npm run build`), vì SANO dùng Vite 7 và
     lucide-react 0.577. Có source map thì dừng (repo SANO là private).
   - Chép kết quả ra `sano-dist/` (không đưa vào Git) kèm `BUILD.json` `{ commit, version }`. Không bao giờ ghi vào `dist/`.
@@ -130,7 +236,7 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
     lucide-react 0.577…). Bộ cài Sano Agent chép file này thành `THIRD-PARTY-NOTICES.txt`.
   - Cần git, npm và mạng. Chạy riêng: `npm run build:sano`.
 - Mã SANO đã biên dịch nằm trong bộ cài: ai tải bộ cài cũng giải nén đọc được (không có source map, không có khoá; có
-  giao diện nội bộ, D242 cho phép). Dữ liệu mẫu là dữ liệu trung tính từ commit ghim của SANO #70 (D249); mỗi lần đổi
+  giao diện nội bộ, D242 cho phép). Dữ liệu mẫu là dữ liệu trung tính từ commit ghim (dữ liệu mẫu trung tính từ SANO #70, D249); mỗi lần đổi
   ghim, commit mới cũng phải giữ dữ liệu mẫu trung tính (D242). Mỗi lần sửa SANO là một bản Sano Agent ký số mới.
 - **Từ mã nguồn hoặc máy chủ team:** `SANO_URL` vẫn nhận `https://…` và `http://localhost`. Không mở được SANO ở địa chỉ
   đó (máy chủ tắt, sai cổng): cửa sổ báo "Không mở được SANO tại …" với **Thử lại / Mở Canvas / Thoát** (Enter là Thử lại,

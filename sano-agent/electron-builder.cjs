@@ -4,6 +4,12 @@
 // originals. appId, productName and name are permanent once released (NSIS GUID, install entry, update feed and cache).
 // docs/SANO-DESKTOP.md "Phát hành Sano Agent". One version for both apps (D235): package.json's.
 const { build, version } = require('../package.json')
+const { accountApiUrl } = require('../electron/sano-account-rules.cjs')
+
+// D253: SANO's account server for the in-app sign-in, baked from SANO_API_URL at build time (a packaged app never reads
+// the environment). Unset → no apiUrl: the app ships unconfigured, exactly like 1.0. Set but refused → no build.
+const API_URL = process.env.SANO_API_URL ? accountApiUrl(process.env.SANO_API_URL) : null
+if (process.env.SANO_API_URL && !API_URL) throw new Error('SANO_API_URL must be https://host[:port] or http://127.0.0.1|localhost|[::1]:port')
 
 const { mac: _mac, dmg: _dmg, ...base } = build // Windows only
 const ART = 'sano-agent/brand/build'
@@ -28,7 +34,7 @@ module.exports = {
     homepage: 'https://github.com/JameSteven404/sano-agent-releases',
     // The SANO web app the window opens (electron/hardening-rules sanoShell): inside the integrity-checked app.asar,
     // and since D240 the page itself too (sano-dist/), so no SANO server is needed.
-    sanoAgent: { url: 'app://sano/' },
+    sanoAgent: { url: 'app://sano/', ...(API_URL ? { apiUrl: API_URL } : {}) },
   },
   icon: `${ART}/icon.png`,
   // THIRD-PARTY-NOTICES.txt also lists SANO's packages (scripts/build-sano.mjs writes that file).

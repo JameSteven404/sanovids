@@ -638,7 +638,7 @@ describe('release scripts (source guarantees)', () => {
   it('publish-release checks the signed build before anything is published', () => {
     const src = read('publish-release.mjs')
     // the files app.asar must hold: one shared list (the Windows group (g) and the Mac zip check use it)
-    for (const f of ['electron/main.cjs', 'electron/preload.cjs', 'electron/updater.cjs', 'electron/updater-rules.cjs', 'electron/signature.cjs', 'electron/hardening-rules.cjs', 'electron/keeplogin-rules.cjs']) {
+    for (const f of ['electron/main.cjs', 'electron/preload.cjs', 'electron/updater.cjs', 'electron/updater-rules.cjs', 'electron/signature.cjs', 'electron/hardening-rules.cjs', 'electron/keeplogin-rules.cjs', 'electron/google-signin-rules.cjs', 'electron/sano-account-rules.cjs']) {
       expect(lib.REQUIRED_ASAR_FILES).toContain(f)
     }
     expect(src).toContain('for (const p of [...REQUIRED_ASAR_FILES, ...(PRODUCT.asarFiles ?? [])]) {')
@@ -1329,6 +1329,17 @@ describe('Sano Agent (--sano-agent: SANO_AGENT, sano-agent/electron-builder.cjs)
     expect(checkPackagedIdentity(inner, eff)).toEqual([])
     expect(checkPackagedIdentity({ ...inner, sanoAgent: { url: 'http://evil.example.vn/' } }, eff)[0]).toMatch(/^sanoAgent /)
     expect(checkPackagedIdentity({ ...repoPkg, sanoAgent: { url: A.url } }, repoPkg)[0]).toMatch(/^sanoAgent /)
+  })
+
+  it('checkPackagedIdentity: a baked account server must be https (a loopback SANO_API_URL left in the shell is a test build)', () => {
+    const eff = lib.effectivePackage(repoPkg, cfg)
+    const at = (apiUrl) => {
+      const sanoAgent = { ...eff.sanoAgent, apiUrl }
+      return checkPackagedIdentity({ ...eff, build: undefined, sanoAgent }, { ...eff, sanoAgent })
+    }
+    expect(at('http://127.0.0.1:8796')).toEqual(['sanoAgent.apiUrl "http://127.0.0.1:8796" (bản phát hành chỉ nhận https://; bản build thử nghiệm?)'])
+    expect(at('https://sano.example.vn')).toEqual([])
+    expect(checkPackagedIdentity({ ...eff, build: undefined }, eff)).toEqual([])
   })
 
   it('checkSameElectron: the Electron of the newest public SanoVids, or ✗', () => {
