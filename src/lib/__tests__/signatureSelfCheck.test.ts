@@ -375,10 +375,16 @@ describe.runIf(process.platform === 'win32' && nodeFs.existsSync(nodePath.join(E
     const lines: string[] = []
     const out = await signature.checkFilesSignature(files, { pins: [PIN], log: (l) => lines.push(l) })
     expect(out, lines.join('\n')).toHaveLength(3)
-    // d3dcompiler_47.dll: Valid, Microsoft Corporation (not ours) → the self-check accepts it
-    expect(out[0].parsed, lines.join('\n')).toMatchObject({ v: 1, status: 0, sigType: 'Authenticode', signer: 'Microsoft Corporation', error: null })
-    expect(out[0].verdict.status).toBe('other-signer')
-    expect(hardening.selfCheckFileState('microsoft', out[0], [PIN])).toBe('ok')
+    // d3dcompiler_47.dll: Valid, Microsoft Corporation (not ours) → the self-check accepts it. Windows Server (the CI
+    // runner) finds the DLL in its own catalog first (Catalog, Microsoft Windows): the self-check says 'unknown', never 'bad'.
+    const catalog = (out[0].parsed as { sigType?: string } | null)?.sigType === 'Catalog'
+    expect(out[0].parsed, lines.join('\n')).toMatchObject(
+      catalog
+        ? { v: 1, status: 0, sigType: 'Catalog', signer: 'Microsoft Windows', error: null }
+        : { v: 1, status: 0, sigType: 'Authenticode', signer: 'Microsoft Corporation', error: null },
+    )
+    expect(out[0].verdict.status).toBe(catalog ? 'unknown' : 'other-signer')
+    expect(hardening.selfCheckFileState('microsoft', out[0], [PIN])).toBe(catalog ? 'unknown' : 'ok')
     // ffmpeg.dll as Electron ships it: NotSigned (the build signs it) → an author DLL in that state is 'bad'
     expect(out[1].verdict).toMatchObject({ ok: false, status: 'unsigned', reason: 'not-signed' })
     expect(hardening.selfCheckFileState('author', out[1], [PIN])).toBe('bad')
