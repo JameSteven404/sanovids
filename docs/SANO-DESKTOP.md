@@ -181,7 +181,9 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
   401, app thử xoá file lần nữa, không xoá được thì lần đăng xuất sau báo lỗi y như vậy. Phiên đăng xuất giữa lúc đang
   ghi file (đăng nhập, cập nhật hồ sơ) thì file vừa ghi bị xoá ngay, token không nằm lại trên đĩa. Huỷ Google khi file
   `.tmp` đang ghi (trước bước đổi tên) thì xoá `.tmp`, bỏ bước đổi tên: file không bao giờ chứa phiên đó, trả
-  `cancelled`, phiên vừa cấp kết thúc trên máy chủ. Huỷ khi bước đổi tên đã chạy thì file vừa ghi bị xoá; không xoá, ghi
+  `cancelled`, phiên vừa cấp kết thúc trên máy chủ, kể cả khi file còn kẹt phiên trước đó (dọn còn treo, hoặc phiên vừa
+  bị thay): phiên Google không được giữ, việc dọn phiên trước vẫn treo, lần đăng xuất sau vẫn báo lỗi cho tới khi file đó
+  mất. Huỷ khi bước đổi tên đã chạy thì file vừa ghi bị xoá; không xoá, ghi
   rỗng hay đặt dấu được thì trả `sign-out-failed` thay cho `cancelled` và giữ phiên, để lần đăng xuất sau thử lại. So
   phiên theo token, nên một `status()` gia hạn (bản sao cùng token) giữa lúc đó không làm Huỷ bỏ sót phiên. Một `/me` trả lời sau khi phiên đã đăng xuất hoặc đổi người thì bị bỏ: `status()` trả phiên đang
   giữ lúc đó. Bấm Google lần nữa khi lượt trước còn chờ trình duyệt: lượt trước trả `superseded`, lượt mới vẫn chạy.
@@ -210,7 +212,7 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
     login({ identifier, password }): Promise<AccountStatus>
     register({ email, username, name, password }): Promise<{ ok: true }>
     forgot({ identifier }): Promise<{ ok: true }>
-    google(): Promise<AccountStatus> // lỗi "Đã huỷ đăng nhập Google." khi huỷ; Huỷ lúc đang lưu phiên mà không dọn được file: lỗi sign-out-failed
+    google(): Promise<AccountStatus> // lỗi "Đã huỷ đăng nhập Google." khi huỷ; Huỷ khi bước đổi tên đã chạy mà không dọn được file: lỗi sign-out-failed
     // ("Phiên vẫn còn trên máy này. …"), phiên vẫn giữ, lần đăng xuất sau thử lại
     cancelGoogle(): Promise<void>
     signOut(): Promise<AccountStatus>

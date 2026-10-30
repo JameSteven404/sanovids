@@ -133,6 +133,7 @@ function createAccount(fx) {
   // a session cleared from memory (a 401, a forward's 401, a failed sign-out) whose file could not be removed: an offline
   // restart reopens it, so every sign-out retries the removal and fails until it works (SANO-AGENT#95)
   let pending = null
+  let filed = null // token of the last session renamed into the file: a dropped sign-in that never got there is not on disk
   let loaded = null // the session file, read once
   let epoch = 0 // signOut bumps it: a sign-in that finishes after it is dropped
   let cancels = 0 // cancelGoogle bumps it: a Google sign-in still exchanging its token is dropped
@@ -275,6 +276,7 @@ function createAccount(fx) {
       await fx.fs.writeFile(tmp, fx.safeStorage.encryptString(JSON.stringify(s)))
       if (gone()) return await dropTmp() // known before the rename: the file never holds s
       await fx.fs.rename(tmp, fx.file)
+      filed = s.token
       await fx.fs.rm(marker, { force: true }) // the file is this session now, not the one signed out
       if (gone()) await remove()
     } catch (e) {
@@ -342,6 +344,7 @@ function createAccount(fx) {
     const end = () => call('POST', '/api/auth/logout', {}, s.token).catch(() => undefined) // best effort
     const dropped = () => epoch !== started || cancelled()
     await current() // the file read first: its clean-up never deletes the session written below
+    const before = held // the session s replaces, still in the file if s never reaches it
     if (!dropped()) {
       try {
         await save(s, dropped)
@@ -352,11 +355,17 @@ function createAccount(fx) {
     }
     if (dropped()) {
       // signed out (or Huỷ) while this ran, its file write included: the new session is dropped, and ended on the server too
+      const prior = pending
       const gone = await clear(s)
       end()
+      // the file could not be cleaned but never held s (Huỷ before the rename): s is not kept, and the session the file
+      // still holds (a failed sign-out's, or the one s replaced) is the cleanup every later sign-out retries
+      if (!gone && filed !== s.token) {
+        if (pending === s) pending = prior || before
+      }
       // still in the file (nothing could be deleted, emptied or marked): a restart reopens it, so never 'cancelled'. Held
       // again, as signOut() does, so the page shows it and a sign-out retries
-      if (!gone) {
+      else if (!gone) {
         if (held === null) held = s
         throw new AccountError(TEXT.signOutFailed, 'sign-out-failed')
       }

@@ -612,6 +612,48 @@ describe('createAccount (fake SANO account server)', () => {
     expect(value(await restart(t).status()).signedIn).toBe(false)
   })
 
+  it.each(['pending', 'held'] as const)("#95 round 3: the file stuck on an earlier session (%s), Huỷ Google while the .tmp is written: cancelled, the cancelled session never held, later sign-outs still fail until that file is gone", async (was) => {
+    const t = setup()
+    value(await t.account.login({ identifier: 'minh', password: t.server.password }))
+    const tokA = (await t.account.bearer())!
+    const unlock = lock(t.m, ['rm', 'writeFile'])
+    if (was === 'pending') {
+      expect(await t.account.signOut()).toEqual(failed) // the server revoked A, the file still holds it
+      expect(value(await t.account.status()).signedIn).toBe(false) // /me 401: cleanup pending
+    } // 'held': A still signed in, the Google sign-in replaces it
+    const { writeFile } = t.m.fs
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let reached!: () => void
+    const at = new Promise<void>((r) => (reached = r))
+    t.m.fs.writeFile = async (p: string, b: Buffer) => {
+      t.m.fs.writeFile = writeFile // only the new session's .tmp waits
+      reached()
+      await gate
+      return writeFile(p, b)
+    }
+    const g = t.account.google()
+    await at
+    value(await t.account.cancelGoogle())
+    t.server.opts.offline = true
+    release()
+    // the new session never reached the file (A's stuck file is no reason to keep it): cancelled, not held
+    expect(await g).toEqual({ ok: false, error: R.TEXT.googleCancelled, code: 'cancelled' })
+    expect(value(await t.account.status()).signedIn).toBe(false)
+    expect(await t.account.bearer()).toBeNull()
+    expect(JSON.parse(t.m.safeStorage.decryptString(t.m.files.get(FILE)!)).token).toBe(tokA)
+    expect(t.m.files.has(`${FILE}.tmp`)).toBe(false)
+    // A's cleanup is still pending: a sign-out fails until its file is gone
+    expect(await t.account.signOut()).toEqual(failed)
+    expect(await t.account.bearer()).toBe(tokA)
+    unlock()
+    t.server.opts.offline = false
+    expect(value(await t.account.signOut()).signedIn).toBe(false)
+    expect(t.m.files.has(FILE)).toBe(false)
+    t.server.opts.offline = true
+    expect(value(await restart(t).status()).signedIn).toBe(false)
+  })
+
   it('#95: Huỷ Google while the new session is renamed into place, then nothing can be cleaned up and logout is offline: sign-out-failed, not cancelled; a later sign-out retries', async () => {
     const t = setup()
     const { rename } = t.m.fs
