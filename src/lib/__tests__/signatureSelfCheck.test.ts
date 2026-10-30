@@ -373,7 +373,8 @@ describe.runIf(process.platform === 'win32' && nodeFs.existsSync(nodePath.join(E
   it('reads Microsoft’s and the unsigned DLLs, and a missing file, in one run', async () => {
     const files = ['d3dcompiler_47.dll', 'ffmpeg.dll', 'does-not-exist.dll'].map((n) => nodePath.join(ELECTRON_DIST, n))
     const lines: string[] = []
-    const out = await signature.checkFilesSignature(files, { pins: [PIN], log: (l) => lines.push(l) })
+    // This test checks what the script reads, not how fast: a busy CI runner's cold PowerShell has run past the app's 60 s.
+    const out = await signature.checkFilesSignature(files, { pins: [PIN], log: (l) => lines.push(l), timeoutMs: 170_000 })
     expect(out, lines.join('\n')).toHaveLength(3)
     // d3dcompiler_47.dll: Valid, Microsoft Corporation (not ours) → the self-check accepts it. Windows Server (the CI
     // runner) finds the DLL in its own catalog first (Catalog, Microsoft Windows): the self-check says 'unknown', never 'bad'.
@@ -391,5 +392,5 @@ describe.runIf(process.platform === 'win32' && nodeFs.existsSync(nodePath.join(E
     // missing file → the script's catch → unknown
     expect(out[2].parsed).toMatchObject({ error: 'System.IO.FileNotFoundException' })
     expect(out[2].verdict).toMatchObject({ ok: false, status: 'unknown', reason: 'verify-failed' })
-  }, 90_000)
+  }, 180_000)
 })
