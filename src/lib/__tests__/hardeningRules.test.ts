@@ -517,7 +517,15 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     // the forward and the docs windows exist only with app://sano/ and SANO_API, and so does the page's flag
     expect(mainSource.match(/\bsanoApi = /g)).toHaveLength(2) // `let sanoApi = null` + the one below
     expect(mainSource.match(/\bsanoDocs = /g)).toHaveLength(2) // `let sanoDocs = null` + registerDocs
-    expect(mainSource).toMatch(/\n {2}if \(SANO_IN_APP && SANO_API\) \{\n {4}sanoApi = apiRules\.createApiForward\(\{ apiUrl: SANO_API, fetch: \(url, init\) => fetch\(url, init\), account, log: \(line\) => console\.error\(line\) \}\)\n {4}registerDocs\(\)\n {2}\}/)
+    expect(mainSource).toMatch(/\n {2}if \(SANO_IN_APP && SANO_API\) \{\n {4}sanoApi = apiRules\.createApiForward\(\{ apiUrl: SANO_API, fetch: \(url, init\) => fetch\(url, init\), account, log \}\)\n {4}registerDocs\(\)\n {2}\}/)
+    // the account and /api lines also go to <profile>\logs\sano-account.log: a packaged Windows app has no console
+    const register = mainSource.slice(at('function registerAccount() {'), at('accountRules.registerAccountIpc('))
+    expect(register).toContain("const logFile = path.join(profile.dir, 'logs', 'sano-account.log')")
+    expect(register).toMatch(/const log = \(line\) => \{\s+console\.error\(line\)\s+try \{\s+fs\.mkdirSync\(path\.dirname\(logFile\), \{ recursive: true \}\)\s+fs\.appendFileSync\(logFile, `\$\{new Date\(\)\.toISOString\(\)\} \$\{line\}\\n`\)/)
+    expect(register).toMatch(/google: newGoogleSignIn\(\),\s+log,\n/)
+    // Node's fetch trusts the Windows store too, before any account call (the union keeps Node's own roots)
+    expect(mainSource).toContain("tls.setDefaultCACertificates([...new Set([...tls.getCACertificates('default'), ...tls.getCACertificates('system')])])")
+    expect(at('tls.setDefaultCACertificates(')).toBeLessThan(at('function registerAccount() {'))
     expect(mainSource.split('--bdp-sano-api-forward').length - 1).toBe(1)
     expect(mainSource).toContain("...(SANO_IN_APP && SANO_API ? ['--bdp-sano-api-forward'] : [])")
     // a real main-window close only asks (the page's beforeunload can still cancel it); closed destroys the windows
@@ -1454,6 +1462,9 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(create).toContain('hardening.mainWindowCloseHides({ platform: process.platform, quitting, quittingForUpdate: updating })')
     expect(create).toContain('const updating = macQuitForUpdate || !!(updater && updater.isQuittingForUpdate())')
     expect(create).toMatch(/return\s+event\.preventDefault\(\)\s+hideMainWindow\(win, work\)/)
+    // a page's beforeunload veto: an update quit ignores it, anything else asks (Electron alone ignores X silently)
+    const unload = create.slice(create.indexOf("webContents.on('will-prevent-unload', (event) => {"))
+    expect(unload).toMatch(/^webContents\.on\('will-prevent-unload', \(event\) => \{\s+if \(updater && updater\.isQuittingForUpdate\(\)\) return event\.preventDefault\(\)\s+const choice = dialog\.showMessageBoxSync\(win, \{ type: 'question', buttons: \['Ở lại', 'Vẫn rời đi'\], defaultId: 0, cancelId: 0, message: '[^'\n]+' \}\)\s+if \(choice === 1\) event\.preventDefault\(\)\s+else if \(process\.platform === 'darwin' && !macQuitForUpdate\) quitting = false/)
     // one hidden-work controller per main window, macOS only (Windows: null, nothing listens)
     expect(create).toContain("const work = process.platform === 'darwin' ? hiddenWorkOf(win) : null")
     expect(create).toContain("win.on('show', () => work.show())")

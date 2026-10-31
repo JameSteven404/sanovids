@@ -9,6 +9,7 @@ const http = require('node:http')
 const fs = require('node:fs')
 const path = require('node:path')
 const { Readable } = require('node:stream')
+const tls = require('node:tls')
 const { setupUpdater } = require('./updater.cjs')
 const { setupDevAccess, readTestDevLock } = require('./devaccess.cjs')
 
@@ -19,6 +20,14 @@ const DIST = path.join(__dirname, '..', 'dist')
 /** Sano Agent (D240): SANO's web app built by scripts/build-sano.mjs, served at app://sano/ (packed by Sano Agent only). */
 const SANO_DIST = path.join(__dirname, '..', 'sano-dist')
 const TITLE = 'SanoVids'
+
+// Node's fetch (account server, /api forward) trusts only its bundled roots. Add the Windows store, so a root that
+// Chromium already accepts (antivirus HTTPS scanning, a company CA) does not turn sign-in into "server unreachable".
+try {
+  tls.setDefaultCACertificates([...new Set([...tls.getCACertificates('default'), ...tls.getCACertificates('system')])])
+} catch (e) {
+  console.warn('[SanoVids] system CA certificates not added:', (e && e.message) || e)
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -549,8 +558,12 @@ function createWindow() {
   const { webContents } = win
 
   // "Khởi động lại để cập nhật": the page saved everything first; a beforeunload veto must not cancel quitAndInstall.
+  // Any other veto (a chat draft, a dialog with unsaved fields) asks: unanswered, Electron just ignores X with no message.
   webContents.on('will-prevent-unload', (event) => {
-    if (updater && updater.isQuittingForUpdate()) event.preventDefault()
+    if (updater && updater.isQuittingForUpdate()) return event.preventDefault()
+    const choice = dialog.showMessageBoxSync(win, { type: 'question', buttons: ['Ở lại', 'Vẫn rời đi'], defaultId: 0, cancelId: 0, message: 'Trang còn nội dung chưa gửi hoặc chưa lưu. Vẫn đóng hoặc tải lại?' })
+    if (choice === 1) event.preventDefault()
+    else if (process.platform === 'darwin' && !macQuitForUpdate) quitting = false // "Ở lại" cancels a ⌘Q too
   })
 
   // No application menu → re-add the developer shortcuts, only where DevTools are allowed (from source / test profile).
@@ -899,6 +912,18 @@ let sanoApi = null // the /api/assistant/* forward (SANO_IN_APP with SANO_API on
 let sanoDocs = null // the "Tài liệu" windows (same condition)
 let googleKeepDocs = null // their Google sign-in, kept encrypted (registerDocs)
 function registerAccount() {
+  // A packaged Windows app has no console: these lines (names and codes, never a value) also go to a file for bug reports.
+  // shortcut: no rotation (error lines only); add one if the file ever grows.
+  const logFile = path.join(profile.dir, 'logs', 'sano-account.log')
+  const log = (line) => {
+    console.error(line)
+    try {
+      fs.mkdirSync(path.dirname(logFile), { recursive: true })
+      fs.appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`)
+    } catch {
+      // the console line above is all there is
+    }
+  }
   const account = (sanoAccount = accountRules.createAccount({
     apiUrl: SANO_API,
     fetch: (url, init) => fetch(url, init),
@@ -913,7 +938,7 @@ function registerAccount() {
     now: Date.now,
     random: (n) => crypto.randomBytes(n),
     google: newGoogleSignIn(),
-    log: (line) => console.error(line),
+    log,
     // the SANO session ended or changed hands: the previous user's chat Google token and docs editor sign-in must not
     // serve the next one. The docs' kept Google sign-in (bound to the user) stays, unless the account was turned off (403);
     // canvasapp's is never touched
@@ -924,7 +949,7 @@ function registerAccount() {
   }))
   accountRules.registerAccountIpc(ipcMain, account, fromSano)
   if (SANO_IN_APP && SANO_API) {
-    sanoApi = apiRules.createApiForward({ apiUrl: SANO_API, fetch: (url, init) => fetch(url, init), account, log: (line) => console.error(line) })
+    sanoApi = apiRules.createApiForward({ apiUrl: SANO_API, fetch: (url, init) => fetch(url, init), account, log })
     registerDocs()
   }
 }
