@@ -142,7 +142,12 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
   và tắt đăng nhập; lúc build thì build dừng. `release:check:sano-agent` so `sanoAgent` của bản build với cấu hình, nên
   chạy nó với cùng `SANO_API_URL` đã dùng khi build. Bản phát hành chỉ nhận `apiUrl` `https://` (release check từ
   chối bản nướng loopback): `http://127.0.0.1…` chỉ để thử trên máy, nên xoá `SANO_API_URL` (`set SANO_API_URL=`)
-  trước khi `dist:sano-agent` trong shell đã dùng để chạy từ mã nguồn.
+  trước khi `dist:sano-agent` trong shell đã dùng để chạy từ mã nguồn. Từ 1.1, release check cũng từ chối bản Sano
+  Agent **không có** `apiUrl`: các máy đang dùng beta tự cập nhật lên bản phát hành, và bản không có máy chủ sẽ tắt
+  đăng nhập của họ (SANO LO-TRINH M1.5). Build, kiểm và đăng trong cùng một shell có
+  `SANO_API_URL=https://sa.sanogroup.tv`: PowerShell `$env:SANO_API_URL='https://sa.sanogroup.tv'`, cmd
+  `set SANO_API_URL=https://sa.sanogroup.tv` (`set` của cmd không có tác dụng trong PowerShell). Dòng ✓ của release check
+  in máy chủ đã nướng.
 - **Đường đi:** trang SANO có CSP `connect-src 'self'`, không gọi được máy chủ. Mọi lời gọi đi trang → preload
   (`window.sanoDesktop.account`) → main → máy chủ, bằng `fetch` của Node (không gửi `Origin`, không cookie). Main kiểm
   khung gửi ở **mọi** lời gọi (`fromSano`: khung chính của cửa sổ chính, đúng origin SANO); nơi khác nhận
@@ -395,7 +400,8 @@ Chủ dự án làm theo đúng thứ tự (từ checkout `main` sạch, trên m
    tăng số đó và thêm mục mới vào `sano-agent/CHANGELOG.md`. Bản 1.0.0: **Sano Agent đăng trước, SanoVids 1.0.0**
    (bản cuối, D236) **đăng sau cùng**, cả hai từ chính commit này. Nút "Tải Sano Agent" của bản cuối SanoVids mở trang
    tải về của Sano Agent, nên trang đó phải có bản cài trước.
-4. **Build cả hai**, lần lượt: `npm ci`, `npm test`, `npm run dist:sano-agent` (ra `release\sano-agent\`), rồi
+4. **Build cả hai**, lần lượt: `npm ci`, `npm test`, `npm run dist:sano-agent` (ra `release\sano-agent\`; từ 1.1 trong
+   shell có `SANO_API_URL=https://sa.sanogroup.tv`, giữ shell đó cho bước 8 và 9, mục 3a), rồi
    `npm run dist:win` (ra `release\`). Có mạng (dấu thời gian của chữ ký, `npm ci` của SANO). Chưa cần tag: build chỉ cần
    đúng commit. `dist:sano-agent` cần checkout SANO có commit ghim trong `sano-agent/sano.json` (`SANO_REPO`, mục 5).
 5. **Thử bản cài Sano Agent** theo mục 7. Có lỗi: sửa trên nhánh, merge, quay lại bước 4. Lúc này chưa có tag, chưa đăng

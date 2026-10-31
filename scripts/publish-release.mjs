@@ -355,7 +355,7 @@ if (asarPath && exists(asarPath)) {
       const inner = readAsarJson('package.json')
       const bad = checkPackagedIdentity(inner, pkg)
       if (bad.length) fail('app.asar', `package.json trong app không phải bản phát hành ${V}: ${bad.join('; ')}.`)
-      else ok('app.asar', `package.json trong app: ${inner.name} / ${inner.productName} / ${V}, tác giả ${AUTHOR}, ${inner.sanovids.signers.length} vân tay chứng chỉ`)
+      else ok('app.asar', `package.json trong app: ${inner.name} / ${inner.productName} / ${V}, tác giả ${AUTHOR}, ${inner.sanovids.signers.length} vân tay chứng chỉ${inner.sanoAgent ? `, máy chủ tài khoản ${inner.sanoAgent.apiUrl}` : ''}`)
     }
     // D240: Sano Agent packs SANO's web app, built from exactly the pinned SANO commit.
     if (PRODUCT.sanoPin) {

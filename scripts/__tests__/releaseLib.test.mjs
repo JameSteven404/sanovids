@@ -1324,22 +1324,30 @@ describe('Sano Agent (--sano-agent: SANO_AGENT, sano-agent/electron-builder.cjs)
   })
 
   it('checkPackagedIdentity: only Sano Agent carries a SANO address, exactly its own', () => {
-    const eff = lib.effectivePackage(repoPkg, cfg)
+    const eff = { ...lib.effectivePackage(repoPkg, cfg), sanoAgent: { url: A.url, apiUrl: 'https://sa.sanogroup.tv' } }
     const inner = { ...eff, build: undefined }
     expect(checkPackagedIdentity(inner, eff)).toEqual([])
     expect(checkPackagedIdentity({ ...inner, sanoAgent: { url: 'http://evil.example.vn/' } }, eff)[0]).toMatch(/^sanoAgent /)
     expect(checkPackagedIdentity({ ...repoPkg, sanoAgent: { url: A.url } }, repoPkg)[0]).toMatch(/^sanoAgent /)
   })
 
-  it('checkPackagedIdentity: a baked account server must be https (a loopback SANO_API_URL left in the shell is a test build)', () => {
+  it('checkPackagedIdentity: a baked account server must be there and https (a loopback SANO_API_URL left in the shell is a test build)', () => {
     const eff = lib.effectivePackage(repoPkg, cfg)
     const at = (apiUrl) => {
-      const sanoAgent = { ...eff.sanoAgent, apiUrl }
+      const sanoAgent = { url: A.url, ...(apiUrl === undefined ? {} : { apiUrl }) }
       return checkPackagedIdentity({ ...eff, build: undefined, sanoAgent }, { ...eff, sanoAgent })
     }
     expect(at('http://127.0.0.1:8796')).toEqual(['sanoAgent.apiUrl "http://127.0.0.1:8796" (bản phát hành chỉ nhận https://; bản build thử nghiệm?)'])
     expect(at('https://sano.example.vn')).toEqual([])
-    expect(checkPackagedIdentity({ ...eff, build: undefined }, eff)).toEqual([])
+    // built and checked without SANO_API_URL (like 1.0): the testers' betas would update to a build with no sign-in
+    expect(at(undefined)).toEqual(['không có sanoAgent.apiUrl (bản phát hành Sano Agent phải nướng máy chủ tài khoản: build và kiểm với SANO_API_URL=https://sa.sanogroup.tv)'])
+    // built with the server but checked in a shell without it: re-check in the right shell, do not rebuild
+    const built = { ...eff, build: undefined, sanoAgent: { url: A.url, apiUrl: 'https://sa.sanogroup.tv' } }
+    expect(checkPackagedIdentity(built, { ...eff, sanoAgent: { url: A.url } })).toEqual([
+      'sanoAgent {"url":"app://sano/","apiUrl":"https://sa.sanogroup.tv"} (cần {"url":"app://sano/"}: chạy lại kiểm trong shell có SANO_API_URL=https://sa.sanogroup.tv)',
+    ])
+    // SanoVids never carries one and needs none
+    expect(checkPackagedIdentity({ ...repoPkg, build: undefined }, repoPkg)).toEqual([])
   })
 
   it('checkSameElectron: the Electron of the newest public SanoVids, or ✗', () => {

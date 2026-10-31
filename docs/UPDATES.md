@@ -149,7 +149,8 @@ Ghi chú GitHub được lưu ở `release/_build/publish/notes-private.md` và 
 ### Sano Agent
 
 `npm run dist:sano-agent` → `npm run release:check:sano-agent` → `npm run release:publish:sano-agent`
-([SANO-DESKTOP.md](SANO-DESKTOP.md) mục 6). Nguồn cập nhật là repo công khai riêng `JameSteven404/sano-agent-releases`
+([SANO-DESKTOP.md](SANO-DESKTOP.md) mục 6), từ 1.1 cả ba trong cùng shell có `SANO_API_URL=https://sa.sanogroup.tv`
+(release check từ chối bản Sano Agent không nướng máy chủ, SANO-DESKTOP.md mục 3a). Nguồn cập nhật là repo công khai riêng `JameSteven404/sano-agent-releases`
 (tag `vX.Y.Z` ở đó; repo nguồn chỉ có tag `sano-agent-vX.Y.Z`, không có release riêng tư, không có bản Mac), cache
 `%LOCALAPPDATA%\sano-agent-updater`. Sano Agent dùng chung thư mục dữ liệu với SanoVids nhưng file riêng:
 `updater-sano-agent.json`, `logs\updater-sano-agent.log`. Sano Agent build từ commit của bản SanoVids công khai mới nhất,
