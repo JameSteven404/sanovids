@@ -7,7 +7,8 @@ const { build, version } = require('../package.json')
 const { accountApiUrl } = require('../electron/sano-account-rules.cjs')
 
 // D253: SANO's account server for the in-app sign-in, baked from SANO_API_URL at build time (a packaged app never reads
-// the environment). Unset → no apiUrl: the app ships unconfigured, exactly like 1.0. Set but refused → no build.
+// the environment). Unset → no apiUrl: the build is unconfigured, exactly like 1.0, and from 1.1 the release check
+// refuses it (releaseLib checkPackagedIdentity). Set but refused → no build.
 const API_URL = process.env.SANO_API_URL ? accountApiUrl(process.env.SANO_API_URL) : null
 if (process.env.SANO_API_URL && !API_URL) throw new Error('SANO_API_URL must be https://host[:port] or http://127.0.0.1|localhost|[::1]:port')
 

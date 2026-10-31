@@ -1085,11 +1085,15 @@ export function checkPackagedIdentity(inner, repoPkg) {
   if ('sanovidsTestDevLock' in inner) bad.push('có sanovidsTestDevLock (bản build thử nghiệm!)')
   // SANO desktop: only Sano Agent bakes a SANO address (effectivePackage), exactly its own; SanoVids never one.
   if (JSON.stringify(inner.sanoAgent ?? null) !== JSON.stringify(repo.sanoAgent ?? null)) {
-    bad.push(`sanoAgent ${JSON.stringify(inner.sanoAgent ?? null)} (cần ${JSON.stringify(repo.sanoAgent ?? null)})`)
+    // Built with SANO_API_URL, checked in a shell without it: say so, or the operator rebuilds without the server.
+    const baked = repo.sanoAgent && !repo.sanoAgent.apiUrl && inner.sanoAgent && typeof inner.sanoAgent.apiUrl === 'string' ? inner.sanoAgent.apiUrl : null
+    bad.push(`sanoAgent ${JSON.stringify(inner.sanoAgent ?? null)} (cần ${JSON.stringify(repo.sanoAgent ?? null)}${baked ? `: chạy lại kiểm trong shell có SANO_API_URL=${baked}` : ''})`)
   }
   // A public Sano Agent talks only to a real server: a loopback apiUrl (a source-run SANO_API_URL left in the build shell) would lock every user on the sign-in screen.
   const apiUrl = inner.sanoAgent && typeof inner.sanoAgent === 'object' ? inner.sanoAgent.apiUrl : undefined
   if (apiUrl !== undefined && !(typeof apiUrl === 'string' && apiUrl.startsWith('https://'))) bad.push(`sanoAgent.apiUrl ${JSON.stringify(apiUrl)} (bản phát hành chỉ nhận https://; bản build thử nghiệm?)`)
+  // From 1.1 (SANO LO-TRINH M1.5) every installed beta updates to the public Sano Agent: one without a server signs them all out for good.
+  if (repo.sanoAgent && apiUrl === undefined) bad.push('không có sanoAgent.apiUrl (bản phát hành Sano Agent phải nướng máy chủ tài khoản: build và kiểm với SANO_API_URL=https://sa.sanogroup.tv)')
   return bad
 }
 
