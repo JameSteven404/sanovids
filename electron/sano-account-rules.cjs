@@ -171,8 +171,9 @@ function createAccount(fx) {
     let res
     try {
       res = await fx.fetch(fx.apiUrl + path, { method, headers, body: body ? JSON.stringify(body) : undefined, redirect: 'manual', signal: AbortSignal.timeout(TIMEOUT_MS) })
-    } catch {
-      fx.log(`[SanoVids] account server unreachable: ${method} ${path}`)
+    } catch (e) {
+      // the cause's code only (UNABLE_TO_VERIFY_LEAF_SIGNATURE, ENOTFOUND…): a certificate or proxy problem vs a server that is down
+      fx.log(`[SanoVids] account server unreachable: ${method} ${path} (${(e && e.cause && e.cause.code) || (e && e.name)})`)
       throw new AccountError(TEXT.offline, 'offline')
     }
     // 'manual' gives an opaque redirect (status 0) or the 3xx itself: never followed

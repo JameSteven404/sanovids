@@ -53,7 +53,7 @@ function fakeServer(password = pw()) {
   const codes = new Map<string, { challenge: string; redirect: string }>()
   const sessions = new Set<string>()
   const secrets: string[] = [password]
-  const opts: { offline?: boolean; meStatus?: number; meExpiresAt?: string; state?: string; redirect?: string; hang?: string; gate?: Promise<unknown>; raw?: Response } = {}
+  const opts: { offline?: boolean; offlineCode?: string; meStatus?: number; meExpiresAt?: string; state?: string; redirect?: string; hang?: string; gate?: Promise<unknown>; raw?: Response } = {}
   const issue = (body: Record<string, unknown>) => {
     const code = `code-${randomUUID()}`
     secrets.push(code)
@@ -69,7 +69,7 @@ function fakeServer(password = pw()) {
     const body = typeof init.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : null
     calls.push({ method: String(init.method), path: u.pathname, auth: headers.Authorization, body, init })
     if (opts.hang === u.pathname) await (opts.gate ?? new Promise(() => undefined)) // a gate answers it later, as the server would
-    if (opts.offline) throw new TypeError('fetch failed')
+    if (opts.offline) throw new TypeError('fetch failed', opts.offlineCode ? { cause: Object.assign(new Error(`cert of ${API}`), { code: opts.offlineCode }) } : undefined)
     if (opts.raw) return opts.raw
     expect(u.origin).toBe(API)
     if (body) expect(headers['Content-Type']).toBe('application/json')
@@ -1173,6 +1173,18 @@ describe('createAccount (fake SANO account server)', () => {
     await account.signOut()
     expect(logs.length).toBeGreaterThan(0)
     for (const line of logs) for (const s of server.secrets) expect(line).not.toContain(s)
+  })
+
+  it('server unreachable: the log names the cause code (a certificate vs a server that is down), never its message', async () => {
+    const { account, server } = setup()
+    server.opts.offline = true
+    server.opts.offlineCode = 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'
+    await account.login({ identifier: 'minh', password: server.password })
+    expect(logs).toContain('[SanoVids] account server unreachable: POST /api/auth/login (UNABLE_TO_VERIFY_LEAF_SIGNATURE)')
+    server.opts.offlineCode = undefined
+    await account.login({ identifier: 'minh', password: server.password })
+    expect(logs).toContain('[SanoVids] account server unreachable: POST /api/auth/login (TypeError)')
+    expect(logs.join('\n')).not.toContain('cert of')
   })
 })
 
