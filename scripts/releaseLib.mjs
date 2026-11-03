@@ -1175,14 +1175,27 @@ export function checkSameElectron({ ours, theirs, sanovidsVersion }) {
   return { level: 'ok', text: `Cùng Electron ${ours} với SanoVids ${sanovidsVersion} (bản công khai mới nhất)` }
 }
 
+/** D236: SanoVids stopped after this final release; from then on Sano Agent only keeps its Electron (checkSameElectron). */
+export const SANOVIDS_FINAL_VERSION = '1.0.0'
+
 /**
  * Sano Agent is built from the commit of the newest public SanoVids (docs/SANO-DESKTOP.md §5): the same renderer code
  * and Electron open the shared data folder. head = HEAD; theirs = the commit of tag v<sanovidsVersion> (null when
  * unreadable). next = { version, local, remote }: SanoVids' tag v<Sano Agent's version> here and on GitHub. At HEAD
  * in both and not older than the newest public SanoVids, it passes: Sano Agent goes first and that SanoVids follows
- * (D236: SanoVids' final notice links to Sano Agent's download page). → { level: 'ok' | 'fail', text }.
+ * (D236: SanoVids' final notice links to Sano Agent's download page). Once the newest public SanoVids is
+ * SANOVIDS_FINAL_VERSION the rule ends (ok); newer than it is ✗ (SanoVids should have stopped).
+ * → { level: 'ok' | 'fail', text }.
  */
 export function checkSameCommit({ head, theirs, sanovidsVersion, next = null }) {
+  const final = compareVersions(sanovidsVersion, SANOVIDS_FINAL_VERSION)
+  if (final === 0) return { level: 'ok', text: `SanoVids đã ngừng ở bản cuối ${SANOVIDS_FINAL_VERSION} (D236): Sano Agent không cần build từ cùng commit với SanoVids (Electron vẫn kiểm riêng)` }
+  if (final > 0) {
+    return {
+      level: 'fail',
+      text: `SanoVids ${sanovidsVersion} (bản công khai mới nhất) mới hơn bản cuối ${SANOVIDS_FINAL_VERSION}: SanoVids lẽ ra đã ngừng phát hành (D236). Nếu Minh đã duyệt một bản vá SanoVids thì nâng SANOVIDS_FINAL_VERSION (scripts/releaseLib.mjs) lên số đó; nếu đăng nhầm thì đăng một bản vá thay, đừng đánh dấu pre-release (SANO-DESKTOP.md mục 8).`,
+    }
+  }
   if (head && next && next.local === head && next.remote === head && compareVersions(next.version, sanovidsVersion) >= 0) {
     return { level: 'ok', text: `Tag v${next.version} của SanoVids trỏ vào HEAD ${head.slice(0, 7)} (cả trên GitHub): đăng Sano Agent trước, SanoVids ${next.version} sau (SANO-DESKTOP.md mục 6 bước 10)` }
   }
