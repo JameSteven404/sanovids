@@ -17,7 +17,7 @@
 import { deleteTakes, takeLabel } from './actions'
 import { sceneCode } from './core/compile'
 import { importToastText, importWords, dropToastText, type ImportWords } from './components/runs/importJobsModel'
-import { activeGateway, activeProviderId, CANVASAPP_OFF_REASON, canvasappOff, DEV_LOCKED_REASON, devAllowed, gatewayFor, gatewayProvider, providerOf, type Gateway } from './providers'
+import { activeGateway, activeProviderId, CANVASAPP_OFF_REASON, CANVASAPP_RETIRED_REASON, canvasappOff, canvasappRetired, DEV_LOCKED_REASON, devAllowed, gatewayFor, gatewayProvider, providerOf, type Gateway } from './providers'
 import { canvasNodeId, decodeRemoteId, sceneNodeId } from './providers/canvasapp/mapping'
 import { MAX_IMPORT_BATCH, reconstructSiteJob, type SiteJobScan } from './providers/canvasapp/siteJobs'
 import { useProject } from './store/project'
@@ -37,6 +37,7 @@ export interface ImportScan {
 function importLocked(provider?: 'dev' | 'canvasapp'): string | null {
   const id = provider ?? activeProviderId()
   if (id === 'dev' && !devAllowed()) return DEV_LOCKED_REASON
+  if (id === 'canvasapp' && canvasappRetired()) return CANVASAPP_RETIRED_REASON
   if (id === 'canvasapp' && canvasappOff()) return CANVASAPP_OFF_REASON
   return null
 }
@@ -45,7 +46,9 @@ export function openImportJobs(opts: { back?: DialogState; provider?: 'dev' | 'c
   const { back, provider } = opts
   const locked = importLocked(provider)
   if (locked) {
-    toast(locked, { tone: 'warning', action: { label: 'Mở Cài đặt', run: () => useUI.getState().openDialog({ kind: 'settings', section: 'gateway' }) } })
+    // Retired: there is no gateway section to open (D270).
+    if (locked === CANVASAPP_RETIRED_REASON) toast(locked, { tone: 'warning' })
+    else toast(locked, { tone: 'warning', action: { label: 'Mở Cài đặt', run: () => useUI.getState().openDialog({ kind: 'settings', section: 'gateway' }) } })
     return
   }
   useUI.getState().openDialog({

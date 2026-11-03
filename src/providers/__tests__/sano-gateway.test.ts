@@ -540,7 +540,7 @@ describe('sano-gateway in the registry', () => {
     applyDevAccessState(bareState('locked'))
     expect(activeProviderId()).toBe('sano-gateway')
     expect(providerBlockedReason(activeProviderId())).toBe(SANO_UNAVAILABLE)
-    expect(selectableProviders()).toEqual(['canvasapp', 'sano-gateway'])
+    expect(selectableProviders()).toEqual(['sano-gateway'])
   })
 
   it('outside SANO: never offered, never chosen, refused', () => {
@@ -562,7 +562,7 @@ describe('sano-gateway in the registry', () => {
     applyDevAccessState(bareState('locked'))
     expect(sanoGatewayAvailable()).toBe(true)
     expect(activeProviderId()).toBe('sano-gateway')
-    expect(selectableProviders()).toEqual(['canvasapp', 'sano-gateway'])
+    expect(selectableProviders()).toEqual(['sano-gateway'])
     await vi.waitFor(() => expect(providerBlockedReason('sano-gateway')).toBe(SANO_LOGIN_TEXT)) // not signed in to SANO yet
     expect(getProvider('sano-gateway').id).toBe('sano-gateway')
     // no canvasapp account in SANO: the canvasapp gateway stands in (no bridge on the web)
