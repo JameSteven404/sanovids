@@ -1159,12 +1159,25 @@ export function lockElectronVersion(text) {
 /**
  * Sano Agent opens SanoVids' data folder (D223): it ships the Electron of the newest public SanoVids, or one app's
  * Chromium would open a profile the other one has already migrated. ours / theirs = lockElectronVersion of this
- * checkout / of `git show v<sanovidsVersion>:package-lock.json`. → { level: 'ok' | 'fail', text }.
+ * checkout / of `git show v<sanovidsVersion>:package-lock.json`. Once that SanoVids is SANOVIDS_FINAL_VERSION (D236),
+ * a newer Electron of the same major passes too (security patches): electron/updater-rules.cjs profileElectronGate
+ * refuses only a newer major, so SanoVids 1.0.0 still opens the folder. → { level: 'ok' | 'fail', text }.
  */
 export function checkSameElectron({ ours, theirs, sanovidsVersion }) {
   if (!sanovidsVersion) return { level: 'fail', text: 'Không biết bản SanoVids công khai mới nhất: không so được Electron (hai app dùng chung thư mục dữ liệu).' }
   if (!ours || !theirs) {
     return { level: 'fail', text: `Không đọc được Electron trong package-lock.json (của bản này hoặc của tag v${sanovidsVersion}; chạy git fetch origin --tags).` }
+  }
+  if (ours !== theirs && compareVersions(sanovidsVersion, SANOVIDS_FINAL_VERSION) === 0) {
+    const final = `Electron ${theirs} của SanoVids ${sanovidsVersion} (bản cuối, D236)`
+    if (Number.parseInt(ours, 10) !== Number.parseInt(theirs, 10)) {
+      return {
+        level: 'fail',
+        text: `Electron ${ours} khác major với ${final}: app có Electron major cũ hơn số trong electron-version sẽ không mở dữ liệu chung, và SanoVids không còn bản mới. Đổi Electron major cần Minh quyết định mới.`,
+      }
+    }
+    if (compareVersions(ours, theirs) < 0) return { level: 'fail', text: `Electron ${ours} cũ hơn ${final}: không bao giờ hạ Electron.` }
+    return { level: 'ok', text: `Electron ${ours} cùng major, mới hơn ${final}: bản vá cùng major, SanoVids ${sanovidsVersion} vẫn mở được dữ liệu chung` }
   }
   if (ours !== theirs) {
     return {
@@ -1175,7 +1188,7 @@ export function checkSameElectron({ ours, theirs, sanovidsVersion }) {
   return { level: 'ok', text: `Cùng Electron ${ours} với SanoVids ${sanovidsVersion} (bản công khai mới nhất)` }
 }
 
-/** D236: SanoVids stopped after this final release; from then on Sano Agent only keeps its Electron (checkSameElectron). */
+/** D236: SanoVids stopped after this final release; from then on Sano Agent keeps its Electron major and never goes below it (checkSameElectron). */
 export const SANOVIDS_FINAL_VERSION = '1.0.0'
 
 /**

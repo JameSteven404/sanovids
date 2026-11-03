@@ -1359,6 +1359,16 @@ describe('Sano Agent (--sano-agent: SANO_AGENT, sano-agent/electron-builder.cjs)
     expect(lib.checkSameElectron({ ours: '45.0.0', theirs: '44.5.1', sanovidsVersion: '0.6.0' }).level).toBe('fail')
     expect(lib.checkSameElectron({ ours: '44.5.1', theirs: null, sanovidsVersion: '0.6.0' }).level).toBe('fail')
     expect(lib.checkSameElectron({ ours: '44.5.1', theirs: '44.5.1', sanovidsVersion: null }).level).toBe('fail')
+    // before the final SanoVids: exactly the same Electron, even a same-major patch is ✗
+    expect(lib.checkSameElectron({ ours: '44.10.1', theirs: '44.5.1', sanovidsVersion: '0.6.0' }).level).toBe('fail')
+    // D236: SanoVids stopped at its final 1.0.0: same major and not older passes (security patches)
+    const final = (ours) => lib.checkSameElectron({ ours, theirs: '44.5.1', sanovidsVersion: lib.SANOVIDS_FINAL_VERSION })
+    expect(final('44.5.1').level).toBe('ok')
+    expect(final('44.10.1')).toMatchObject({ level: 'ok', text: expect.stringContaining('cùng major') })
+    expect(final('44.5.0')).toMatchObject({ level: 'fail', text: expect.stringContaining('không bao giờ hạ') })
+    expect(final('45.0.0')).toMatchObject({ level: 'fail', text: expect.stringContaining('cần Minh quyết định mới') })
+    expect(final('43.9.9')).toMatchObject({ level: 'fail', text: expect.stringContaining('cần Minh quyết định mới') })
+    expect(final(null).level).toBe('fail')
   })
 
   it('checkSameCommit: built from the commit of the newest public SanoVids (same renderer code), or ✗', () => {
