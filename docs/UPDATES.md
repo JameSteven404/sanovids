@@ -153,11 +153,9 @@ Ghi chú GitHub được lưu ở `release/_build/publish/notes-private.md` và 
 (release check từ chối bản Sano Agent không nướng máy chủ, SANO-DESKTOP.md mục 3a). Nguồn cập nhật là repo công khai riêng `JameSteven404/sano-agent-releases`
 (tag `vX.Y.Z` ở đó; repo nguồn chỉ có tag `sano-agent-vX.Y.Z`, không có release riêng tư, không có bản Mac), cache
 `%LOCALAPPDATA%\sano-agent-updater`. Sano Agent dùng chung thư mục dữ liệu với SanoVids nhưng file riêng:
-`updater-sano-agent.json`, `logs\updater-sano-agent.log`. Sano Agent build từ commit của bản SanoVids công khai mới nhất,
-hoặc của tag SanoVids cùng phiên bản đã push nhưng chưa đăng (Sano Agent đăng trước, SanoVids sau,
-[SANO-DESKTOP.md](SANO-DESKTOP.md) mục 6 bước 10). Cổng kiểm tra
-báo ✗ khi không tag nào như vậy là HEAD, hoặc Electron khác bản SanoVids công khai mới nhất: đổi Electron hoặc định dạng dữ liệu thì phát hành cả hai
-(bước 8 ở trên).
+`updater-sano-agent.json`, `logs\updater-sano-agent.log`. SanoVids đã ngừng ở bản cuối 1.0.0 (D236), nên Sano Agent
+build từ commit nào cũng được; cổng kiểm tra vẫn báo ✗ khi Electron khác Electron của SanoVids 1.0.0, hoặc khi bản
+SanoVids công khai mới nhất mới hơn 1.0.0 ([SANO-DESKTOP.md](SANO-DESKTOP.md) mục 5 "Cùng Electron").
 
 ### Quy tắc an toàn (đừng phá)
 - **Không bao giờ build bản phát hành thiếu `build.publish`** (hoặc trỏ nơi khác): người cài bản đó sẽ không bao giờ nhận bản sau. `tidy-release` cảnh báo, `release:check` chặn.

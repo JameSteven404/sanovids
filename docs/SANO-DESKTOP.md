@@ -2,7 +2,7 @@
 
 > **Trạng thái:** chạy từ mã nguồn (quyết định D218 của SANO: canvasapp.io.vn là nhà cung cấp video chính, Minh chọn
 > làm bản desktop SANO). Bản cài **Sano Agent** (D220/D223, mục 5–6): cấu hình, icon theo nhận diện đã chọn (D232) và
-> công cụ phát hành đã có, chưa phát hành bản nào.
+> công cụ phát hành đã có; Sano Agent 1.0.0 và SanoVids 1.0.0 (bản cuối) đã đăng ngày 28/10/2026.
 >
 > **D235 (2026-10-27): SanoVids gộp vào Sano Agent.** Từ nay chỉ phát hành **Sano Agent**; SanoVids sống tiếp thành khu
 > **Canvas** bên trong. Mọi phiên bản về **1.0.0**, một nguồn duy nhất là `version` trong `package.json`. SanoVids 1.0.0
@@ -327,11 +327,12 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
   tải). Riêng file của trình cập nhật: `updater-sano-agent.json`, `logs\updater-sano-agent.log`. Gỡ Sano Agent không xoá
   thư mục đó.
 - **Sao lưu** `%APPDATA%\SanoVids` (đóng cả hai app) trước lần mở Sano Agent đầu tiên. **Không mở cùng lúc** hai app.
-- **Cùng commit, cùng Electron:** bản Sano Agent build từ commit của bản SanoVids công khai mới nhất, hoặc từ commit của
-  tag SanoVids cùng số phiên bản đã push nhưng chưa đăng (Sano Agent đăng trước, SanoVids sau, mục 6 bước 10);
-  `release:check:sano-agent` báo ✗ khi không tag nào như vậy trỏ vào HEAD, hoặc Electron trong `package-lock.json` khác
-  Electron của bản SanoVids công khai mới nhất. Đổi Electron hoặc định dạng dữ liệu thì phát hành **cả hai**, theo cả hai chiều: SanoVids lên Electron
-  mới thì cũng phát hành Sano Agent từ commit đó ([UPDATES.md](UPDATES.md) mục 3, bước 8).
+- **Cùng Electron (hết luật cùng commit, D236):** SanoVids đã ngừng ở bản cuối 1.0.0, nên Sano Agent sau 1.0.0 (bản vá
+  1.0.1 hay 1.1.0) build từ commit nào của `main` cũng được. `release:check:sano-agent` vẫn báo ✗ khi Electron trong `package-lock.json` khác
+  Electron của SanoVids 1.0.0, hoặc khi bản SanoVids công khai mới nhất mới hơn 1.0.0 (lẽ ra đã ngừng). Muốn đổi Electron
+  của Sano Agent thì cần Minh quyết định mới, vì không còn bản SanoVids nào để phát hành kèm. Sano Agent đổi định dạng
+  dữ liệu trong `%APPDATA%\SanoVids` thì phải giữ để SanoVids 1.0.0 còn đọc được, hoặc cần Minh quyết định. (Đến bản
+  1.0.0: build từ commit của bản SanoVids công khai mới nhất hoặc của tag SanoVids cùng phiên bản, mục 6 bước 10.)
 - **Bản cũ không mở dữ liệu bản mới đã mở:** hai app tự cập nhật riêng, nên app kia có thể đã lên Electron mới trước. Mỗi
   lần mở, app ghi Electron của nó vào `%APPDATA%\SanoVids\electron-version` (giữ số mới nhất; chạy từ mã nguồn cũng ghi).
   Electron *major* của app cũ hơn số đó thì app không mở, báo cài bản mới nhất ở trang tải về của nó (chưa mở thì không tự
@@ -420,8 +421,8 @@ Chủ dự án làm theo đúng thứ tự (từ checkout `main` sạch, trên m
    không có release). Repo công khai dùng tag `v1.0.0`, như electron-updater cần. Mở
    `https://github.com/JameSteven404/sano-agent-releases/releases/latest`: phải thấy bộ cài 1.0.0.
 10. **Đăng SanoVids 1.0.0 khi Minh và 1–2 người trong team đã dùng Sano Agent ổn định** (ước lượng 1–2 ngày sau bước
-    9, D247; bản này đẩy người dùng SanoVids sang Sano Agent). Nếu trong khoảng chờ đã phát hành bản vá Sano Agent, xem
-    mục 8 bước 4 trước: bản SanoVids cuối có thể là 1.0.1. Nếu `main` đã có commit mới từ bước 6: `git checkout v1.0.0`
+    9, D247; bản này đẩy người dùng SanoVids sang Sano Agent; đã đăng ngày 28/10/2026, là bản cuối). Nếu `main`
+    đã có commit mới từ bước 6: `git checkout v1.0.0`
     (cảnh báo "không phải main" là bình thường) và dùng bộ cài SanoVids đã build ở bước 4 trong `release\`. Rồi `npm run release:publish` ([UPDATES.md](UPDATES.md) mục 3, bước 6–7). Đẩy tay
     `scripts/releases-repo/README.md` mới (báo đã gộp, có liên kết tải Sano Agent) lên `main` của `sanovids-releases`.
 
@@ -457,20 +458,18 @@ cookie, mật khẩu hay khoá.
 
 Khi bản mới hỏng. Không bao giờ xoá release (máy đã cài cần nó để so chữ ký và tải bản vá).
 
-**App (Sano Agent, hoặc bản cuối SanoVids):**
+**App (Sano Agent):** SanoVids 1.0.0 là bản cuối: không đánh dấu nó pre-release (bước kiểm sẽ quay về luật cùng commit
+cũ và chặn mọi bản Sano Agent). Bản vá SanoVids chỉ khi Minh duyệt, và phải nâng `SANOVIDS_FINAL_VERSION` trong
+`scripts/releaseLib.mjs` cùng lúc.
 1. Trên repo công khai, sửa release hỏng → đánh dấu **pre-release**. App bỏ qua pre-release, nên máy chưa tải sẽ không
    nhận bản đó. Máy đã tải về rồi vẫn có thể cài nó khi tắt app; bản vá ở bước 2 thay nó.
 2. Phát hành **1.0.1** từ commit tốt cuối cùng (nhánh mới từ commit đó, tăng `version`, thêm mục CHANGELOG). App chỉ cài
    bản **mới hơn** bản đang chạy, nên không quay về số cũ được: luôn đi tiếp số mới.
 3. **Không bao giờ hạ Electron major.** App ghi Electron của nó vào `%APPDATA%\SanoVids\electron-version`; app có major
    cũ hơn số đó thì không mở. Bản vá phải giữ Electron major của bản hỏng (hoặc mới hơn).
-4. Lưu ý công cụ: `release:check:sano-agent` hiện đòi bản SanoVids công khai mới nhất (hoặc tag SanoVids cùng phiên bản)
-   build từ cùng commit, và cùng Electron. SanoVids đã ngừng sau 1.0.0, nên trước khi phát hành 1.0.1 phải sửa luật này (mục 5 "Cùng commit, cùng
-   Electron").
-   **Trong khoảng chờ của D247** (Sano Agent 1.0.0 đã đăng, SanoVids 1.0.0 chưa đăng): bản công khai mới nhất của
-   SanoVids vẫn là 0.6.x, nên bản vá Sano Agent 1.0.1 chỉ qua `release:check:sano-agent` khi tag SanoVids `v1.0.1` nằm
-   trên HEAD (cả GitHub). Khi đó bản SanoVids cuối nên là 1.0.1 từ commit vá (thêm mục `[1.0.1]` vào `CHANGELOG.md`),
-   không phải 1.0.0 cũ. Minh chọn lúc đó.
+4. Lưu ý công cụ: SanoVids đã ngừng ở bản cuối 1.0.0 (D236), nên `release:check:sano-agent` không còn đòi cùng commit
+   hay tag SanoVids: bản vá build từ commit tốt cuối cùng. Vẫn đòi cùng Electron với SanoVids 1.0.0 (bước 3, mục 5
+   "Cùng Electron").
 
 **Web SANO (D240):** nằm trong bộ cài, nên rút lui đúng như app ở trên: bản vá 1.0.1 ghim commit SANO tốt cuối cùng
 trong `sano-agent/sano.json`. Người dùng không có Docker hay máy chủ SANO nào để quay về. Giữ nguyên địa chỉ `app://sano/`
