@@ -2,15 +2,18 @@
 // (providers/index): the initial access table, strict parsing, the effective provider in every state, the saved choice
 // never rewritten, development mode never the fallback while locked, the canvasapp gateway silent until turned on, the
 // credit store's 'off', Run / Nhập job / Bảng phát triển refused while locked, and the sync with main.
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openDevPanel, requestRun } from '../../actions'
+import { CreditPill } from '../../components/topbar/CreditPill'
 import { openImportJobs, scanForImport } from '../../siteJobActions'
-import { createRealCredits, creditInfoFrom, getCreditInfo } from '../../store/credits'
+import { createRealCredits, creditInfoFrom, getCreditInfo, refreshRealCredits, startRealCreditsSync } from '../../store/credits'
 import { useUI } from '../../store/ui'
 import {
   activeGateway,
   activeProviderId,
-  CANVASAPP_OFF_REASON,
+  CANVASAPP_RETIRED_REASON,
   canvasappEnabled,
   canvasappOff,
   DEV_LOCKED_REASON,
@@ -124,43 +127,53 @@ describe('effective provider', () => {
     expect(activeProviderId()).toBe('canvasapp')
     expect(activeGateway().id).toBe('canvasapp')
     expect(activeGateway().simulated).toBe(false)
-    expect(selectableProviders()).toEqual(['canvasapp'])
+    // canvasapp retired (D270): nothing to choose, Run says why
+    expect(selectableProviders()).toEqual([])
     expect(providerBlockedReason('dev')).toBe(DEV_LOCKED_REASON)
-    expect(providerBlockedReason('canvasapp')).toBe(WEB_UNAVAILABLE)
+    expect(providerBlockedReason('canvasapp')).toBe(CANVASAPP_RETIRED_REASON)
     applyDevAccessState(bareState('build'))
+    expect(providerBlockedReason('canvasapp')).toBe(WEB_UNAVAILABLE)
     expect(useProviderPrefs.getState().active).toBe('dev')
     expect(selectableProviders()).toEqual(['dev', 'canvasapp'])
     expect(providerBlockedReason('dev')).toBeNull()
   })
 
-  it('locked with the desktop bridge: the gateway is OFF until chosen — nothing read, Run explains; unlocking brings the old choice back', async () => {
+  it('locked with the desktop bridge: canvasapp retired — nothing read, Run explains; unlocking brings the old choice back', async () => {
     const request = vi.fn(async () => ({ ok: true, status: 200, contentType: 'application/json', json: {} }))
-    vi.stubGlobal('window', { bdpDesktop: { canvasapp: { request, status: request, login: request, logout: request } } })
+    const status = vi.fn(async () => ({ ok: true, status: 200, contentType: 'application/json', json: {} }))
+    vi.stubGlobal('window', { bdpDesktop: { canvasapp: { request, status, login: request, logout: request } } })
     applyDevAccessState(bareState('locked'))
     expect(activeProviderId()).toBe('canvasapp')
     expect(canvasappEnabled()).toBe(false)
     expect(canvasappOff()).toBe(true)
-    expect(providerBlockedReason('canvasapp')).toBe(CANVASAPP_OFF_REASON)
+    expect(providerBlockedReason('canvasapp')).toBe(CANVASAPP_RETIRED_REASON)
     expect(await refreshProviderLimits('canvasapp', { force: true })).toBe('unavailable')
     expect(getCreditInfo()).toMatchObject({ kind: 'canvasapp', status: 'off', balance: null })
-    // Run: a toast with "Mở Cài đặt", never the cost dialog
+    // Run: the reason alone (Cài đặt has nothing to turn on), never the cost dialog
     requestRun(['s1'])
     expect(useUI.getState().dialog.kind).toBe('none')
     const t = useUI.getState().toasts.at(-1)
-    expect(t?.text).toBe(CANVASAPP_OFF_REASON)
-    expect(t?.action?.label).toBe('Mở Cài đặt')
+    expect(t?.text).toBe(CANVASAPP_RETIRED_REASON)
+    expect(t?.action).toBeUndefined()
     // Nhập job: refused too, and the scan never reaches canvasapp
     openImportJobs()
     expect(useUI.getState().dialog.kind).toBe('none')
-    await expect(scanForImport()).rejects.toThrow(CANVASAPP_OFF_REASON)
+    await expect(scanForImport()).rejects.toThrow(CANVASAPP_RETIRED_REASON)
     expect(request).not.toHaveBeenCalled()
     // Bảng phát triển: nothing at all
     openDevPanel('faults')
     expect(useUI.getState().dialog.kind).toBe('none')
-    // turned on by the user (Cài đặt switch): allowed
+    // a beta user's saved 'canvasapp' (the old Cài đặt switch): still off, nothing reaches canvasapp
     useProviderPrefs.getState().setProvider('canvasapp')
-    expect(canvasappOff()).toBe(false)
-    expect(providerBlockedReason('canvasapp')).toBeNull()
+    expect(canvasappOff()).toBe(true)
+    expect(providerBlockedReason('canvasapp')).toBe(CANVASAPP_RETIRED_REASON)
+    expect(getCreditInfo().status).toBe('off')
+    const stop = startRealCreditsSync()
+    stop()
+    await refreshRealCredits({ force: true })
+    expect(await refreshProviderLimits('canvasapp', { force: true })).toBe('unavailable')
+    expect(status).not.toHaveBeenCalled()
+    expect(request).not.toHaveBeenCalled()
     // unlock: the saved choice (canvasapp) stays the provider; choose dev → dev
     applyDevAccessState(bareState('unlocked'))
     expect(activeProviderId()).toBe('canvasapp')
@@ -175,7 +188,7 @@ describe('effective provider', () => {
 
   it('a DEV take whose submit is uncertain: never re-sent while locked (store + "Chạy lại" toast, no question asked)', async () => {
     const { useRuns, DEV_UNKNOWN_SUBMIT_ERROR } = await import('../../store/runs')
-    const { rerunTake, DEV_LOCKED_RETRY } = await import('../../actions')
+    const { rerunTake } = await import('../../actions')
     const take = {
       id: 'tk-dev-1',
       sceneId: 's1',
@@ -201,11 +214,59 @@ describe('effective provider', () => {
       rerunTake('tk-dev-1')
       expect(confirm).not.toHaveBeenCalled()
       const t = useUI.getState().toasts.at(-1)
-      expect(t?.text).toBe(DEV_LOCKED_RETRY)
-      expect(t?.action?.label).toBe('Chạy lại')
+      // canvasapp retired: no "Chạy lại" toward a new canvasapp take
+      expect(t?.text).toBe(DEV_LOCKED_REASON)
+      expect(t?.action).toBeUndefined()
     } finally {
       useRuns.setState({ takes: before })
     }
+  })
+
+  it('canvasapp retired while locked: the provider stays canvasapp, blocked; an uncertain canvasapp take is refused unasked', async () => {
+    const { useRuns, UNKNOWN_SUBMIT_ERROR } = await import('../../store/runs')
+    const { rerunTake } = await import('../../actions')
+    expect(effectiveProvider({ access: 'locked', saved: 'canvasapp', bridge: true })).toBe('canvasapp')
+    const take = {
+      id: 'tk-ca-1',
+      sceneId: 's1',
+      provider: 'canvasapp',
+      status: 'failed',
+      error: UNKNOWN_SUBMIT_ERROR,
+      submitUnknown: true,
+      remoteId: null,
+      cost: 20,
+      progress: 0,
+      createdAt: 1,
+      startedAt: null,
+      finishedAt: null,
+    } as unknown as ReturnType<typeof useRuns.getState>['takes'][number]
+    const before = useRuns.getState().takes
+    useRuns.setState({ takes: [take] })
+    try {
+      const confirm = vi.fn(() => true)
+      vi.stubGlobal('window', { confirm, bdpDesktop: { canvasapp: { request: vi.fn(), status: vi.fn(), login: vi.fn(), logout: vi.fn() } } })
+      applyDevAccessState(bareState('locked'))
+      expect(providerBlockedReason('canvasapp')).toBe(CANVASAPP_RETIRED_REASON)
+      rerunTake('tk-ca-1')
+      expect(confirm).not.toHaveBeenCalled()
+      expect(useUI.getState().toasts.at(-1)?.text).toBe(CANVASAPP_RETIRED_REASON)
+      expect(useRuns.getState().takes[0]).toMatchObject({ status: 'failed', submitUnknown: true })
+    } finally {
+      useRuns.setState({ takes: before })
+    }
+  })
+
+  it('credit pill: none for canvasapp while locked (whatever was saved), canvasapp shown while open', () => {
+    const pill = () => renderToStaticMarkup(createElement(CreditPill))
+    vi.stubGlobal('window', { bdpDesktop: { canvasapp: { request: vi.fn(), status: vi.fn(), login: vi.fn(), logout: vi.fn() } } })
+    applyDevAccessState(bareState('locked'))
+    for (const saved of ['dev', 'canvasapp'] as const) {
+      useProviderPrefs.getState().setProvider(saved)
+      expect(pill()).toBe('')
+    }
+    applyDevAccessState(bareState('build'))
+    useProviderPrefs.getState().setProvider('canvasapp')
+    expect(pill()).toContain('canvasapp')
   })
 
   it('open development mode keeps today’s behaviour (Bảng phát triển opens)', () => {

@@ -57,8 +57,9 @@ import type { Asset, ModelId, Scene, Size, Take, XY } from '../core/types'
 import { chargedDemo, DEMO_CREDITS_DEFAULT, formatCreditNumber } from '../lib/credits'
 import { useDownloadPrefs } from '../lib/downloads'
 import { putBlob } from '../lib/imageStore'
-import { activeProviderId, getProvider, providerBlockedReason, providerLimits, registerProvider, sanoGatewayProvider, useProviderLimits } from '../providers'
+import { activeProviderId, CANVASAPP_RETIRED_REASON, canvasappRetired, getProvider, providerBlockedReason, providerLimits, registerProvider, sanoGatewayProvider, useProviderLimits } from '../providers'
 import { decodeRemoteId } from '../providers/canvasapp/mapping'
+import { useDevAccess } from '../providers/devAccess'
 import type { SiteJobClaim, SiteTakeDraft } from '../providers/canvasapp/siteJobs'
 import { jobRefCount, settingsRunBlock, settingsRunWarning, takeCost } from '../providers/limits'
 import { SANO_LOGIN_TEXT, SANO_LOGIN_WAIT, SANO_OTHER_ACCOUNT, SANO_OTHER_ACCOUNT_WAIT, SANO_UNAVAILABLE } from '../providers/sano'
@@ -544,6 +545,8 @@ export function holdNewSubmits(on: boolean): void {
  * below). In the words of a take that waits (the queue's banner), not of the Run refusal.
  */
 export const parkedReason = (t: Pick<Take, 'provider' | 'account' | 'accountBindingPending'>): string | null => {
+  // canvasapp is gone (D270): its old takes keep their state and remote id, never polled / sent while locked.
+  if (providerOf(t) === 'canvasapp' && canvasappRetired()) return CANVASAPP_RETIRED_REASON
   if (providerOf(t) === 'sano-gateway' && t.accountBindingPending) return 'Chờ xác minh tài khoản lúc bấm Chạy; nếu không thể xác minh, hãy huỷ take rồi chạy lại.'
   const why = providerOf(t) === 'sano-gateway' ? providerBlockedReason('sano-gateway', t.account) : null
   return why === SANO_LOGIN_TEXT ? SANO_LOGIN_WAIT : why === SANO_OTHER_ACCOUNT ? SANO_OTHER_ACCOUNT_WAIT : why
@@ -1583,6 +1586,11 @@ useProviderLimits.subscribe((s, prev) => {
   if (s.rev['sano-gateway'] !== prev.rev['sano-gateway']) ensureEngine()
 })
 
+// Unlocking development mode: canvasapp takes parked while locked (canvasappRetired) go on.
+useDevAccess.subscribe((s, prev) => {
+  if (prev.state.access === 'locked' && s.state.access !== 'locked') ensureEngine()
+})
+
 /**
  * The provider's session works again (e.g. the user logged in to canvasapp after a 401): poll at the next interval
  * instead of waiting out the back-off. Only when the last problem was the login (other back-offs stay).
@@ -1733,14 +1741,15 @@ function errorText(e: unknown): string {
 export const takesOf = (sceneId: string) => (s: RunsState) => s.takes.filter((t) => t.sceneId === sceneId)
 export const latestTake = (takes: Take[], sceneId: string) =>
   takes.filter((t) => t.sceneId === sceneId).sort((a, b) => b.number - a.number)[0]
-export const activeCount = (s: RunsState) => s.takes.filter((t) => t.status === 'queued' || t.status === 'processing').length
+// Parked takes (cannotRunHere, e.g. old canvasapp takes after D270) never progress here: not "đang chạy".
+export const activeCount = (s: RunsState) => s.takes.filter((t) => (t.status === 'queued' || t.status === 'processing') && !cannotRunHere(t)).length
 /** parkedReason of each queued / running take that waits here, one entry per take (the queue's chip and banner). */
 export const parkedReasons = (takes: readonly Take[]): string[] =>
   takes.flatMap((t) => {
     const why = t.status === 'queued' || t.status === 'processing' ? parkedReason(t) : null
     return why ? [why] : []
   })
-const WAITS_FOR: Record<string, string> = { [SANO_LOGIN_WAIT]: 'chờ đăng nhập SANO', [SANO_OTHER_ACCOUNT_WAIT]: 'chờ tài khoản SANO khác', [SANO_UNAVAILABLE]: 'chờ mở trong SANO' }
+const WAITS_FOR: Record<string, string> = { [SANO_LOGIN_WAIT]: 'chờ đăng nhập SANO', [SANO_OTHER_ACCOUNT_WAIT]: 'chờ tài khoản SANO khác', [SANO_UNAVAILABLE]: 'chờ mở trong SANO', [CANVASAPP_RETIRED_REASON]: 'tạm dừng' }
 /** The queue chip / banner count of parkedReasons, with what they wait for ("2 take chờ đăng nhập SANO"). */
 export const parkedCountText = (parked: readonly string[]): string => `${parked.length} take ${WAITS_FOR[parked[0]] ?? 'đang chờ'}`
 

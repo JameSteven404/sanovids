@@ -25,7 +25,7 @@ import { sceneCode } from '../../core/compile'
 import { MODELS } from '../../core/models'
 import type { Scene, Take } from '../../core/types'
 import { CREDIT_MARK, formatCredits } from '../../lib/credits'
-import { PROVIDER_LABEL, sanoGatewayProvider, useProviderLimits } from '../../providers'
+import { CANVASAPP_RETIRED, CANVASAPP_RETIRED_REASON, PROVIDER_LABEL, sanoGatewayProvider, useProviderLimits } from '../../providers'
 import { useDevAllowed } from '../../providers/devAccess'
 import { providerOf } from '../../providers/types'
 import { useDevServer, type DevSpeed } from '../../providers/dev'
@@ -212,6 +212,8 @@ function QueuePanel() {
   const devOpen = useDevAllowed()
   const sceneMap = useProject((s) => sceneMapOf(s.project.scenes))
   const [doneLimit, setDoneLimit] = useState(DONE_PAGE)
+  // Locked build, canvasapp retired (D270): nothing to import from it, no gateway to open.
+  const retired = CANVASAPP_RETIRED && !devOpen && provider === 'canvasapp'
 
   const groups = useMemo<Group[]>(() => {
     const newest = [...takes].sort((a, b) => b.createdAt - a.createdAt)
@@ -255,12 +257,12 @@ function QueuePanel() {
           </span>
         ) : (
           <span className="rq-demo-note real">
-            <Cloud size={12} /> Take mới tạo trên {PROVIDER_LABEL.canvasapp} — trừ credit canvasapp (tiền thật) khi job được nhận
+            <Cloud size={12} /> {retired ? CANVASAPP_RETIRED_REASON : `Take mới tạo trên ${PROVIDER_LABEL.canvasapp} — trừ credit canvasapp (tiền thật) khi job được nhận`}
           </span>
         )}
         <span className="rq-spacer" />
         {/* SANO has no canvasapp bridge session to import from, nor a canvasapp gateway to open. */}
-        {provider !== 'sano-gateway' && (
+        {provider !== 'sano-gateway' && !retired && (
           <>
             <button
               type="button"
@@ -314,7 +316,11 @@ function QueuePanel() {
             <TriangleAlert size={15} />
             <div className="rq-banner-text">
               <b>{parked[0]}</b>
-              <small>{parkedCountText(parked)} — giữ nguyên tiến độ, SanoVids không gửi hay tải gì cho tới khi chạy tiếp được.</small>
+              <small>
+                {parked[0] === CANVASAPP_RETIRED_REASON
+                  ? `${parkedCountText(parked)} — bấm Huỷ để bỏ khỏi hàng đợi; video đã tải vẫn giữ nguyên.`
+                  : `${parkedCountText(parked)} — giữ nguyên tiến độ, SanoVids không gửi hay tải gì cho tới khi chạy tiếp được.`}
+              </small>
             </div>
           </div>
         )}

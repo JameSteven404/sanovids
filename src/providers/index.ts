@@ -4,26 +4,27 @@
 //   activeProviderId(): ProviderId          provider that NEW takes will use (effectiveProvider): development mode open
 //                                          (providers/devAccess devAllowed()) → 'canvasapp' when chosen in Settings AND
 //                                          the desktop bridge exists, else 'dev'; development mode LOCKED (release
-//                                          builds) → always 'canvasapp' (blocked until the user turns the gateway on).
+//                                          builds) → always 'canvasapp' (blocked: CANVASAPP_RETIRED_REASON).
 //                                          The SANO build (providers/sano sanoBuild(), also in a plain tab where
 //                                          providerBlockedReason refuses it): 'sano-gateway' when chosen, and always
 //                                          while locked on the web. Never 'mock'.
 //   providerOf(take): ProviderId            provider a take ran on (take.provider, 'mock' for old takes). Re-exported here.
 //   PROVIDER_LABEL[id]                      'dev' "Phát triển (giả lập)" | 'canvasapp' "canvasapp.io.vn" | 'mock' "Demo cũ"
 //                                          | 'sano-gateway' "SANO".
-//   selectableProviders()                   the Settings choices now: ['dev', 'canvasapp'] open, ['canvasapp'] locked
+//   selectableProviders()                   the Settings choices now: ['dev', 'canvasapp'] open, [] locked (CANVASAPP_RETIRED)
 //                                          (SELECTABLE_PROVIDERS: the open list, deprecated), + 'sano-gateway' in the SANO build.
 //   useProviderPrefs                        { provider, active, setProvider } — `provider` = the saved Settings choice
 //                                          (persisted, never rewritten by locking / unlocking: unlocking again brings it
 //                                          back); `active` = activeProviderId() kept in the store so selectors re-render
 //                                          when the lock flips (select `s.active`, then call activeProviderId()).
 //                                          setProvider and the saved value only ever hold 'dev' | 'canvasapp' ('mock' or
-//                                          anything unknown becomes 'dev'). While locked, a saved 'dev' means "the
-//                                          canvasapp gateway is off" (CANVASAPP_NEEDS_OPT_IN: nothing is sent to it).
-//   canvasappEnabled()                      the canvasapp gateway may be used for new takes now.
+//                                          anything unknown becomes 'dev'). While locked the canvasapp gateway is always
+//                                          off, whatever was saved (CANVASAPP_RETIRED: nothing is sent to it).
+//   canvasappEnabled()                      the canvasapp gateway may be used for new takes now (never while locked:
+//                                          CANVASAPP_RETIRED / canvasappRetired()).
 //   providerBlockedReason(id)               Vietnamese reason new takes cannot use `id` right now, or null: 'dev' while
 //                                          locked (DEV_LOCKED_REASON — also blocks "Thử lại" of a DEV take), 'canvasapp'
-//                                          outside the desktop app (WEB_UNAVAILABLE) or turned off (CANVASAPP_OFF_REASON),
+//                                          while locked (CANVASAPP_RETIRED_REASON), outside the desktop app (WEB_UNAVAILABLE) or turned off (CANVASAPP_OFF_REASON),
 //                                          'sano-gateway' outside SANO (SANO_UNAVAILABLE), without a usable SANO token
 //                                          (SANO_LOGIN_TEXT) or, given a take's `account`, under another SANO account.
 //   gatewayFor(id) / activeGateway()        { id, label, simulated, api, bridge(), provider() } of the dev or the real
@@ -77,7 +78,12 @@ const PREF_KEY = 'bdp:pref:provider'
 export type SelectableProviderId = 'dev' | 'canvasapp' | 'sano-gateway'
 /** @deprecated the choices while development mode is open — use selectableProviders(). */
 export const SELECTABLE_PROVIDERS: readonly SelectableProviderId[] = ['dev', 'canvasapp']
-const LOCKED_PROVIDERS: readonly SelectableProviderId[] = ['canvasapp']
+/** canvasapp.io.vn shut down on 2026-11-02 (D270, SANO LO-TRINH v2): locked builds offer none of it; M3.7 deletes the code. */
+export const CANVASAPP_RETIRED = true
+export const CANVASAPP_RETIRED_REASON = 'Tạo video trong app đang tạm ngừng — nhà cung cấp video đã ngừng hoạt động. Hãy tạo video ở ngoài rồi mang về sau.'
+/** canvasapp is retired here: locked (release) builds; development mode keeps its simulation and the real gateway. */
+export const canvasappRetired = (): boolean => CANVASAPP_RETIRED && !devAllowed()
+const LOCKED_PROVIDERS: readonly SelectableProviderId[] = CANVASAPP_RETIRED ? [] : ['canvasapp']
 
 /** The Settings choices now: development mode only while it is open (devAllowed()), SANO only in the SANO build. */
 export function selectableProviders(): readonly SelectableProviderId[] {
@@ -159,9 +165,9 @@ useDevAccess.subscribe((s, prev) => {
   useProviderPrefs.setState({ active: effectiveNow(provider) })
 })
 
-/** The canvasapp gateway may be used for new takes now (open development mode, or turned on while locked). */
+/** The canvasapp gateway may be used for new takes now: only in open development mode while CANVASAPP_RETIRED. */
 export function canvasappEnabled(): boolean {
-  return devAllowed() || !CANVASAPP_NEEDS_OPT_IN || useProviderPrefs.getState().provider === 'canvasapp'
+  return devAllowed() || (!CANVASAPP_RETIRED && (!CANVASAPP_NEEDS_OPT_IN || useProviderPrefs.getState().provider === 'canvasapp'))
 }
 
 const registry = new Map<ProviderId, VideoProvider>()
@@ -291,13 +297,14 @@ export function providerBlockedReason(id: ProviderId, account?: string): string 
   if (id === 'dev' && !devAllowed()) return DEV_LOCKED_REASON
   if (id === 'sano-gateway') return (getProvider(id) as SanoGatewayProvider).blockedReason(account)
   if (id === 'canvasapp') {
+    if (canvasappRetired()) return CANVASAPP_RETIRED_REASON
     if (!hasCanvasappBridge()) return WEB_UNAVAILABLE
     if (!canvasappEnabled()) return CANVASAPP_OFF_REASON
   }
   return null
 }
 
-/** The canvasapp gateway is turned off (locked build, not chosen): nothing may be sent to canvasapp. */
+/** The canvasapp gateway is turned off (always in a locked build, CANVASAPP_RETIRED): nothing may be sent to canvasapp. */
 export function canvasappOff(): boolean {
   return hasCanvasappBridge() && !canvasappEnabled()
 }

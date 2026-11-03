@@ -10,7 +10,7 @@ import { linkToastWithFill } from './placeholderActions'
 import { isModelId, MODELS, normalizeSettings } from './core/models'
 import { nameDate, nameTime, renderNameTemplate, type NameValues } from './core/nameTemplate'
 import { chargedDemo, creditKindOf, formatCredits } from './lib/credits'
-import { activeProviderId, devAllowed, providerBlockedReason, providerOf, sanoGatewayProvider } from './providers'
+import { activeProviderId, CANVASAPP_RETIRED, CANVASAPP_RETIRED_REASON, canvasappRetired, DEV_LOCKED_REASON, devAllowed, providerBlockedReason, providerOf, sanoGatewayProvider } from './providers'
 import { cancelQuestion, cancelToastText, type CancelFacts } from './components/runs/creditText'
 import { restoredFromTake } from './components/runs/restore'
 import { restoreBlock, restoreNotes, restorePlan } from './components/runs/importedTake'
@@ -680,7 +680,8 @@ export function requestRun(sceneIds: string[] = selectedSceneIds(), opts: { foll
   // build…): say why, with the way to Cài đặt, instead of a cost dialog that could only fail.
   const blocked = providerBlockedReason(activeProviderId())
   if (blocked) {
-    toast(blocked, { tone: 'warning', action: { label: 'Mở Cài đặt', run: () => openSettings('gateway') } })
+    // Retired canvasapp: Cài đặt has nothing to turn on.
+    toast(blocked, { tone: 'warning', action: blocked === CANVASAPP_RETIRED_REASON ? undefined : { label: 'Mở Cài đặt', run: () => openSettings('gateway') } })
     return
   }
   // The cost dialog checks and sends the prompt in the store: commit the text being typed first.
@@ -720,10 +721,17 @@ export function rerunTake(takeId: string, opts: { follow?: boolean } = {}) {
     requestRun([take.sceneId], opts)
     return
   }
+  // Retired canvasapp: refuse before asking to check canvasapp.io.vn and re-send.
+  if (providerOf(take) === 'canvasapp' && canvasappRetired()) {
+    toast(CANVASAPP_RETIRED_REASON, { tone: 'warning' })
+    return
+  }
   const dev = providerOf(take) === 'dev'
   // A DEV take can only go back to the simulated server while development mode is open: never ask about it then.
   if (dev && !devAllowed()) {
-    toast(DEV_LOCKED_RETRY, { tone: 'warning', ms: 9000, action: { label: 'Chạy lại', run: () => requestRun([take.sceneId], opts) } })
+    // Retired canvasapp: no "Chạy lại" on it (DEV_LOCKED_RETRY offers a new canvasapp take).
+    if (CANVASAPP_RETIRED) toast(DEV_LOCKED_REASON, { tone: 'warning' })
+    else toast(DEV_LOCKED_RETRY, { tone: 'warning', ms: 9000, action: { label: 'Chạy lại', run: () => requestRun([take.sceneId], opts) } })
     return
   }
   if (isUnverifiableSubmit(take)) {

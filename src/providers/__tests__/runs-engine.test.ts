@@ -15,7 +15,8 @@ vi.mock('../../lib/imageStore', () => {
 })
 
 import type { Project, Scene, Take } from '../../core/types'
-import { getProvider, registerProvider, useProviderPrefs } from '../index'
+import { CANVASAPP_RETIRED_REASON, getProvider, registerProvider, useProviderPrefs } from '../index'
+import { applyDevAccessState, bareState } from '../devAccess'
 import { ProviderError, type FetchResultOptions, type JobRequest, type RemoteStatus, type RunTake, type SettingsLimits, type VideoProvider } from '../types'
 import { migrateTake } from '../../core/migrate'
 import { transferLabel, useTakeTransfers } from '../../store/takeTransfers'
@@ -30,7 +31,9 @@ import {
   isUnverifiableSubmit,
   maybeBilledRunWarning,
   paidCancelledRunWarning,
+  parkedCountText,
   parkedReason,
+  parkedReasons,
   remoteVideoReady,
   requestInFlight,
   requestInFlightText,
@@ -1743,5 +1746,38 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
     const [blocked] = useRuns.getState().check(['s2'])
     expect(blocked.ok).toBe(false)
     expect(blocked.warnings.some((w) => w.includes('đã huỷ trong SanoVids'))).toBe(false)
+  })
+})
+
+describe('canvasapp retired (locked build, D270)', () => {
+  it('old canvasapp takes are parked while locked: never polled or sent, state and remote id kept; unlocking resumes them', async () => {
+    ;(globalThis as { window?: unknown }).window = { bdpDesktop: { canvasapp: { request: async () => ({}) } } }
+    const f = fakeProvider('canvasapp', 20_000)
+    registerProvider(f.p)
+    f.statuses.set('r_x', { remoteId: 'r_x', state: 'processing', progress: 30 })
+    applyDevAccessState(bareState('locked'))
+    try {
+      useRuns.getState().loadRuns({
+        takes: [
+          legacyTake('ca1', 's1', { provider: 'canvasapp', status: 'processing', remoteId: 'r_x', charged: false, startedAt: 1 }),
+          legacyTake('ca2', 's2', { provider: 'canvasapp', charged: false, createdAt: 2 }),
+        ],
+        credits: 100,
+        spent: 0,
+      })
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(f.polls()).toBe(0)
+      expect(f.submitted).toEqual([])
+      expect(take('ca1')).toMatchObject({ status: 'processing', remoteId: 'r_x' })
+      expect(take('ca2')).toMatchObject({ status: 'queued', remoteId: null })
+      const parked = parkedReasons(useRuns.getState().takes)
+      expect(parked).toEqual([CANVASAPP_RETIRED_REASON, CANVASAPP_RETIRED_REASON])
+      expect(parkedCountText(parked)).toBe('2 take tạm dừng')
+      applyDevAccessState(bareState('build'))
+      await vi.advanceTimersByTimeAsync(21_000)
+      expect(f.polls()).toBeGreaterThan(0)
+    } finally {
+      applyDevAccessState(bareState('build'))
+    }
   })
 })

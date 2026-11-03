@@ -6,15 +6,15 @@
 //   canvasapp  solid tinted "canvasapp · 1.234 credit" (≈ đồng + last update in the tooltip); click → re-read.
 //              A small "+" next to it opens "Nạp credit canvasapp" (SePay QR, components/topup).
 //              Not logged in → "canvasapp · Đăng nhập" (opens canvasapp's own login window). Unknown → "—".
-//   off        "canvasapp · Chưa bật": development mode is locked and the canvasapp gateway is not turned on; click →
-//              Cài đặt → Nhà cung cấp video (nothing is read from canvasapp meanwhile).
+//   off        "canvasapp · Chưa bật": the canvasapp gateway is off; click → Cài đặt → Nhà cung cấp video (nothing is
+//              read from canvasapp meanwhile). Locked builds (canvasappRetired, D270) show no pill at all.
 //   demo       (legacy) dashed "… credit DEMO" — only for callers passing the old demo wallet.
 //   SANO       ('sano-gateway', inside the SANO app) no pill: SANO keeps the account and the costs, SanoVids reads none.
 // What it shows for each state: creditPillModel.ts (pure, tested).
 import { FlaskConical, LoaderCircle, LogIn, Plus, Power, TriangleAlert, Wallet } from 'lucide-react'
 import { memo, useState } from 'react'
 import { openSettings, openTopUp } from '../../actions'
-import { activeGateway, refreshProviderLimits, useProviderPrefs, type Gateway } from '../../providers'
+import { activeGateway, activeProviderId, canvasappRetired, refreshProviderLimits, useProviderPrefs, type Gateway } from '../../providers'
 import { refreshRealCredits, useCreditInfo } from '../../store/credits'
 import { useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
@@ -85,10 +85,13 @@ export const CreditPill = memo(function CreditPill({ size = 'md' }: CreditPillPr
   const info = useCreditInfo()
   const spent = useRuns((s) => s.spent)
   const [loggingIn, setLoggingIn] = useState(false)
-  const sano = useProviderPrefs((s) => s.active === 'sano-gateway')
+  useProviderPrefs((s) => s.active)
+  // Read now, not from the selector: a server render runs selectors on the store's initial state.
+  const id = activeProviderId()
+  const hidden = id === 'sano-gateway' || (id === 'canvasapp' && canvasappRetired())
   const v = creditPillView(info, { spent })
   const busy = v.busy || loggingIn
-  if (sano) return null
+  if (hidden) return null
 
   const onClick = () => {
     if (v.action === 'settings') useUI.getState().openDialog({ kind: 'settings' })
