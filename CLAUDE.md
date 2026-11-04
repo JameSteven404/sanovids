@@ -1,7 +1,7 @@
 # SanoVids — architecture (0.6.0 work in progress)
 
 Node-canvas app for producing AI films scene by scene (replacement concept for canvasapp.io.vn).
-React renderer + Electron desktop (Windows; experimental Apple Silicon Mac build). Development mode uses the real gateway against an in-app simulation (`src/providers/dev/`, no network, fake "credit dev"). It is open in source/test builds, locked in release builds until an owner unlock; while locked, new takes use the real canvasapp gateway only after explicit opt-in. Saved legacy mock takes remain supported.
+React renderer + Electron desktop (Windows only, D269). Development mode uses the real gateway against an in-app simulation (`src/providers/dev/`, no network, fake "credit dev"). It is open in source/test builds, locked in release builds until an owner unlock; while locked, new takes use the real canvasapp gateway only after explicit opt-in. Saved legacy mock takes remain supported.
 
 ## Run
 - `npm run dev` → http://localhost:5180 (or double-click `start.bat`)
