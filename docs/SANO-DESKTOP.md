@@ -130,8 +130,9 @@ Có hai cách, đều từ mã nguồn:
 
 ## 3a. Tài khoản SANO trong app (D253)
 
-Form đăng nhập (email hoặc tên người dùng + mật khẩu), **Tạo tài khoản** và **Quên mật khẩu** nằm ngay trong cửa sổ
-Sano Agent (trang SANO vẽ form). Chỉ **Tiếp tục với Google** mở trình duyệt hệ thống (RFC 8252, như TH-36). Máy chủ là
+Form đăng nhập (email hoặc tên người dùng + mật khẩu), **Tạo tài khoản** và **Quên mật khẩu** (màn hướng dẫn của web, không
+gọi cầu nối, D278) nằm ngay trong cửa sổ Sano Agent (trang SANO vẽ form). Chỉ **Tiếp tục với Google** mở trình duyệt hệ
+thống (RFC 8252, như TH-36). Máy chủ là
 API tài khoản của SANO (TH-44: `/api/auth/*`). Mã: `electron/sano-account-rules.cjs` (logic, mọi thứ được tiêm vào để
 test), `main.cjs` `registerAccount`, `preload.cjs`.
 
@@ -216,7 +217,6 @@ test), `main.cjs` `registerAccount`, `preload.cjs`.
     status(): Promise<AccountStatus>
     login({ identifier, password }): Promise<AccountStatus>
     register({ email, username, name, password }): Promise<{ ok: true }>
-    forgot({ identifier }): Promise<{ ok: true }>
     google(): Promise<AccountStatus> // lỗi "Đã huỷ đăng nhập Google." khi huỷ; Huỷ khi bước đổi tên đã chạy mà không dọn được file: lỗi sign-out-failed
     // ("Phiên vẫn còn trên máy này. …"), phiên vẫn giữ, lần đăng xuất sau thử lại
     cancelGoogle(): Promise<void>
