@@ -1,3 +1,5 @@
+// Sano Agent only: without --sano-agent this script refuses to run (D236). The SanoVids text below (two repos, the Mac
+// build, npm run release:check / release:publish) describes tag v1.0.0, which still holds those scripts.
 // Publishes the build in release/ as GitHub releases, in two repos:
 //   1. public  JameSteven404/sanovids           source repo (public since 2026-10-27, D251): both installers + the public
 //                                               signing certificate (the tag vX.Y.Z must already be pushed)
@@ -93,6 +95,11 @@ const DRY = process.argv.includes('--dry-run')
 /** --khong-mac: an urgent Windows-only release although the newest public release had a Mac build (⚠ instead of ✗). */
 const WINDOWS_ONLY = process.argv.includes('--khong-mac')
 const PRODUCT = productFromArgv(process.argv)
+// SanoVids stopped at its final 1.0.0 (D236): a release of it would update every machine still on its feed.
+if (!PRODUCT.config) {
+  console.error('SanoVids đã ngừng ở bản cuối 1.0.0 (D236): chỉ đăng Sano Agent, dùng --sano-agent.')
+  process.exit(1)
+}
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const releaseDir = path.join(root, PRODUCT.releaseDir)
 const buildDir = path.join(releaseDir, '_build')

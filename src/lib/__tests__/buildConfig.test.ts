@@ -1,7 +1,7 @@
 // package.json build configuration: author / copyright / publisher strings, code signing with the pinned
 // certificate, Electron fuses, installer icons + license page, the signer pins read by the app, and the license /
 // certificate files the installer ships — plus the macOS build (Apple Silicon, ad hoc "-", hardened runtime, no
-// notarization, licences inside the app, dmg + zip, dist:mac). electron-builder reads all of this at build time, so a
+// notarization, licences inside the app, dmg + zip). electron-builder reads all of this at build time, so a
 // silent change here would ship an unsigned or mis-credited release.
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -355,20 +355,11 @@ describe('signer pins and metadata', () => {
 })
 
 describe('scripts', () => {
-  it('dist:win goes through scripts/electron-build.mjs and never publishes', () => {
-    expect(pkg.scripts['dist:win']).toBe(
-      'node scripts/update-notes.mjs && node scripts/third-party-notices.mjs --check && vite build && node scripts/electron-build.mjs --win nsis portable --publish never && node scripts/tidy-release.mjs',
-    )
+  it('the separate SanoVids release path and the Mac build path are gone (final 1.0.0, D236; D269)', () => {
+    for (const name of ['dist:win', 'dist:mac', 'mac:fetch', 'tidy:release', 'release:check', 'release:publish']) expect(pkg.scripts[name], name).toBeUndefined()
+    for (const f of ['scripts/mac-inspect.mjs', 'scripts/fetch-mac-build.mjs', '.github/workflows/mac-build.yml']) expect(fs.existsSync(path.join(ROOT, f)), f).toBe(false)
     expect(pkg.scripts.release).toBeUndefined()
     expect(pkg.scripts.icons).toBe('node scripts/make-icons.mjs')
-  })
-
-  it('dist:mac: same guards (notes, notices check, electron-build.mjs, --publish never), arm64 dmg + zip into release/mac, then mac-inspect', () => {
-    expect(pkg.scripts['dist:mac']).toBe(
-      'node scripts/update-notes.mjs && node scripts/third-party-notices.mjs --check && vite build && node scripts/electron-build.mjs --mac dmg zip --arm64 --publish never -c.directories.output=release/mac && node scripts/mac-inspect.mjs',
-    )
-    expect(pkg.scripts['mac:fetch']).toBe('node scripts/fetch-mac-build.mjs')
-    for (const f of ['scripts/mac-inspect.mjs', 'scripts/fetch-mac-build.mjs', '.github/workflows/mac-build.yml']) expect(fs.existsSync(path.join(ROOT, f)), f).toBe(true)
   })
 })
 
@@ -448,13 +439,11 @@ describe('Sano Agent (sano-agent/electron-builder.cjs: SanoVids build, own ident
     expect(hardening.sanoShell({ isPackaged: true, baked: cfg.extraMetadata.sanoAgent.url })).toEqual({ url: 'app://sano/', origin: 'app://sano' })
   })
 
-  it('npm scripts: dist:sano-agent has the dist:win guards with this config and builds SANO first; release:check / publish take --sano-agent', () => {
+  it('npm scripts: dist:sano-agent has the release guards with this config and builds SANO first; release:check / publish take --sano-agent', () => {
     expect(pkg.scripts['dist:sano-agent']).toBe(
       'node scripts/update-notes.mjs --sano-agent && node scripts/third-party-notices.mjs --check && vite build && node scripts/build-sano.mjs && node scripts/electron-build.mjs --config sano-agent/electron-builder.cjs --win nsis portable --publish never && node scripts/tidy-release.mjs --sano-agent',
     )
     expect(pkg.scripts['build:sano']).toBe('node scripts/build-sano.mjs')
-    // SanoVids' own build never builds SANO
-    expect(pkg.scripts['dist:win']).not.toContain('build-sano')
     expect(pkg.scripts['release:check:sano-agent']).toBe('node scripts/publish-release.mjs --sano-agent --dry-run')
     expect(pkg.scripts['release:publish:sano-agent']).toBe('node scripts/publish-release.mjs --sano-agent')
   })

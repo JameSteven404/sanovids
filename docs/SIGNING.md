@@ -30,8 +30,12 @@
 
 ## 2. Ký một bản phát hành
 
-`npm run dist:win` → `scripts/update-notes.mjs` → `scripts/third-party-notices.mjs --check` (giấy phép thư viện cũ thì dừng) → `vite build` → **`scripts/electron-build.mjs --win nsis portable --publish never`**
-→ `scripts/tidy-release.mjs`.
+`npm run dist:sano-agent` → `scripts/update-notes.mjs --sano-agent` → `scripts/third-party-notices.mjs --check` (giấy phép thư viện cũ thì dừng) → `vite build` → `scripts/build-sano.mjs` → **`scripts/electron-build.mjs --config sano-agent/electron-builder.cjs --win nsis portable --publish never`**
+→ `scripts/tidy-release.mjs --sano-agent`.
+
+> Tên file trong mục này (`SanoVids.exe`, `SanoVids-Setup-*`…) là của SanoVids tới bản cuối 1.0.0 (D236). Phát hành bây giờ
+> chỉ là Sano Agent: cùng các bước và các kiểm tra, áp cho `Sano Agent.exe`, `Uninstall Sano Agent.exe`, `SanoAgent-Setup-*`,
+> `SanoAgent-Portable-*` (xem **Sano Agent** ở cuối mục này).
 
 **`scripts/electron-build.mjs`** chạy electron-builder với `ELECTRON_BUILDER_DISABLE_BUILD_CACHE=true` (fuse không nằm
 trong khoá cache của file exe, cache cũ có thể trả về exe chưa đặt fuse), và **từ chối chạy** khi:
@@ -59,7 +63,7 @@ signtool sign /tr http://timestamp.digicert.com /sha1 7489ABFA… /s My /fd sha2
 ```
 
 - **Một chữ ký SHA-256** (không ký kép SHA-1), **dấu thời gian RFC 3161** của DigiCert: chữ ký vẫn hợp lệ sau khi chứng
-  chỉ hết hạn. Dấu thời gian là yêu cầu cứng của `release:check`.
+  chỉ hết hạn. Dấu thời gian là yêu cầu cứng của `release:check:sano-agent`.
 - **File được ký**: `SanoVids.exe`, `resources\elevate.exe`, 4 DLL Electron giao ra chưa ký (`ffmpeg.dll`,
   `vk_swiftshader.dll`, `vulkan-1.dll`, `dxcompiler.dll`, ghi rõ tên trong `signExts`), `Uninstall SanoVids.exe`,
   `SanoVids-Setup-x.y.z.exe`, `SanoVids-Portable-x.y.z.exe`. `d3dcompiler_47.dll` và `dxil.dll` giữ chữ ký Microsoft.
@@ -85,9 +89,9 @@ chuẩn hoá): đừng xoá dòng này. `src/lib/__tests__/buildConfig.test.ts` 
 |---|---|---|
 | `Cannot find certificate 7489ABFA…` | Máy / tài khoản Windows này không có khoá ký | Khôi phục khoá (mục 3), hoặc build trên máy của tác giả |
 | `The specified timestamp server either could not be reached` | Máy chủ dấu thời gian không trả lời. electron-builder thử lại 2 lần (sau 15 s rồi 25 s, khoảng 40 s) rồi dừng | Kiểm tra mạng, build lại sau. **Không** đặt `ELECTRON_BUILDER_OFFLINE` |
-| `electron-build.mjs` từ chối | Có `ELECTRON_BUILDER_OFFLINE` hoặc thiếu `--publish never` | Bỏ biến môi trường / dùng `npm run dist:win` |
+| `electron-build.mjs` từ chối | Có `ELECTRON_BUILDER_OFFLINE` hoặc thiếu `--publish never` | Bỏ biến môi trường / dùng `npm run dist:sano-agent` |
 
-**Cổng phát hành** (`npm run release:check`, nhóm **(j) Chữ ký số**, `scripts/buildInspect.mjs`) đọc lại bản build:
+**Cổng phát hành** (`npm run release:check:sano-agent`, nhóm **(j) Chữ ký số**, `scripts/buildInspect.mjs`) đọc lại bản build:
 - Setup, Portable, `SanoVids.exe`, `elevate.exe` phải được ký bằng **đúng** chứng chỉ ký của bản này (`SIGNER_THUMBPRINT`
   trong `scripts/releaseLib.mjs`, cũng phải nằm trong `sanovids.signers`) **và có dấu thời gian**; 4 DLL ký bởi tác giả;
   2 DLL Microsoft giữ nguyên.
@@ -256,7 +260,7 @@ Máy đã cài chỉ nhận bản cập nhật ký bằng một dấu vân tay *
    gắn sẵn + dấu vân tay), `SIGNER_THUMBPRINT` trong `scripts/releaseLib.mjs` (ghi chú phát hành, dòng ký số của
    `DOC-TOI.txt`; kiểm tra (h) chặn nếu nó khác `certificateSha1`), README, tài liệu này, README của trang tải về và các
    test đang ghim dấu vân tay cũ. Máy nội bộ đã tin cậy chứng chỉ cũ chạy script mới.
-   **Đừng gộp bước 2 và 3**: `release:check` (nhóm (j), kiểm tra "ghim trước, ký sau") chặn bản N+1 nếu bản công khai
+   **Đừng gộp bước 2 và 3**: `release:check:sano-agent` (nhóm (j), kiểm tra "ghim trước, ký sau") chặn bản N+1 nếu bản công khai
    mới nhất chưa ghim chứng chỉ MỚI, và cũng chặn nếu file nào trong bản build không ký bằng đúng `SIGNER_THUMBPRINT`.
 4. Một bản sau nữa: bỏ dấu vân tay CŨ khỏi `sanovids.signers`. Khi không còn cần ký bằng chứng chỉ CŨ nữa (giữ file
    `.pfx` cũ cất offline nếu muốn), gỡ nó khỏi máy build — cả bản có khoá trong `My` lẫn bản công khai trong `CA`:
@@ -346,15 +350,15 @@ màn hình đó, mất những gì chưa kịp tự lưu.
 | Bấm SanoVids không thấy gì mở (không cửa sổ, không báo lỗi) | `app.asar` trong thư mục cài bị sửa / hỏng (diệt virus "sửa" file, chép đè, ổ đĩa lỗi…): kiểm tra toàn vẹn asar chặn | Tải bộ cài ở trang tải về, cài đè. Dữ liệu ở `%APPDATA%\SanoVids` giữ nguyên |
 | SanoVids tự tắt đột ngột khi mở một màn hình (Cài đặt, xem take…), lần nào cũng ở đúng màn hình đó | Một file bên trong `app.asar` bị hỏng: Electron chỉ kiểm tra nó khi đọc tới, rồi thoát | Như trên: cài đè từ trang tải về |
 | Hộp "SanoVids không mở khi có tham số gỡ lỗi…" | Lối tắt / lệnh mở có thêm tham số | Mở bằng biểu tượng bình thường, xoá tham số trong lối tắt |
-| Lỗi cập nhật `signature` ("Bản cập nhật này không mang chữ ký số đúng của tác giả…") | Bộ cài trên nguồn cập nhật không ký, ký bởi chứng chỉ khác (kể cả trùng tên), bị sửa, hoặc không đúng phiên bản được báo | Người dùng: đừng tự tải bản đó về cài; chỉ cài bộ cài có dấu vân tay trùng **Cài đặt → Giới thiệu**, hoặc hỏi tác giả. Tác giả: xem dòng `signature <lý do>` trong `updater.log`, chạy `release:check`, đăng bản mới hơn ký đúng |
+| Lỗi cập nhật `signature` ("Bản cập nhật này không mang chữ ký số đúng của tác giả…") | Bộ cài trên nguồn cập nhật không ký, ký bởi chứng chỉ khác (kể cả trùng tên), bị sửa, hoặc không đúng phiên bản được báo | Người dùng: đừng tự tải bản đó về cài; chỉ cài bộ cài có dấu vân tay trùng **Cài đặt → Giới thiệu**, hoặc hỏi tác giả. Tác giả: xem dòng `signature <lý do>` trong `updater.log`, chạy `release:check:sano-agent`, đăng bản mới hơn ký đúng |
 | Lỗi cập nhật `signature-unverified` ("Chưa kiểm tra được chữ ký số của bản cập nhật…") | PowerShell bị chính sách (AppLocker / WDAC) / diệt virus chặn, quá 60 s, hoặc chuỗi chứng chỉ lạ | Bấm **Thử lại**; app tự thử lại mỗi ngày. Tác giả: lý do ở dòng `signature <lý do>` |
 | Giới thiệu: "Chưa kiểm tra được chữ ký số" | PowerShell bị chính sách / diệt virus chặn, quá 60 s, hoặc thiếu một DLL | Không ảnh hưởng việc dùng app; kiểm tra tay bằng Properties |
 | Giới thiệu: "Không phải bản gốc" / "File… đã bị thay đổi" | Bản cài không chính thức, hoặc `SanoVids.exe` / một DLL của Electron bị sửa hay bị thay | Gỡ, tải bản chính thức (so dấu vân tay), cài lại |
 | Build: `Cannot find certificate …` | Máy không có khoá | Mục 3 |
-| `release:check`: "… không được ký bởi tác giả … Thêm "x.dll" vào package.json build.win.signExts" | Bản Electron mới có thêm file mã chưa ký | Thêm đúng tên file vào `build.win.signExts`, build lại |
-| `release:check`: "… được ký bằng chứng chỉ …, không phải chứng chỉ ký của bản này" | `certificateSha1` / `SIGNER_THUMBPRINT` lệch nhau, hoặc bản build cũ | Sửa cho khớp (mục 7), build lại |
-| `release:check`: "… mọi máy đang dùng v… sẽ TỪ CHỐI bản cập nhật này" | Đổi chứng chỉ ký mà bản công khai trước chưa ghim nó | Làm đúng bước 2 rồi 3 của mục 7 |
-| `release:check`: "Mã SHA-256 trong file exe … khác header app.asar" / "không có tài nguyên INTEGRITY" | `app.asar` bị đổi sau khi electron-builder tính mã (hook sau đóng gói, công cụ khác…) | Không đăng: build lại sạch bằng `npm run dist:win` |
+| `release:check:sano-agent`: "… không được ký bởi tác giả … Thêm "x.dll" vào package.json build.win.signExts" | Bản Electron mới có thêm file mã chưa ký | Thêm đúng tên file vào `build.win.signExts`, build lại |
+| `release:check:sano-agent`: "… được ký bằng chứng chỉ …, không phải chứng chỉ ký của bản này" | `certificateSha1` / `SIGNER_THUMBPRINT` lệch nhau, hoặc bản build cũ | Sửa cho khớp (mục 7), build lại |
+| `release:check:sano-agent`: "… mọi máy đang dùng v… sẽ TỪ CHỐI bản cập nhật này" | Đổi chứng chỉ ký mà bản công khai trước chưa ghim nó | Làm đúng bước 2 rồi 3 của mục 7 |
+| `release:check:sano-agent`: "Mã SHA-256 trong file exe … khác header app.asar" / "không có tài nguyên INTEGRITY" | `app.asar` bị đổi sau khi electron-builder tính mã (hook sau đóng gói, công cụ khác…) | Không đăng: build lại sạch bằng `npm run dist:sano-agent` |
 
 Bài thử đầu-cuối của chữ ký số (chứng chỉ thử chỉ là file, không đụng kho chứng chỉ của Windows): [UPDATES.md](UPDATES.md)
 mục 4.

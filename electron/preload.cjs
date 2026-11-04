@@ -51,7 +51,6 @@ if (sanoArg && process.isMainFrame && location.origin === sanoArg.slice('--bdp-s
     status: () => ipcRenderer.invoke('account:status'),
     login: (i) => ipcRenderer.invoke('account:login', { identifier: cut(i && i.identifier, 254), password: cut(i && i.password, 128) }),
     register: (i) => ipcRenderer.invoke('account:register', { email: cut(i && i.email, 254), username: cut(i && i.username, 32), name: cut(i && i.name, 100), password: cut(i && i.password, 128) }),
-    forgot: (i) => ipcRenderer.invoke('account:forgot', { identifier: cut(i && i.identifier, 254) }),
     google: () => ipcRenderer.invoke('account:google'),
     cancelGoogle: () => ipcRenderer.invoke('account:cancelGoogle'),
     signOut: () => ipcRenderer.invoke('account:signOut'),
@@ -95,7 +94,7 @@ if (sanoArg && process.isMainFrame && location.origin === sanoArg.slice('--bdp-s
       /** Forgets the tokens in main's memory (no revoke); a sign-in still waiting ends 'cancelled'. → true */
       signOut: () => ipcRenderer.invoke('sano:googleSignOut'),
     },
-    /** → { status, login, register, forgot, google, cancelGoogle, signOut } (window.sanoDesktop.account, D253) */
+    /** → { status, login, register, google, cancelGoogle, signOut } (window.sanoDesktop.account, D253) */
     account,
     /** → apiForward: true; docs: { open({ id, kind }) → undefined, closeAll() → boolean } (sano-docs-rules.cjs) */
     ...(forward ? { apiForward: true, docs } : {}),

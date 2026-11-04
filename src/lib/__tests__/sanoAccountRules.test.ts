@@ -16,7 +16,6 @@ interface Account {
   status(): Promise<Answer<Status>>
   login(i: unknown): Promise<Answer<Status>>
   register(i: unknown): Promise<Answer<{ ok: true }>>
-  forgot(i: unknown): Promise<Answer<{ ok: true }>>
   google(): Promise<Answer<Status>>
   cancelGoogle(): Promise<Answer<undefined>>
   signOut(): Promise<Answer<Status>>
@@ -100,8 +99,6 @@ function fakeServer(password = pw()) {
         return json(200, { ok: true })
       case 'POST /api/auth/register':
         if (!String(body?.email).endsWith('@sanogroup.tv')) return json(403, { error: 'Chỉ email @sanogroup.tv được tự tạo tài khoản.' })
-        return json(200, { ok: true })
-      case 'POST /api/auth/forgot':
         return json(200, { ok: true })
     }
     return json(404, { error: 'Không tìm thấy API.' })
@@ -219,7 +216,7 @@ describe('createAccount (fake SANO account server)', () => {
   it('unconfigured: status says so, every call refuses without the network; 1.0 behaves as today', async () => {
     const { account, server } = setup({ apiUrl: null })
     expect(value(await account.status())).toEqual({ configured: false, signedIn: false, user: null, persistent: true })
-    for (const r of [await account.login({ identifier: 'minh', password: pw() }), await account.register({ email: 'a@sanogroup.tv', username: 'a', name: 'A', password: pw() }), await account.forgot({ identifier: 'a' }), await account.google()]) {
+    for (const r of [await account.login({ identifier: 'minh', password: pw() }), await account.register({ email: 'a@sanogroup.tv', username: 'a', name: 'A', password: pw() }), await account.google()]) {
       expect(r).toEqual({ ok: false, error: 'Bản Sano Agent này chưa nối máy chủ tài khoản.', code: 'not-configured' })
     }
     expect(value(await account.signOut()).signedIn).toBe(false)
@@ -278,25 +275,23 @@ describe('createAccount (fake SANO account server)', () => {
     }
   })
 
-  it("the server's Vietnamese errors pass through (login, register, forgot)", async () => {
+  it("the server's Vietnamese errors pass through (login, register)", async () => {
     const { account, server } = setup()
     expect(await account.login({ identifier: 'minh', password: `${server.password}x` })).toEqual({ ok: false, error: 'Sai tài khoản hoặc mật khẩu.' })
     expect(await account.register({ email: 'a@gmail.com', username: 'a', name: 'A', password: pw() })).toEqual({ ok: false, error: 'Chỉ email @sanogroup.tv được tự tạo tài khoản.' })
     expect(await account.register({ email: 'a@sanogroup.tv', username: 'a', name: 'A', password: pw() })).toEqual({ ok: true, value: { ok: true } })
     expect(server.calls.at(-1)!.body).toEqual({ email: 'a@sanogroup.tv', username: 'a', name: 'A', password: expect.any(String) })
-    expect(await account.forgot({ identifier: 'a' })).toEqual({ ok: true, value: { ok: true } })
-    expect(server.calls.at(-1)).toMatchObject({ path: '/api/auth/forgot', body: { identifier: 'a' } })
     // a code, when the server sends one
     server.opts.raw = json(429, { error: 'Quá nhiều yêu cầu. Vui lòng thử lại sau một phút.', code: 'rate-limit' })
-    expect(await account.forgot({ identifier: 'a' })).toEqual({ ok: false, error: 'Quá nhiều yêu cầu. Vui lòng thử lại sau một phút.', code: 'rate-limit' })
+    expect(await account.register({ email: 'a@sanogroup.tv', username: 'a', name: 'A', password: pw() })).toEqual({ ok: false, error: 'Quá nhiều yêu cầu. Vui lòng thử lại sau một phút.', code: 'rate-limit' })
   })
 
   it('a redirect is never followed; a non-JSON answer is no answer', async () => {
     const { account, server } = setup()
     server.opts.raw = new Response(null, { status: 302, headers: { location: 'https://evil.example.vn/' } })
-    expect(await account.forgot({ identifier: 'a' })).toEqual({ ok: false, error: R.TEXT.invalid, code: 'bad-answer' })
+    expect(await account.register({ email: 'a@sanogroup.tv', username: 'a', name: 'A', password: pw() })).toEqual({ ok: false, error: R.TEXT.invalid, code: 'bad-answer' })
     server.opts.raw = new Response('<html>proxy</html>', { status: 200, headers: { 'content-type': 'text/html' } })
-    expect(await account.forgot({ identifier: 'a' })).toEqual({ ok: false, error: R.TEXT.invalid })
+    expect(await account.register({ email: 'a@sanogroup.tv', username: 'a', name: 'A', password: pw() })).toEqual({ ok: false, error: R.TEXT.invalid })
   })
 
   it('inputs: strings only, within the limits; refused before the network', async () => {
@@ -306,7 +301,7 @@ describe('createAccount (fake SANO account server)', () => {
     }
     expect((await account.register({ email: 'a@sanogroup.tv', username: 'u'.repeat(33), name: 'A', password: pw() })).ok).toBe(false)
     expect((await account.register({ email: 'a@sanogroup.tv', username: 'u', name: 'n'.repeat(101), password: pw() })).ok).toBe(false)
-    expect((await account.forgot({ identifier: ['a'] })).ok).toBe(false)
+    expect((await account.register({ email: ['a'], username: 'u', name: 'A', password: pw() })).ok).toBe(false)
     expect(server.calls).toEqual([])
     expect(R.LIMITS).toEqual({ identifier: 254, password: 128, name: 100, email: 254, username: 32 })
   })
@@ -1320,19 +1315,19 @@ describe('#95: only a session the file really holds stays live after a failed si
 })
 
 describe('IPC: every account:* call checks the sender (fromSano), and the preload turns { ok: false } into an Error', () => {
-  it('registerAccountIpc: all seven calls; a refused sender never reaches the account', async () => {
+  it('registerAccountIpc: all six calls; a refused sender never reaches the account', async () => {
     const handlers = new Map<string, (event: unknown, input: unknown) => unknown>()
     const reached: string[] = []
     const account = Object.fromEntries(R.CALLS.map((c) => [c, async (input: unknown) => (reached.push(c), { ok: true, value: input })])) as unknown as Account
     R.registerAccountIpc({ handle: (ch, fn) => void handlers.set(ch, fn) }, account, (event) => event === 'sano')
-    expect([...handlers.keys()]).toEqual(['account:status', 'account:login', 'account:register', 'account:forgot', 'account:google', 'account:cancelGoogle', 'account:signOut'])
+    expect([...handlers.keys()]).toEqual(['account:status', 'account:login', 'account:register', 'account:google', 'account:cancelGoogle', 'account:signOut'])
     for (const [ch, fn] of handlers) expect(await fn('frame', { x: 1 }), ch).toEqual({ ok: false, error: 'Nguồn gọi không hợp lệ.', code: 'not-allowed' })
     expect(reached).toEqual([])
     expect(await handlers.get('account:login')!('sano', { identifier: 'a' })).toEqual({ ok: true, value: { identifier: 'a' } })
   })
 
   it('CALLS unchanged: bearer/ended/userId not registered over IPC', () => {
-    expect(R.CALLS).toEqual(['status', 'login', 'register', 'forgot', 'google', 'cancelGoogle', 'signOut'])
+    expect(R.CALLS).toEqual(['status', 'login', 'register', 'google', 'cancelGoogle', 'signOut'])
     const { account } = setup()
     expect(Object.keys(account)).toEqual([...R.CALLS, 'bearer', 'ended', 'userId'])
     const channels: string[] = []
@@ -1426,14 +1421,14 @@ describe('IPC: every account:* call checks the sender (fromSano), and the preloa
     expect(Object.keys(exposed.sanoDesktop)).toEqual(['sanovidsUrl', 'google', 'account'])
     answer = { ok: true, value: { signedIn: false } }
     const a = exposed.sanoDesktop.account
-    expect(Object.keys(a)).toEqual(['status', 'login', 'register', 'forgot', 'google', 'cancelGoogle', 'signOut'])
+    expect(Object.keys(a)).toEqual(['status', 'login', 'register', 'google', 'cancelGoogle', 'signOut'])
     expect(await a.status()).toEqual({ signedIn: false })
     await a.login({ identifier: 'x'.repeat(400), password: 7, extra: 'dropped' })
     expect(invoked.at(-1)).toEqual(['account:login', { identifier: 'x'.repeat(255), password: '' }])
     await a.register({ email: 'e', username: 'u'.repeat(50), name: 'n', password: 'p' })
     expect(invoked.at(-1)).toEqual(['account:register', { email: 'e', username: 'u'.repeat(33), name: 'n', password: 'p' }])
-    await a.forgot(null)
-    expect(invoked.at(-1)).toEqual(['account:forgot', { identifier: '' }])
+    await a.login(null)
+    expect(invoked.at(-1)).toEqual(['account:login', { identifier: '', password: '' }])
     answer = { ok: false, error: 'Sai tài khoản hoặc mật khẩu.', code: 'bad-password' }
     const e = (await a.login({ identifier: 'a', password: 'b' }).catch((x) => x)) as Error & { code?: string }
     expect(e).toBeInstanceOf(Error)

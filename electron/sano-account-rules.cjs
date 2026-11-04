@@ -18,7 +18,7 @@ const LIMITS = Object.freeze({ identifier: 254, password: 128, name: 100, email:
  * port, and the token exchange must repeat it. What binds the code to this app is the PKCE verifier, held in main.
  */
 const REDIRECT_URI = 'http://127.0.0.1:9/callback'
-const CALLS = Object.freeze(['status', 'login', 'register', 'forgot', 'google', 'cancelGoogle', 'signOut'])
+const CALLS = Object.freeze(['status', 'login', 'register', 'google', 'cancelGoogle', 'signOut'])
 
 const TEXT = Object.freeze({
   offline: 'Không kết nối được máy chủ tài khoản. Kiểm tra mạng rồi thử lại.',
@@ -420,11 +420,6 @@ function createAccount(fx) {
     async register(input) {
       configured()
       await post('/api/auth/register', fields(input, ['email', 'username', 'name', 'password']))
-      return { ok: true }
-    },
-    async forgot(input) {
-      configured()
-      await post('/api/auth/forgot', fields(input, ['identifier']))
       return { ok: true }
     },
     async google() {
