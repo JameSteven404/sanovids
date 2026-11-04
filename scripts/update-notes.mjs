@@ -1,7 +1,7 @@
 // Writes build/release-notes.md from the CHANGELOG.md section of the package.json version (`--sano-agent`: from
 // sano-agent/CHANGELOG.md, for the version of sano-agent/electron-builder.cjs: npm run dist:sano-agent).
 // electron-builder picks that file up from buildResources (build/) and copies it into latest.yml `releaseNotes`, which
-// is what the app shows under "Có gì mới" in the update dialog. Run by `npm run dist:win` before the build.
+// is what the app shows under "Có gì mới" in the update dialog. Run by `npm run dist:sano-agent` before the build.
 // Never fails the build: a missing section gives a one-line note ("SanoVids <v>") and a warning. The file is
 // gitignored and never copied into release/.
 import fs from 'node:fs'

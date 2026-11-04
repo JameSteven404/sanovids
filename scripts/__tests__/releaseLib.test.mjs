@@ -690,8 +690,8 @@ describe('release scripts (source guarantees)', () => {
 })
 
 describe('electron-build refusals', () => {
-  const ARGS = ['--win', 'nsis', 'portable', '--publish', 'never']
-  it('the dist:win command line passes', () => {
+  const ARGS = ['--config', 'sano-agent/electron-builder.cjs', '--win', 'nsis', 'portable', '--publish', 'never']
+  it('the dist:sano-agent command line passes', () => {
     expect(buildArgsProblem({}, ARGS)).toBeNull()
     expect(buildArgsProblem({ PATH: 'x', ELECTRON_BUILDER_OFFLINE: '0' }, ARGS)).toBeNull()
     expect(buildArgsProblem({ ELECTRON_BUILDER_OFFLINE: 'false' }, ARGS)).toBeNull()

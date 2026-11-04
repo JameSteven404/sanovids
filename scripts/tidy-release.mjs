@@ -1,4 +1,4 @@
-// Keeps release/ tidy after `npm run dist:win`:
+// Keeps release/ tidy after a build:
 //   release/SanoVids-Setup-<current>.exe, SanoVids-Portable-<current>.exe   ← the newest installers, nothing else
 //   release/ban-cu/<version>/…                                             ← every older version's installers
 //   release/_build/…                                                       ← electron-builder by-products
@@ -8,7 +8,7 @@
 // Warns loudly when the packaged app-update.yml does not point at the public feed (installs would never update) or has
 // no publisherName (electron-updater's own publisher check, the second lock behind the app's pinned verifier: without
 // it the build did not use the release configuration).
-// release/mac (the Mac build, fetched by scripts/fetch-mac-build.mjs) is never touched by the Windows rules: only an
+// release/mac (the Mac build up to 1.0.0, no new one is made: D269) is never touched by the Windows rules: only an
 // older version's Mac files (SanoVids-Mac-<v>-arm64.*, and the latest-mac.yml / mac-check.json / mac-fetch.json that
 // belong to it) move to release/ban-cu/<v>/mac/.
 // Safe to run any time; files that are locked (e.g. the unpacked app still running) are left where they are.
