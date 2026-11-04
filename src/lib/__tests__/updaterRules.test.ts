@@ -1513,11 +1513,11 @@ describe('packaging guarantees (package.json, preload, main)', () => {
   })
 
   it('scripts: never auto-publish', () => {
-    expect(pkg.scripts['dist:win']).toContain('--publish never')
-    expect(pkg.scripts['dist:win']).toMatch(/^node scripts\/update-notes\.mjs && /)
+    expect(pkg.scripts['dist:sano-agent']).toContain('--publish never')
+    expect(pkg.scripts['dist:sano-agent']).toMatch(/^node scripts\/update-notes\.mjs --sano-agent && /)
     expect(pkg.scripts.release).toBeUndefined() // electron-builder auto-publishes when npm_lifecycle_event === 'release'
-    expect(pkg.scripts['release:check']).toBe('node scripts/publish-release.mjs --dry-run')
-    expect(pkg.scripts['release:publish']).toBe('node scripts/publish-release.mjs')
+    expect(pkg.scripts['release:check:sano-agent']).toBe('node scripts/publish-release.mjs --sano-agent --dry-run')
+    expect(pkg.scripts['release:publish:sano-agent']).toBe('node scripts/publish-release.mjs --sano-agent')
   })
 
   it('the test-only data folder key never ships', () => {

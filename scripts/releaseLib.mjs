@@ -333,7 +333,7 @@ export function checkLatestYml(obj, { version, setupName, sha512, size, notBefor
   const date = obj.releaseDate instanceof Date ? obj.releaseDate : new Date(String(obj.releaseDate ?? ''))
   if (Number.isNaN(date.getTime())) p.push('latest.yml không có releaseDate hợp lệ.')
   else if (notBefore && date.getTime() < new Date(notBefore).getTime()) {
-    p.push(`releaseDate ${date.toISOString()} cũ hơn commit phát hành (${notBefore}): bản build cũ hơn commit, chạy lại npm run dist:win.`)
+    p.push(`releaseDate ${date.toISOString()} cũ hơn commit phát hành (${notBefore}): bản build cũ hơn commit, chạy lại npm run dist:sano-agent.`)
   }
   return p
 }
@@ -866,7 +866,7 @@ export function offlineEnvSet(env) {
  * Refusals of scripts/electron-build.mjs (release builds): → Vietnamese problem text, or null when the build may run.
  * - ELECTRON_BUILDER_OFFLINE set: electron-builder then signs WITHOUT an RFC 3161 timestamp and says nothing.
  * - no adjacent `--publish never`, or any other publish policy on the line (`--publish always`, `-p onTag`,
- *   `--publish=always`): a release build never publishes; npm run release:publish does that after its checks.
+ *   `--publish=always`): a release build never publishes; npm run release:publish:sano-agent does that after its checks.
  */
 export function buildArgsProblem(env, argv) {
   if (offlineEnvSet(env)) {
@@ -885,7 +885,7 @@ export function buildArgsProblem(env, argv) {
       return `Tham số "${a}" không được phép: bản build phát hành luôn dùng "--publish never".`
     }
   }
-  if (!never) return 'Thiếu "--publish never": bản build phát hành không bao giờ tự đăng lên GitHub (đăng bằng npm run release:publish sau khi kiểm tra).'
+  if (!never) return 'Thiếu "--publish never": bản build phát hành không bao giờ tự đăng lên GitHub (đăng bằng npm run release:publish:sano-agent sau khi kiểm tra).'
   return null
 }
 
@@ -1012,7 +1012,7 @@ export function checkBuildFreshness({ unpacked, installers }) {
     for (const i of Array.isArray(installers) ? installers : []) {
       if (!Number.isFinite(u?.mtimeMs) || !Number.isFinite(i?.mtimeMs)) continue
       if (u.mtimeMs > i.mtimeMs) {
-        p.push(`${u.label} trong win-unpacked mới hơn ${i.label}: thư mục win-unpacked không phải nội dung của bộ cài sẽ đăng. Build lại bằng npm run dist:win.`)
+        p.push(`${u.label} trong win-unpacked mới hơn ${i.label}: thư mục win-unpacked không phải nội dung của bộ cài sẽ đăng. Build lại bằng npm run dist:sano-agent.`)
       }
     }
   }

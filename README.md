@@ -217,9 +217,9 @@ npm run dev
 | `npm run build` | Kiểm tra kiểu và build giao diện vào `dist/` (bản desktop đóng gói thư mục này) |
 | `npm run preview` | Chạy thử bản đã build |
 | `npm run desktop` | Build rồi mở bản desktop (Electron) trên máy |
-| `npm run dist:win` | Tạo 2 file `.exe` **đã ký số** (cài đặt + portable) trong `release/`, file tự cập nhật (`latest.yml`, `.blockmap`) trong `release/_build/`; bản cũ tự chuyển vào `release/ban-cu/`. Cần khoá ký của tác giả trên máy và có mạng ([docs/SIGNING.md](docs/SIGNING.md)) |
-| `npm run release:check` | Xem trước việc đăng bản: kiểm tra tag, file, nguồn cập nhật, GitHub và in đúng các lệnh sẽ chạy (không đăng gì) |
-| `npm run release:publish` | Đăng bản lên GitHub: repo riêng `sanovids` trước, trang tải về công khai `sanovids-releases` sau cùng (chỉ chủ dự án) |
+| `npm run dist:sano-agent` | Tạo 2 file `.exe` **đã ký số** của Sano Agent (cài đặt + portable) trong `release/sano-agent/`, file tự cập nhật (`latest.yml`, `.blockmap`) trong `release/sano-agent/_build/`; bản cũ tự chuyển vào `release/sano-agent/ban-cu/`. Cần khoá ký của tác giả trên máy, checkout SANO (`SANO_REPO`) và có mạng ([docs/SIGNING.md](docs/SIGNING.md)) |
+| `npm run release:check:sano-agent` | Xem trước việc đăng bản Sano Agent: kiểm tra tag, file, nguồn cập nhật, GitHub và in đúng các lệnh sẽ chạy (không đăng gì) |
+| `npm run release:publish:sano-agent` | Đăng bản Sano Agent lên trang tải về công khai `sano-agent-releases` (chỉ chủ dự án) |
 | `npm run build:sano` | Dựng web SANO (commit ghim trong `sano-agent/sano.json`, checkout SANO ở biến `SANO_REPO`) vào `sano-dist/` cho Sano Agent. `npm run dist:sano-agent` tự chạy lệnh này |
 | `npm run icons` | Tạo lại icon ứng dụng |
 | `node scripts/third-party-notices.mjs` | Tạo lại giấy phép của các thư viện mã nguồn mở (`build/license-third-party.txt` → `THIRD-PARTY-NOTICES.txt` trong thư mục cài). Chạy sau khi thêm / nâng thư viện: `npm test` báo nếu file đã cũ |
@@ -228,14 +228,16 @@ npm run dev
 > 💾 Dữ liệu được lưu **ngay trên máy** (trong app desktop, thư mục `%APPDATA%\SanoVids`), không gửi đi đâu.
 
 ### Phát hành bản mới (chỉ chủ dự án)
-1. Viết mục `## [x.y.z] — ngày — tiêu đề` ở đầu `CHANGELOG.md` (đây cũng là phần **Có gì mới** người dùng thấy trong app) và đổi `version` trong `package.json`.
-2. Merge vào `main`.
-3. Trên `main`: `git tag -a vX.Y.Z -m "SanoVids X.Y.Z"` rồi `git push origin vX.Y.Z`.
-4. `npm run dist:win` (build sau khi tag, để ngày build mới hơn commit). Máy build phải có khoá ký trong `Cert:\CurrentUser\My`, thiếu là build dừng ([docs/SIGNING.md](docs/SIGNING.md)).
-5. `npm run release:check`: mọi dòng phải là ✓ (⚠ chỉ để lưu ý). Đổi chứng chỉ ký thì phải theo đúng "ghim trước, ký sau" ([docs/SIGNING.md](docs/SIGNING.md) mục 7), kiểm tra này chặn nếu làm tắt.
-6. `npm run release:publish`: tạo bản nháp → tải file lên → kiểm tra SHA-256 → đăng repo riêng rồi mới đăng trang tải về công khai. Bị ngắt giữa chừng thì chạy lại, an toàn.
+SanoVids đã ngừng ở bản cuối 1.0.0 (D236): `main` không còn đường đăng SanoVids, `scripts/publish-release.mjs` thiếu `--sano-agent` là dừng. Từ giờ chỉ phát hành Sano Agent:
 
-Chi tiết: [docs/UPDATES.md](docs/UPDATES.md).
+1. Viết mục `## [x.y.z] — ngày — tiêu đề` ở đầu `sano-agent/CHANGELOG.md` (đây cũng là phần **Có gì mới** người dùng thấy trong app) và đổi `version` trong `package.json`.
+2. Merge vào `main`.
+3. Trên `main`: `git tag -a sano-agent-vX.Y.Z -m "Sano Agent X.Y.Z"` rồi `git push origin sano-agent-vX.Y.Z`.
+4. `npm run dist:sano-agent` (build sau khi tag, để ngày build mới hơn commit; trong shell có `SANO_API_URL=https://sa.sanogroup.tv`, giữ shell đó cho hai bước sau). Máy build phải có khoá ký trong `Cert:\CurrentUser\My`, thiếu là build dừng ([docs/SIGNING.md](docs/SIGNING.md)).
+5. `npm run release:check:sano-agent`: mọi dòng phải là ✓ (⚠ chỉ để lưu ý). Đổi chứng chỉ ký thì phải theo đúng "ghim trước, ký sau" ([docs/SIGNING.md](docs/SIGNING.md) mục 7), kiểm tra này chặn nếu làm tắt.
+6. `npm run release:publish:sano-agent`: tạo bản nháp → tải file lên → kiểm tra SHA-256 → đăng trang tải về công khai. Bị ngắt giữa chừng thì chạy lại, an toàn.
+
+Chi tiết: [docs/SANO-DESKTOP.md](docs/SANO-DESKTOP.md) mục 6 và [docs/UPDATES.md](docs/UPDATES.md).
 
 ---
 

@@ -396,36 +396,33 @@ Chủ dự án làm theo đúng thứ tự (từ checkout `main` sạch, trên m
      chính (D245). Nếu D244 không xác nhận được và Minh chọn icon tạm (cần D mới thay D232) thì đó là một commit mới: quay lại bước 3; nếu đã
      qua bước 6 thì tag đã push trỏ sai commit: dời tag hoặc tăng số phiên bản.
 2. ~~Ghim khoá mở khoá chế độ Phát triển~~ **Đã xong:** `sanovids.devUnlockKeys` đã ghim trên `main` từ 0.6.0
-   (`release:check` của cả hai app vẫn chặn khi thiếu).
+   (`release:check:sano-agent` vẫn chặn khi thiếu).
 3. **Merge** nhánh này vào `main` (trước đó sửa ngày ở mục `## [1.0.0] — yyyy-mm-dd — …` của `CHANGELOG.md` và
    `sano-agent/CHANGELOG.md` nếu cần). Số phiên bản chỉ có một nguồn: `version` trong `package.json` (D235); bản sau
    tăng số đó và thêm mục mới vào `sano-agent/CHANGELOG.md`. Bản 1.0.0: **Sano Agent đăng trước, SanoVids 1.0.0**
    (bản cuối, D236) **đăng sau cùng**, cả hai từ chính commit này. Nút "Tải Sano Agent" của bản cuối SanoVids mở trang
    tải về của Sano Agent, nên trang đó phải có bản cài trước.
-4. **Build cả hai**, lần lượt: `npm ci`, `npm test`, `npm run dist:sano-agent` (ra `release\sano-agent\`; từ 1.1 trong
-   shell có `SANO_API_URL=https://sa.sanogroup.tv`, giữ shell đó cho bước 8 và 9, mục 3a), rồi
-   `npm run dist:win` (ra `release\`). Có mạng (dấu thời gian của chữ ký, `npm ci` của SANO). Chưa cần tag: build chỉ cần
-   đúng commit. `dist:sano-agent` cần checkout SANO có commit ghim trong `sano-agent/sano.json` (`SANO_REPO`, mục 5).
+4. **Build:** `npm ci`, `npm test`, `npm run dist:sano-agent` (ra `release\sano-agent\`; từ 1.1 trong shell có
+   `SANO_API_URL=https://sa.sanogroup.tv`, giữ shell đó cho bước 8 và 9, mục 3a). SanoVids không build nữa (bản cuối 1.0.0,
+   D236). Có mạng (dấu thời gian của chữ ký, `npm ci` của SANO). Chưa cần tag: build chỉ cần đúng commit.
+   `dist:sano-agent` cần checkout SANO có commit ghim trong `sano-agent/sano.json` (`SANO_REPO`, mục 5).
 5. **Thử bản cài Sano Agent** theo mục 7. Có lỗi: sửa trên nhánh, merge, quay lại bước 4. Lúc này chưa có tag, chưa đăng
    gì, nên không mất bản SanoVids nào.
-6. **Đặt tag nguồn** cả hai trên đúng commit đó của `main`: `git tag -a sano-agent-v1.0.0 -m "Sano Agent 1.0.0"`,
-   `git tag -a v1.0.0 -m "SanoVids 1.0.0"`, rồi `git push origin sano-agent-v1.0.0 v1.0.0`.
+6. **Đặt tag nguồn** trên đúng commit đó của `main`: `git tag -a sano-agent-vX.Y.Z -m "Sano Agent X.Y.Z"`, rồi
+   `git push origin sano-agent-vX.Y.Z`.
 7. **Tạo repo công khai** `JameSteven404/sano-agent-releases` có nhánh `main` với `README.md` (chép từ
    `sano-agent/releases-repo/README.md`), `LICENSE.txt`, `SanoVids-NguyenGiangMinh.cer`, `tin-cay-chung-chi.ps1` (chép từ
    `scripts/releases-repo/`).
-8. **Kiểm tra cả hai:** `npm run release:check:sano-agent` và `npm run release:check`: mọi dòng ✓.
-   `release:check:sano-agent` kiểm chữ ký, app-update.yml trỏ `sano-agent-releases` với
-   `updaterCacheDirName: sano-agent-updater`, tag `v1.0.0` của SanoVids trỏ vào HEAD (cả trên GitHub), Electron giống
-   bản SanoVids công khai mới nhất, `app.asar` có `sano-dist/index.html` và `sano-dist/BUILD.json` với đúng commit ghim,
-   và `THIRD-PARTY-NOTICES.txt` giống `build/license-third-party-sano-agent.txt`.
+8. **Kiểm tra:** `npm run release:check:sano-agent`: mọi dòng ✓. Lệnh này kiểm chữ ký, app-update.yml trỏ
+   `sano-agent-releases` với `updaterCacheDirName: sano-agent-updater`, Electron theo mục 5 "Cùng Electron", `app.asar` có
+   `sano-dist/index.html` và `sano-dist/BUILD.json` với đúng commit ghim, và `THIRD-PARTY-NOTICES.txt` giống
+   `build/license-third-party-sano-agent.txt`.
 9. **Đăng Sano Agent:** `npm run release:publish:sano-agent` (chỉ repo công khai; repo nguồn chỉ có tag `sano-agent-v…`,
    không có release). Repo công khai dùng tag `v1.0.0`, như electron-updater cần. Mở
    `https://github.com/JameSteven404/sano-agent-releases/releases/latest`: phải thấy bộ cài 1.0.0.
-10. **Đăng SanoVids 1.0.0 khi Minh và 1–2 người trong team đã dùng Sano Agent ổn định** (ước lượng 1–2 ngày sau bước
-    9, D247; bản này đẩy người dùng SanoVids sang Sano Agent; đã đăng ngày 28/10/2026, là bản cuối). Nếu `main`
-    đã có commit mới từ bước 6: `git checkout v1.0.0`
-    (cảnh báo "không phải main" là bình thường) và dùng bộ cài SanoVids đã build ở bước 4 trong `release\`. Rồi `npm run release:publish` ([UPDATES.md](UPDATES.md) mục 3, bước 6–7). Đẩy tay
-    `scripts/releases-repo/README.md` mới (báo đã gộp, có liên kết tải Sano Agent) lên `main` của `sanovids-releases`.
+10. ~~Đăng SanoVids 1.0.0~~ **Đã đăng ngày 28/10/2026, là bản cuối (D236, D247).** `main` không còn đường đăng SanoVids:
+    `scripts/publish-release.mjs` thiếu `--sano-agent` là dừng. Bản vá SanoVids: mục 8. README của trang tải về SanoVids
+    vẫn đẩy tay từ `scripts/releases-repo/` lên `main` của `sanovids-releases` khi có thay đổi.
 
 ## 7. Kiểm thử bản cài 1.0
 
@@ -460,8 +457,9 @@ cookie, mật khẩu hay khoá.
 Khi bản mới hỏng. Không bao giờ xoá release (máy đã cài cần nó để so chữ ký và tải bản vá).
 
 **App (Sano Agent):** SanoVids 1.0.0 là bản cuối: không đánh dấu nó pre-release (bước kiểm sẽ quay về luật cùng commit
-cũ và chặn mọi bản Sano Agent). Bản vá SanoVids chỉ khi Minh duyệt, và phải nâng `SANOVIDS_FINAL_VERSION` trong
-`scripts/releaseLib.mjs` cùng lúc.
+cũ và chặn mọi bản Sano Agent). Bản vá SanoVids chỉ khi Minh duyệt: `main` không còn công cụ đăng SanoVids, nên chỉ build
+được từ tag `v1.0.0` (tag này còn đủ `dist:win`, `release:check`, `release:publish`), và phải nâng
+`SANOVIDS_FINAL_VERSION` trong `scripts/releaseLib.mjs` của `main` cùng lúc.
 1. Trên repo công khai, sửa release hỏng → đánh dấu **pre-release**. App bỏ qua pre-release, nên máy chưa tải sẽ không
    nhận bản đó. Máy đã tải về rồi vẫn có thể cài nó khi tắt app; bản vá ở bước 2 thay nó.
 2. Phát hành **1.0.1** từ commit tốt cuối cùng (nhánh mới từ commit đó, tăng `version`, thêm mục CHANGELOG). App chỉ cài

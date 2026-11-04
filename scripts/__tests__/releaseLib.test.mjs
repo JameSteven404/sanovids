@@ -305,7 +305,7 @@ describe('checkLatestYml (0.4.2 latest.yml)', () => {
   it('flags a build older than the release commit', () => {
     const p = checkLatestYml(obj, { ...EXPECT_042, notBefore: '2026-10-02T21:18:31+07:00' })
     expect(p).toHaveLength(1)
-    expect(p[0]).toMatch(/chạy lại npm run dist:win/)
+    expect(p[0]).toMatch(/chạy lại npm run dist:sano-agent/)
     expect(checkLatestYml(obj, { ...EXPECT_042, notBefore: '2026-10-02T21:00:00+07:00' })).toEqual([])
   })
   it('flags every mismatch', () => {
@@ -637,6 +637,8 @@ describe('release scripts (source guarantees)', () => {
   })
   it('publish-release checks the signed build before anything is published', () => {
     const src = read('publish-release.mjs')
+    // SanoVids stopped at its final 1.0.0 (D236): without --sano-agent nothing else runs
+    expect(src).toMatch(/const PRODUCT = productFromArgv\(process\.argv\)\n\/\/ .*\nif \(!PRODUCT\.config\) \{\n  console\.error\('SanoVids đã ngừng .*'\)\n  process\.exit\(1\)\n\}\n/)
     // the files app.asar must hold: one shared list (the Windows group (g) and the Mac zip check use it)
     for (const f of ['electron/main.cjs', 'electron/preload.cjs', 'electron/updater.cjs', 'electron/updater-rules.cjs', 'electron/signature.cjs', 'electron/hardening-rules.cjs', 'electron/keeplogin-rules.cjs', 'electron/google-signin-rules.cjs', 'electron/sano-account-rules.cjs']) {
       expect(lib.REQUIRED_ASAR_FILES).toContain(f)

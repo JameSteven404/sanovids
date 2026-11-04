@@ -23,7 +23,7 @@ Bản ≤ 0.4.2 không có trình cập nhật: người dùng phải **cài tay
 
 ```
 package.json  build.publish = { github, JameSteven404, sanovids-releases, releaseType: release }
-      │ electron-builder (npm run dist:win)
+      │ electron-builder (SanoVids tới bản cuối 1.0.0; Sano Agent: npm run dist:sano-agent, nguồn ở mục 3 "Sano Agent")
       ▼
 resources/app-update.yml  ← nguồn DUY NHẤT app đọc (không setFeedURL, không token, renderer không gửi URL)
       │
@@ -73,9 +73,9 @@ renderer: lib/updates.ts ⇄ src/updateActions.ts ⇄ UpdatePill · UpdateDialog
 | `UpdatePill.tsx`, `UpdateDialog.tsx`, nhóm Cài đặt "Cập nhật" | Giao diện |
 | `src/providers/dev/updates.ts`, tab Bảng phát triển "Cập nhật" | Giả lập trình cập nhật khi chạy `npm run dev` (không bao giờ chạy trong Electron) |
 | `scripts/update-notes.mjs` | Mục CHANGELOG của phiên bản → `build/release-notes.md` (gitignore) → `releaseNotes` trong latest.yml = phần **Có gì mới** trong app. Dòng tiêu đề kiểu `✨ **…**` thành `### ✨ …` để app hiện là tiêu đề |
-| `scripts/electron-build.mjs` | Chạy electron-builder cho `dist:win`: tắt cache build (`ELECTRON_BUILDER_DISABLE_BUILD_CACHE=true`), từ chối khi có `ELECTRON_BUILDER_OFFLINE` (mất dấu thời gian) hoặc thiếu `--publish never` |
+| `scripts/electron-build.mjs` | Chạy electron-builder cho `dist:sano-agent`: tắt cache build (`ELECTRON_BUILDER_DISABLE_BUILD_CACHE=true`), từ chối khi có `ELECTRON_BUILDER_OFFLINE` (mất dấu thời gian) hoặc thiếu `--publish never` |
 | `scripts/tidy-release.mjs` | Dọn `release/`; giữ `latest.yml` + blockmap hiện tại trong `release/_build`; **cảnh báo to** nếu app-update.yml không trỏ đúng nguồn hoặc **thiếu `publisherName`** |
-| `scripts/publish-release.mjs` + `scripts/releaseLib.mjs` | Kiểm tra rồi đăng lên hai repo. Logic thuần trong releaseLib, test: `scripts/__tests__/releaseLib.test.mjs` |
+| `scripts/publish-release.mjs` + `scripts/releaseLib.mjs` | Kiểm tra rồi đăng Sano Agent; thiếu `--sano-agent` là dừng (SanoVids đã ngừng ở bản cuối 1.0.0, D236). Logic thuần trong releaseLib, test: `scripts/__tests__/releaseLib.test.mjs` |
 | `scripts/buildInspect.mjs` | Đọc lại một bản build Windows: chữ ký + dấu thời gian của Setup / Portable / exe / `elevate.exe`, chữ ký của **mọi** file mã trong `win-unpacked`, thông tin phiên bản, fuse, mã toàn vẹn asar trong exe, `win-unpacked` không mới hơn bộ cài, giấy phép cạnh exe, `app-update.yml` (nhóm kiểm tra **(j)**, dùng lại trong bài E2E). Test: `scripts/__tests__/buildInspect.test.mjs` |
 | `scripts/third-party-notices.mjs` | Tạo `build/license-third-party.txt` (chép thành `THIRD-PARTY-NOTICES.txt` cạnh exe) từ `node_modules`: giấy phép của mọi gói mà renderer import / `app.asar` chứa. Test `thirdPartyNotices.test.mjs` báo khi file đã cũ |
 
@@ -90,6 +90,11 @@ renderer: lib/updates.ts ⇄ src/updateActions.ts ⇄ UpdatePill · UpdateDialog
 | localStorage `bdp:pref:updates` | Công tắc "Tự động tải bản cập nhật" (khác `downloads.autoDownload` = "Tự tải khi video xong") |
 
 ## 3. Đăng một bản mới (chủ dự án)
+
+> **SanoVids đã ngừng ở bản cuối 1.0.0 (D236).** `main` không còn `dist:win`, `release:check`, `release:publish`;
+> `scripts/publish-release.mjs` thiếu `--sano-agent` là dừng. Các bước dưới đây là đường đăng SanoVids tới 1.0.0, giữ để
+> tra cứu: các lệnh đó chỉ còn ở tag `v1.0.0` ([SANO-DESKTOP.md](SANO-DESKTOP.md) mục 8). Nhóm kiểm tra (a)–(j) vẫn chạy
+> cho Sano Agent, với tên file và repo của nó. Phát hành bây giờ chỉ là Sano Agent: xem **Sano Agent** ở cuối mục này.
 
 **Chuẩn bị một lần**
 - Cài [GitHub CLI](https://cli.github.com) và `gh auth login` bằng tài khoản JameSteven404 (có quyền ghi cả hai repo).
@@ -158,7 +163,7 @@ build từ commit nào cũng được; cổng kiểm tra vẫn báo ✗ khi Elec
 SanoVids công khai mới nhất mới hơn 1.0.0 ([SANO-DESKTOP.md](SANO-DESKTOP.md) mục 5 "Cùng Electron").
 
 ### Quy tắc an toàn (đừng phá)
-- **Không bao giờ build bản phát hành thiếu `build.publish`** (hoặc trỏ nơi khác): người cài bản đó sẽ không bao giờ nhận bản sau. `tidy-release` cảnh báo, `release:check` chặn.
+- **Không bao giờ build bản phát hành thiếu `build.publish`** (hoặc trỏ nơi khác): người cài bản đó sẽ không bao giờ nhận bản sau. `tidy-release` cảnh báo, `release:check:sano-agent` chặn.
 - **Không xoá bản phát hành công khai cũ hay file `.blockmap` cũ**: máy đang ở bản cũ cần blockmap của bản cũ để chỉ tải phần thay đổi; ai đó có thể đang tải. Không đổi repo công khai thành riêng tư (mọi app sẽ báo "Chưa tìm thấy bản cập nhật nào").
 - **Luôn đăng qua bản nháp**, repo công khai **cuối cùng**. Không đánh dấu pre-release (app bỏ qua pre-release).
 - **Không dùng lại số phiên bản**, không sửa file của bản đã đăng. Tag luôn là `v<phiên bản>`, tên file luôn có phiên bản.
@@ -211,17 +216,17 @@ SanoVids công khai mới nhất mới hơn 1.0.0 ([SANO-DESKTOP.md](SANO-DESKTO
 - **Bản build ký bằng chứng chỉ thật** (0.4.2, `--publish never`, thư mục tạm, không cài): `buildInspect` 22/22 ✓ (Setup, Portable, exe, `elevate.exe` ký đúng chứng chỉ + dấu thời gian DigiCert; 4 DLL ký bởi tác giả; 2 DLL Microsoft giữ chữ ký Microsoft; không có file mã nào khác chưa ký; VersionInfo + ProductName / ProductVersion của Setup; fuse; mã toàn vẹn asar; `LICENSE.txt` + `THIRD-PARTY-NOTICES.txt`; `app-update.yml`); `app.asar` chứa đúng các `electron/*.cjs` hiện tại và mọi gói electron-updater cần, `package.json` bên trong đúng tác giả, chỉ một ghim, không có profile thử; icon trong exe / Setup / Portable và `dist/icons/icon.ico` giống hệt `build/icon.ico`. Chạy thử với profile tạm: cửa sổ mở sau ~1,6 giây, tự kiểm tra exe + 4 DLL ký bởi tác giả và 2 DLL Microsoft giữ chữ ký Microsoft; `--remote-debugging-port` bị từ chối (thoát mã 3, không mở cổng, không tạo profile) dù có `SANOVIDS_PROFILE_DIR`.
 - Kiểm toán: chỉ tắt tiến trình của mình (theo PID), gỡ bản cài thử, không còn khoá gỡ cài đặt / thư mục dữ liệu / bộ nhớ đệm nào của `SanoVidsUpdTest9`; mọi kho chứng chỉ không đổi, chứng chỉ thử không nằm trong kho nào; `release/` không đổi; không bản thử nào chạy trên `%APPDATA%\SanoVids` (mọi bản build của nhánh này ghi `logs\updater.log` khi mở — thư mục thật không có file đó; các thay đổi trong đó là của SanoVids 0.4.2 người dùng đang mở).
 
-**Chưa chạy E2E** (chỉ có test tự động / đọc mã): mã lỗi `signature-unverified`, từ chối bộ cài sai phiên bản (chống quay về bản cũ), file bị từ chối vẫn bị bỏ qua sau khi mở lại app, băm lại SHA-512 khi tráo bộ cài, tự kiểm tra báo `tampered` khi một DLL bị sửa, danh sách tham số bị từ chối mở rộng (`--gpu-launcher`, `--disable-features`…), `isPackagedApp` (exe đổi tên), xoá `SSLKEYLOGFILE`, "ghim trước, ký sau" của `release:check`; và trong bản đóng gói: tải `.exe` bị huỷ / `.mp4` được lưu, quyền vị trí / thông báo, `window.open('file:///…')`, F12 khi không có profile thử, sửa 1 byte trong một đoạn mã nạp muộn của `app.asar` (ví dụ `dist/assets/TakeViewer-*.js`: app mở bình thường, phải thoát mã 1 khi mở màn hình đó), cài thật bản ký bằng chứng chỉ thật (trang chào / giấy phép của chính Setup đó), cài cho mọi người dùng. Chạy lại các bài thử cập nhật và chống can thiệp trên bản build 0.5.0 trước khi phát hành.
+**Chưa chạy E2E** (chỉ có test tự động / đọc mã): mã lỗi `signature-unverified`, từ chối bộ cài sai phiên bản (chống quay về bản cũ), file bị từ chối vẫn bị bỏ qua sau khi mở lại app, băm lại SHA-512 khi tráo bộ cài, tự kiểm tra báo `tampered` khi một DLL bị sửa, danh sách tham số bị từ chối mở rộng (`--gpu-launcher`, `--disable-features`…), `isPackagedApp` (exe đổi tên), xoá `SSLKEYLOGFILE`, "ghim trước, ký sau" của `release:check:sano-agent`; và trong bản đóng gói: tải `.exe` bị huỷ / `.mp4` được lưu, quyền vị trí / thông báo, `window.open('file:///…')`, F12 khi không có profile thử, sửa 1 byte trong một đoạn mã nạp muộn của `app.asar` (ví dụ `dist/assets/TakeViewer-*.js`: app mở bình thường, phải thoát mã 1 khi mở màn hình đó), cài thật bản ký bằng chứng chỉ thật (trang chào / giấy phép của chính Setup đó), cài cho mọi người dùng. Chạy lại các bài thử cập nhật và chống can thiệp trên bản build 0.5.0 trước khi phát hành.
 
 ## 5. Khi người dùng báo lỗi
 
 | App báo | Nghĩa là | Làm gì |
 |---|---|---|
-| Chưa tìm thấy bản cập nhật nào trên trang tải về. | Repo công khai chưa có bản đã đăng / thiếu `latest.yml` / repo bị chuyển riêng tư | Kiểm tra trang tải về; chạy lại `release:publish` |
+| Chưa tìm thấy bản cập nhật nào trên trang tải về. | Repo công khai chưa có bản đã đăng / thiếu `latest.yml` / repo bị chuyển riêng tư | Kiểm tra trang tải về; chạy lại `release:publish:sano-agent` |
 | Không kết nối được máy chủ cập nhật. | Mất mạng, tường lửa, proxy | App tự thử lại sau 30 phút |
 | Máy chủ cập nhật đang bận. | GitHub giới hạn lượt (403 / 429) | Đợi; app tự thử lại |
-| File cập nhật tải về bị lỗi (sai mã kiểm tra) nên đã bị bỏ. | File trên GitHub khác `latest.yml` (hoặc tải hỏng) | Kiểm tra bằng `release:check` / đăng bản mới hơn |
-| Bản cập nhật này không mang chữ ký số đúng của tác giả hoặc không đúng phiên bản được báo (có thể là file giả mạo) nên đã bị xoá, không cài gì. Đừng tự tải bản này về cài. Chỉ cài bộ cài có dấu vân tay chứng chỉ trùng với Cài đặt → Giới thiệu, hoặc hỏi tác giả. | Mã `signature`: bộ cài tải về không ký, ký bởi chứng chỉ chưa ghim (kể cả trùng tên), bị sửa sau khi ký, không đúng phiên bản / sản phẩm được báo, hoặc bị đổi sau khi xác minh. Lý do ở dòng `signature <lý do>` trong `updater.log`. Hiện một thông báo cho mỗi phiên bản; **Cài đặt → Cập nhật → Xem chi tiết** mở hộp cập nhật | Người dùng: đừng cài bản đó; so dấu vân tay với Giới thiệu trước khi tự cài bộ cài nào, hoặc hỏi tác giả. Tác giả: `release:check` nhóm (j); bản đã đăng sai thì đăng bản mới hơn, ký đúng ([SIGNING.md](SIGNING.md)); nếu chính bạn không đăng bản đó, coi như tài khoản GitHub bị chiếm |
+| File cập nhật tải về bị lỗi (sai mã kiểm tra) nên đã bị bỏ. | File trên GitHub khác `latest.yml` (hoặc tải hỏng) | Kiểm tra bằng `release:check:sano-agent` / đăng bản mới hơn |
+| Bản cập nhật này không mang chữ ký số đúng của tác giả hoặc không đúng phiên bản được báo (có thể là file giả mạo) nên đã bị xoá, không cài gì. Đừng tự tải bản này về cài. Chỉ cài bộ cài có dấu vân tay chứng chỉ trùng với Cài đặt → Giới thiệu, hoặc hỏi tác giả. | Mã `signature`: bộ cài tải về không ký, ký bởi chứng chỉ chưa ghim (kể cả trùng tên), bị sửa sau khi ký, không đúng phiên bản / sản phẩm được báo, hoặc bị đổi sau khi xác minh. Lý do ở dòng `signature <lý do>` trong `updater.log`. Hiện một thông báo cho mỗi phiên bản; **Cài đặt → Cập nhật → Xem chi tiết** mở hộp cập nhật | Người dùng: đừng cài bản đó; so dấu vân tay với Giới thiệu trước khi tự cài bộ cài nào, hoặc hỏi tác giả. Tác giả: `release:check:sano-agent` nhóm (j); bản đã đăng sai thì đăng bản mới hơn, ký đúng ([SIGNING.md](SIGNING.md)); nếu chính bạn không đăng bản đó, coi như tài khoản GitHub bị chiếm |
 | Chưa kiểm tra được chữ ký số của bản cập nhật (máy đang chặn việc kiểm tra hoặc kiểm tra quá lâu) nên bản này chưa được cài. Bấm “Thử lại” để kiểm tra lại. | Mã `signature-unverified`: PowerShell bị chính sách (AppLocker / WDAC) / diệt virus chặn, quá 60 s, chuỗi chứng chỉ lạ, hoặc app không có ghim | **Thử lại**; app tự thử lại mỗi ngày. Máy bị khoá chính sách thì nhờ quản trị cho phép PowerShell chạy bình thường |
 | Ổ đĩa không đủ chỗ để tải bản cập nhật. | Ổ C đầy | Dọn ổ đĩa |
 | Không khởi động được trình cài bản cập nhật. | Bộ cài không chạy được khi bấm **Khởi động lại để cập nhật** | Tắt hẳn app (bản mới tự cài khi tắt); hoặc tải Setup ở trang tải về, so dấu vân tay, cài đè |
