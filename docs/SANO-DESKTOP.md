@@ -328,9 +328,10 @@ Cùng mã với SanoVids, đóng gói bằng `sano-agent/electron-builder.cjs` (
   thư mục đó.
 - **Sao lưu** `%APPDATA%\SanoVids` (đóng cả hai app) trước lần mở Sano Agent đầu tiên. **Không mở cùng lúc** hai app.
 - **Cùng Electron (hết luật cùng commit, D236):** SanoVids đã ngừng ở bản cuối 1.0.0, nên Sano Agent sau 1.0.0 (bản vá
-  1.0.1 hay 1.1.0) build từ commit nào của `main` cũng được. `release:check:sano-agent` vẫn báo ✗ khi Electron trong `package-lock.json` khác
-  Electron của SanoVids 1.0.0, hoặc khi bản SanoVids công khai mới nhất mới hơn 1.0.0 (lẽ ra đã ngừng). Muốn đổi Electron
-  của Sano Agent thì cần Minh quyết định mới, vì không còn bản SanoVids nào để phát hành kèm. Sano Agent đổi định dạng
+  1.0.1 hay 1.1.0) build từ commit nào của `main` cũng được. `release:check:sano-agent` cho qua Electron trong `package-lock.json` cùng major và
+  không cũ hơn Electron của SanoVids 1.0.0 (44.5.1): bản vá bảo mật cùng major, SanoVids 1.0.0 vẫn mở dữ liệu vì nó chỉ
+  từ chối major mới hơn (mục dưới). Báo ✗ khi Electron cũ hơn (không bao giờ hạ), khác major (cần Minh quyết định mới, vì
+  không còn bản SanoVids nào để phát hành kèm), hoặc khi bản SanoVids công khai mới nhất mới hơn 1.0.0 (lẽ ra đã ngừng). Sano Agent đổi định dạng
   dữ liệu trong `%APPDATA%\SanoVids` thì phải giữ để SanoVids 1.0.0 còn đọc được, hoặc cần Minh quyết định. (Đến bản
   1.0.0: build từ commit của bản SanoVids công khai mới nhất hoặc của tag SanoVids cùng phiên bản, mục 6 bước 10.)
 - **Bản cũ không mở dữ liệu bản mới đã mở:** hai app tự cập nhật riêng, nên app kia có thể đã lên Electron mới trước. Mỗi
@@ -466,10 +467,11 @@ cũ và chặn mọi bản Sano Agent). Bản vá SanoVids chỉ khi Minh duyệ
 2. Phát hành **1.0.1** từ commit tốt cuối cùng (nhánh mới từ commit đó, tăng `version`, thêm mục CHANGELOG). App chỉ cài
    bản **mới hơn** bản đang chạy, nên không quay về số cũ được: luôn đi tiếp số mới.
 3. **Không bao giờ hạ Electron major.** App ghi Electron của nó vào `%APPDATA%\SanoVids\electron-version`; app có major
-   cũ hơn số đó thì không mở. Bản vá phải giữ Electron major của bản hỏng (hoặc mới hơn).
+   cũ hơn số đó thì không mở. Bản vá giữ Electron major của bản hỏng; lên major mới cần Minh quyết định (SanoVids 1.0.0
+   sẽ không mở được dữ liệu nữa).
 4. Lưu ý công cụ: SanoVids đã ngừng ở bản cuối 1.0.0 (D236), nên `release:check:sano-agent` không còn đòi cùng commit
-   hay tag SanoVids: bản vá build từ commit tốt cuối cùng. Vẫn đòi cùng Electron với SanoVids 1.0.0 (bước 3, mục 5
-   "Cùng Electron").
+   hay tag SanoVids: bản vá build từ commit tốt cuối cùng. Vẫn đòi Electron cùng major và không cũ hơn SanoVids 1.0.0
+   (bước 3, mục 5 "Cùng Electron").
 
 **Web SANO (D240):** nằm trong bộ cài, nên rút lui đúng như app ở trên: bản vá 1.0.1 ghim commit SANO tốt cuối cùng
 trong `sano-agent/sano.json`. Người dùng không có Docker hay máy chủ SANO nào để quay về. Giữ nguyên địa chỉ `app://sano/`

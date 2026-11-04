@@ -488,7 +488,7 @@ if (!publicReleases) {
 // ───────────────────────────── Sano Agent: SanoVids' data folder ─────────────────────────────
 
 // Both apps open %APPDATA%\SanoVids (D223): Sano Agent ships the Electron of the newest public SanoVids (its commit
-// too, until SANOVIDS_FINAL_VERSION).
+// too, until SANOVIDS_FINAL_VERSION; from it on, a same-major Electron not older than that one).
 if (PRODUCT.config) {
   const sanovidsReleases = ghReady ? readReleases(`${OWNER}/${SANOVIDS.publicRepoName}`) : null
   const sanovidsVersion = sanovidsReleases ? newestPublishedVersion(sanovidsReleases) : null
