@@ -110,7 +110,7 @@ fs.writeFileSync(
     `${BUILD_DIR}\\              File phụ của quá trình build (win-unpacked…) và file cập nhật (latest.yml, .blockmap) dùng khi đăng bản — không cần đụng tới.`,
     '',
     `Lịch sử phiên bản: ${product.changelog} · Tải bản mới: ${RELEASES_URL}`,
-    product.config ? 'Đăng bản mới: npm run release:publish:sano-agent (xem trước: npm run release:check:sano-agent)' : 'Đăng bản mới: npm run release:publish (xem trước: npm run release:check)',
+    'Đăng bản mới: npm run release:publish:sano-agent (xem trước: npm run release:check:sano-agent)',
     '',
   ].join('\r\n'),
 )
@@ -147,7 +147,7 @@ if (!feedOk) {
       '!!   Without the feed, installs of this build would NEVER receive updates; without publisherName',
       "!!   electron-updater's second signature check is off (the build did not use the release configuration).",
       '!!   Check package.json build.publish / build.win.signtoolOptions and rebuild.',
-      '!!   Do not publish it (npm run release:check refuses it too).',
+      '!!   Do not publish it (npm run release:check:sano-agent refuses it too).',
       bar,
       '',
     ].join('\n'),
