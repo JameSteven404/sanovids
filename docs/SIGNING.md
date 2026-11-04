@@ -33,6 +33,10 @@
 `npm run dist:sano-agent` → `scripts/update-notes.mjs --sano-agent` → `scripts/third-party-notices.mjs --check` (giấy phép thư viện cũ thì dừng) → `vite build` → `scripts/build-sano.mjs` → **`scripts/electron-build.mjs --config sano-agent/electron-builder.cjs --win nsis portable --publish never`**
 → `scripts/tidy-release.mjs --sano-agent`.
 
+> Tên file trong mục này (`SanoVids.exe`, `SanoVids-Setup-*`…) là của SanoVids tới bản cuối 1.0.0 (D236). Phát hành bây giờ
+> chỉ là Sano Agent: cùng các bước và các kiểm tra, áp cho `Sano Agent.exe`, `Uninstall Sano Agent.exe`, `SanoAgent-Setup-*`,
+> `SanoAgent-Portable-*` (xem **Sano Agent** ở cuối mục này).
+
 **`scripts/electron-build.mjs`** chạy electron-builder với `ELECTRON_BUILDER_DISABLE_BUILD_CACHE=true` (fuse không nằm
 trong khoá cache của file exe, cache cũ có thể trả về exe chưa đặt fuse), và **từ chối chạy** khi:
 - có biến `ELECTRON_BUILDER_OFFLINE` (electron-builder sẽ âm thầm bỏ dấu thời gian);
