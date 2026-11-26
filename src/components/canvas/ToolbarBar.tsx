@@ -151,7 +151,7 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
     { id: 'takes-all', label: 'Tất cả', checked: takeDisplay === 'all', run: () => ui.setTakeDisplay('all') },
     { id: 'takes-chosen', label: 'Chỉ take chọn ★', checked: takeDisplay === 'chosen', run: () => ui.setTakeDisplay('chosen') },
     { id: 'view-sep', label: '', separator: true },
-    { id: 'minimap', label: minimapHidden ? 'Bản đồ thu nhỏ · đang tạm ẩn vì dự án lớn' : 'Bản đồ thu nhỏ', check: true, checked: showMinimap,
+    { id: 'minimap', label: minimapHidden ? `Bản đồ thu nhỏ · đang tạm ẩn vì ${big ? 'dự án lớn' : 'khung hẹp'}` : 'Bản đồ thu nhỏ', check: true, checked: showMinimap,
       shortcut: 'canvas.minimap', run: () => ui.toggleMinimap() },
   ])
   const addItems: ToolbarMenuItem[] = [

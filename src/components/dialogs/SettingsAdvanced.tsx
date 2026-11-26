@@ -395,8 +395,8 @@ export function ResetAllSetting({ label, hint }: RowProps) {
           <TriangleAlert size={15} />
           <div>
             <b>Đặt mọi cài đặt trên máy này về mặc định?</b> Giao diện, tải video, âm thanh, dây nối, chuyển động, thông báo, tên file, tự động tải bản cập nhật;{' '}
-            {devOpen ? `nhà cung cấp video về ${PROVIDER_LABEL.dev}` : 'cổng canvasapp.io.vn về Tắt'}; khung bên về như mới; các mẹo hiện lại. Dự án, video, thư mục đã chọn và
-            đăng nhập canvasapp giữ nguyên.
+            {devOpen ? `nhà cung cấp video về ${PROVIDER_LABEL.dev}; ` : ''}khung bên về như mới; các mẹo hiện lại. Dự án, video và thư mục đã chọn giữ
+            nguyên.
           </div>
           <div className="dg-confirm-actions">
             <button ref={cancelRef} type="button" className="btn btn-sm" onClick={() => setConfirm(false)}>

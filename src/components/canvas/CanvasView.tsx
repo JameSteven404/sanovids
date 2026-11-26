@@ -98,6 +98,7 @@ import {
   estimatedGeometry,
   estimateDependsOnZoom,
   initialViewport,
+  openingViewport,
   LOD_ZOOM,
   FIT_EVENT,
   focusViewport,
@@ -212,6 +213,7 @@ export function CanvasView() {
   )
 }
 
+const SMALL_MINIMAP = { width: 120, height: 90 }
 const samePos = (a: XY | undefined, b: XY) => !!a && Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5
 const sceneWidth = (s: Scene, live?: ResizeBox) => live?.w ?? sceneNodeSize(s.size)?.w ?? LAYOUT.sceneW
 
@@ -219,6 +221,8 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
   perfCount('CanvasInner')
   const projectId = useProject((s) => s.project.id)
   const [savedViewport] = useState(() => canvasViewports.get(projectId))
+  /** The opening viewport SanoVids set (not one saved this session), while nothing has moved the view since. */
+  const autoView = useRef<Viewport | null>(null)
   const rf = useReactFlow<CanvasNode, LinkEdge>()
   const rfStore = useStoreApi<CanvasNode, LinkEdge>()
   const far = useFarView()
@@ -262,8 +266,8 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
     const off = rfStore.subscribe((s) => {
       if (s.nodes === before || !(s.width > 0 && s.height > 0)) return
       off()
-      const viewport = initialViewport(rf.getNodes(), s.width, s.height)
-      if (viewport) void rf.setViewport(viewport)
+      const viewport = openingViewport(rf.getNodes(), s.width, s.height)
+      if (viewport) void rf.setViewport((autoView.current = viewport))
     })
     setTimeout(off, 3000)
   }, [projectId])
@@ -460,7 +464,8 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
   const startViewport = useRef<Viewport | null | undefined>(savedViewport)
   if (startViewport.current === undefined) {
     const root = rootRef.current
-    startViewport.current = root ? initialViewport(nodes, root.clientWidth, root.clientHeight) : null
+    startViewport.current = root ? openingViewport(nodes, root.clientWidth, root.clientHeight) : null
+    autoView.current = startViewport.current
   }
   const initialFit = useRef<{ done: boolean; off?: () => void }>({ done: !!startViewport.current })
   const onInit = useCallback(() => {
@@ -469,8 +474,8 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
       const { width, height } = rfStore.getState()
       if (!(width > 0 && height > 0)) return false
       initialFit.current.done = true
-      const viewport = initialViewport(rf.getNodes(), width, height)
-      if (viewport) void rf.setViewport(viewport)
+      const viewport = openingViewport(rf.getNodes(), width, height)
+      if (viewport) void rf.setViewport((autoView.current = viewport))
       return true
     }
     if (!fit()) initialFit.current.off = rfStore.subscribe(() => {
@@ -478,6 +483,24 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
     })
   }, [rf, rfStore])
   useEffect(() => () => initialFit.current.off?.(), [])
+  // The opening view follows the stage's size until the view is moved: a window restored from minimized (or resized
+  // first) shows the board fitted to its real size, not to the size it had then.
+  useEffect(() => {
+    let size = [rfStore.getState().width, rfStore.getState().height]
+    return rfStore.subscribe((s) => {
+      if (s.width === size[0] && s.height === size[1]) return
+      size = [s.width, s.height]
+      const auto = autoView.current
+      if (!auto || !(s.width > 0 && s.height > 0)) return
+      const [x, y, zoom] = s.transform
+      if (Math.abs(x - auto.x) > 0.5 || Math.abs(y - auto.y) > 0.5 || Math.abs(zoom - auto.zoom) > 1e-3) {
+        autoView.current = null // moved since: the user's view stays
+        return
+      }
+      const viewport = openingViewport(rf.getNodes(), s.width, s.height)
+      if (viewport) void rf.setViewport((autoView.current = viewport))
+    })
+  }, [rf, rfStore])
 
   const [wasBig, setWasBig] = useState(() => useCanvasLocal.getState().big)
   const big = bigCanvasState(baseNodes.length, wasBig, bigPref)
@@ -485,10 +508,13 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
     setWasBig(big)
     if (useCanvasLocal.getState().big !== big) useCanvasLocal.setState({ big })
   }, [big])
-  const minimapHidden = big && !shownFor
+  // A narrow board (SanoVids inside SANO, a small window) keeps its width for the cards: the map waits until asked for
+  // (M / Hiển thị), then shows small. Even 120 × 90 covered the first scene's title at 768–799 px.
+  const narrowBoard = useStore((s) => s.width > 0 && s.width < 600)
+  const minimapHidden = (big || narrowBoard) && !shownFor
   useEffect(() => {
-    useUI.setState({ minimapAutoHiddenFor: big ? projectId : null })
-    if (minimapHidden && showMinimap && !minimapNotified.has(projectId)) {
+    useUI.setState({ minimapAutoHiddenFor: big || narrowBoard ? projectId : null })
+    if (big && minimapHidden && showMinimap && !minimapNotified.has(projectId)) {
       minimapNotified.add(projectId)
       toast(`Dự án lớn (${baseNodes.length} thẻ): bản đồ thu nhỏ tạm ẩn để canvas mượt hơn.`, {
         action: { label: 'Hiện lại', run: () => {
@@ -498,7 +524,7 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
       })
     }
     return () => { useUI.setState({ minimapAutoHiddenFor: null }) }
-  }, [big, minimapHidden, showMinimap, projectId, baseNodes.length])
+  }, [big, narrowBoard, minimapHidden, showMinimap, projectId, baseNodes.length])
   const wireArea = useStore(useShallow((s) => big && edgeMode === 'all' ? wireViewport(s.transform, s.width, s.height) : null))
   const nearNodes = useMemo(() => {
     if (!wireArea) return null
@@ -1297,6 +1323,7 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
             maskStrokeWidth={1}
             bgColor="var(--panel)"
             ariaLabel="Bản đồ thu nhỏ"
+            style={narrowBoard ? SMALL_MINIMAP : undefined}
           />
         )}
       </ReactFlow>

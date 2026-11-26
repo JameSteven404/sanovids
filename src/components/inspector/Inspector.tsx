@@ -6,11 +6,14 @@ import { shortcutText } from '../../lib/platformText'
 import { Bug, Cloud, Eye, FileText, Film, Keyboard, Link2, MousePointerClick, Plus, Sparkles } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { newScene } from '../../actions'
+import { sanoGatewayProvider, useProviderLimits } from '../../providers'
 import { useCreditKind } from '../../store/credits'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { AssetChip, MediaImg } from '../common/Media'
+import { sanoModeNote } from '../runs/creditText'
+import { useActiveProvider } from '../runs/shared'
 import { useFileDropGuard } from '../sidebar/shared'
 import { AssetInspector } from './AssetInspector'
 import './inspector.css'
@@ -126,6 +129,8 @@ function EmptyInspector() {
   const openDialog = useUI((s) => s.openDialog)
   // Which provider the next run uses (docs/SPEC-v2.md §9, §11): "no cost" is only true for simulated credits.
   const creditKind = useCreditKind()
+  const sano = useActiveProvider() === 'sano-gateway'
+  useProviderLimits((s) => s.rev['sano-gateway']) // SANO's mode (the footer) changes with its revision
   return (
     <div className="in-empty">
       <div className="in-empty-icon">
@@ -187,6 +192,10 @@ function EmptyInspector() {
           <FileText size={14} /> Nhập prompt cũ
         </button>
       </div>
+      {/* Shown only inside SANO, in place of the tip cards (inspector.css). */}
+      <button type="button" className="btn btn-sm btn-ghost in-guide" onClick={() => openDialog({ kind: 'shortcuts' })}>
+        Cách nối và phím tắt <span className="kbd">?</span>
+      </button>
       {creditKind === 'dev' ? (
         <p className="in-empty-foot faint">
           <Bug size={12} /> Chế độ Phát triển: canvasapp giả lập trong máy, video giả, credit dev — không tốn tiền thật.
@@ -194,6 +203,10 @@ function EmptyInspector() {
       ) : creditKind === 'demo' ? (
         <p className="in-empty-foot faint">
           <Sparkles size={12} /> Demo cũ: video giả, credit giả lập — không tốn tiền thật.
+        </p>
+      ) : sano ? (
+        <p className="in-empty-foot faint">
+          <Cloud size={12} /> Tạo video qua máy chủ SANO: {sanoModeNote(sanoGatewayProvider().mode())}.
         </p>
       ) : (
         <p className="in-empty-foot faint">

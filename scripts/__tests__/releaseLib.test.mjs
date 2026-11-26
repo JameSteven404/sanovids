@@ -305,7 +305,7 @@ describe('checkLatestYml (0.4.2 latest.yml)', () => {
   it('flags a build older than the release commit', () => {
     const p = checkLatestYml(obj, { ...EXPECT_042, notBefore: '2026-10-02T21:18:31+07:00' })
     expect(p).toHaveLength(1)
-    expect(p[0]).toMatch(/chạy lại npm run dist:win/)
+    expect(p[0]).toMatch(/chạy lại npm run dist:sano-agent/)
     expect(checkLatestYml(obj, { ...EXPECT_042, notBefore: '2026-10-02T21:00:00+07:00' })).toEqual([])
   })
   it('flags every mismatch', () => {
@@ -442,6 +442,14 @@ describe('signed build checks', () => {
     expect(checkRotation({ prevVersion: '0.5.0', prevPkg: { version: '0.5.0' }, signer: PIN }).level).toBe('fail')
     expect(checkRotation({ prevVersion: '0.4.2', prevPkg: { version: '0.4.2' }, signer: PIN }).level).toBe('ok')
     expect(checkRotation({ prevVersion: '0.5.0', prevPkg: pkgWith([PIN]), signer: 'nope' }).level).toBe('fail')
+    // the texts name the product's own source tag (Sano Agent: sano-agent-v…); SanoVids' stay v…
+    expect(checkRotation({ prevVersion: '0.5.0', prevPkg: null, signer: PIN }).text).toBe(
+      'Không đọc được package.json của v0.5.0 (git show v0.5.0:package.json; chạy git fetch origin --tags): không kiểm tra được quy tắc "ghim trước, ký sau".',
+    )
+    const agent = checkRotation({ prevVersion: '0.1.0', prevPkg: pkgWith([PIN]), signer: TEST_PIN, tagPrefix: 'sano-agent-v' })
+    expect(agent.text).toContain('nhưng sano-agent-v0.1.0 (bản công khai mới nhất)')
+    expect(agent.text).not.toMatch(/(^| )v0\.1\.0/)
+    expect(checkRotation({ prevVersion: '0.1.0', prevPkg: null, signer: PIN, tagPrefix: 'sano-agent-v' }).text).toContain('git show sano-agent-v0.1.0:package.json')
   })
 
   it('checkAsarIntegrity: exactly resources\\app.asar, SHA256, the header hash', () => {
@@ -565,7 +573,7 @@ describe('signed build checks', () => {
     // the lock modules are in the one shared list of files app.asar must hold (Windows group (g) and the Mac zip check)
     expect(lib.REQUIRED_ASAR_FILES).toContain('electron/devaccess.cjs')
     expect(lib.REQUIRED_ASAR_FILES).toContain('electron/devaccess-rules.cjs')
-    expect(src).toContain('for (const p of REQUIRED_ASAR_FILES) {')
+    expect(src).toContain('for (const p of [...REQUIRED_ASAR_FILES, ...(PRODUCT.asarFiles ?? [])]) {')
   })
 
   it('checkVersionInfo: CompanyName = author (with "(Jame Steven)"), LegalCopyright = build.copyright', () => {
@@ -629,13 +637,18 @@ describe('release scripts (source guarantees)', () => {
   })
   it('publish-release checks the signed build before anything is published', () => {
     const src = read('publish-release.mjs')
+    // SanoVids stopped at its final 1.0.0 (D236): without --sano-agent nothing else runs
+    expect(src).toMatch(/const PRODUCT = productFromArgv\(process\.argv\)\n\/\/ .*\nif \(!PRODUCT\.config\) \{\n  console\.error\('SanoVids đã ngừng .*'\)\n  process\.exit\(1\)\n\}\n/)
     // the files app.asar must hold: one shared list (the Windows group (g) and the Mac zip check use it)
-    for (const f of ['electron/main.cjs', 'electron/preload.cjs', 'electron/updater.cjs', 'electron/updater-rules.cjs', 'electron/signature.cjs', 'electron/hardening-rules.cjs', 'electron/keeplogin-rules.cjs']) {
+    for (const f of ['electron/main.cjs', 'electron/preload.cjs', 'electron/updater.cjs', 'electron/updater-rules.cjs', 'electron/signature.cjs', 'electron/hardening-rules.cjs', 'electron/keeplogin-rules.cjs', 'electron/google-signin-rules.cjs', 'electron/sano-account-rules.cjs']) {
       expect(lib.REQUIRED_ASAR_FILES).toContain(f)
     }
-    expect(src).toContain('for (const p of REQUIRED_ASAR_FILES) {')
+    expect(src).toContain('for (const p of [...REQUIRED_ASAR_FILES, ...(PRODUCT.asarFiles ?? [])]) {')
     expect(src).toContain('checkPackagedIdentity(inner, pkg)')
-    expect(src).toContain("inspectAppUpdateYml(path.join(resourcesDir, 'app-update.yml'), EXPECT.publisherName)")
+    // D240: Sano Agent's SANO web app is in app.asar and built from the pinned SANO commit (SanoVids has neither)
+    expect(src).toMatch(/if \(PRODUCT\.sanoPin\) \{[\s\S]{0,400}const problem = checkSanoBuild\(built, pin\)\s+if \(problem\) fail\('app\.asar', problem\)/)
+    expect(src.indexOf('checkSanoBuild(built, pin)')).toBeLessThan(src.indexOf("console.log('\\nĐang thực hiện…')"))
+    expect(src).toContain("inspectAppUpdateYml(path.join(resourcesDir, 'app-update.yml'), EXPECT.publisherName, { repo: PRODUCT.publicRepoName, cacheDir: PRODUCT.cacheDir })")
     expect(src).toContain('await inspectWindowsBuild(')
     expect(src).toContain('offlineEnvSet(process.env)')
     expect(src).toContain("path.join(root, 'build', 'signing', SIGNING_CERT_FILE)")
@@ -643,12 +656,13 @@ describe('release scripts (source guarantees)', () => {
     expect(src.indexOf('await inspectWindowsBuild(')).toBeLessThan(src.indexOf("console.log('\\nĐang thực hiện…')"))
     // every file signed by THE release certificate, the rotation rule, the licences shipped next to the exe
     expect(src).toContain('signer: SIGNER_THUMBPRINT,')
-    expect(src).toContain('checkRotation({ prevVersion, prevPkg, signer: SIGNER_THUMBPRINT })')
+    expect(src).toContain('checkRotation({ prevVersion, prevPkg, signer: SIGNER_THUMBPRINT, tagPrefix: PRODUCT.sourceTagPrefix })')
     expect(src).toContain('newestPublishedVersion(publicReleases, V)')
-    expect(src).toContain("git(['show', `refs/tags/v${prevVersion}:package.json`])")
+    expect(src).toContain("git(['show', `${tagRef(prevVersion)}:package.json`])")
     expect(src.indexOf('checkRotation({')).toBeLessThan(src.indexOf("console.log('\\nĐang thực hiện…')"))
     expect(src).toContain("{ name: 'LICENSE.txt', source: path.join(root, 'LICENSE.txt') }")
-    expect(src).toContain('{ name: NOTICES_SHIPPED, source: path.join(root, ...NOTICES_SOURCE.split(\'/\')) }')
+    expect(src).toContain('{ name: NOTICES_SHIPPED, source: path.join(root, ...(PRODUCT.notices ?? NOTICES_SOURCE).split(\'/\')) }')
+    expect(lib.SANOVIDS.notices).toBeUndefined() // SanoVids: build/license-third-party.txt (NOTICES_SOURCE)
   })
 
   it('publish-release (k): the Mac files by fixed names only, checked before any gh write, uploaded only when every check passed', () => {
@@ -667,8 +681,8 @@ describe('release scripts (source guarantees)', () => {
       expect(src.indexOf(s), s).toBeLessThan(execute)
     }
     expect(src).toContain("const WINDOWS_ONLY = process.argv.includes('--khong-mac')")
-    expect(src).toContain('assetsFor(t.audience, V, { mac: macOk })')
-    expect(src).toContain('buildReleaseNotes({ version: V, body: section.body, sha256, audience, mac: macOk })')
+    expect(src).toContain('assetsFor(t.audience, V, { mac: macOk, product: PRODUCT })')
+    expect(src).toContain('buildReleaseNotes({ version: V, body: section.body, sha256, audience, mac: macOk, product: PRODUCT })')
     expect(src).toContain('if (macOk) for (const name of MAC_FILES) paths[name] = macPaths[name]')
     // the public feed of the Mac build is checked anonymously too
     expect(src).toContain('${base}/latest/download/latest-mac.yml')
@@ -676,8 +690,8 @@ describe('release scripts (source guarantees)', () => {
 })
 
 describe('electron-build refusals', () => {
-  const ARGS = ['--win', 'nsis', 'portable', '--publish', 'never']
-  it('the dist:win command line passes', () => {
+  const ARGS = ['--config', 'sano-agent/electron-builder.cjs', '--win', 'nsis', 'portable', '--publish', 'never']
+  it('the dist:sano-agent command line passes', () => {
     expect(buildArgsProblem({}, ARGS)).toBeNull()
     expect(buildArgsProblem({ PATH: 'x', ELECTRON_BUILDER_OFFLINE: '0' }, ARGS)).toBeNull()
     expect(buildArgsProblem({ ELECTRON_BUILDER_OFFLINE: 'false' }, ARGS)).toBeNull()
@@ -1236,5 +1250,170 @@ describe('macOS build: inspectMacZip (independent look inside the zip, on Window
     const testPkg = Buffer.from(JSON.stringify({ ...REPO_PKG, sanovids: { signers: [PIN, TEST_PIN] }, sanovidsTestProfileDir: '/tmp/x' }))
     await one({ asar: fakeAsar({ 'package.json': { size: testPkg.length, offset: '0' } }, testPkg) }, /app\.asar thiếu electron\/main\.cjs[\s\S]*bản build thử nghiệm/)
     expect((await lib.inspectMacZip(Buffer.from('not a zip'), { loadZip: (b) => JSZip.loadAsync(b), parseYaml: loadYaml, version: V6, repoPkg: REPO_PKG })).problems[0]).toMatch(/Không đọc được file zip/)
+  })
+})
+
+describe('Sano Agent (--sano-agent: SANO_AGENT, sano-agent/electron-builder.cjs)', () => {
+  const A = lib.SANO_AGENT
+  const cfg = require('../../sano-agent/electron-builder.cjs')
+  const repoPkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+  const AV = repoPkg.version // Sano Agent's version is package.json's (D235)
+
+  it('SANO_AGENT pins match sano-agent/electron-builder.cjs (a drift fails here, not at release time)', () => {
+    expect(A).toMatchObject({
+      productName: cfg.productName,
+      fileStem: String(cfg.nsis.artifactName).split('-Setup-')[0],
+      publicRepoName: cfg.publish[0].repo,
+      cacheDir: `${cfg.extraMetadata.name}-updater`,
+      url: cfg.extraMetadata.sanoAgent.url,
+      releaseDir: cfg.directories.output,
+      config: 'sano-agent/electron-builder.cjs',
+    })
+    expect(cfg.portable.artifactName).toBe(`${A.fileStem}-Portable-\${version}.\${ext}`)
+    // D240: the packed SANO web app (scripts/build-sano.mjs) and its notices, the ones the config ships
+    expect(A.url).toBe('app://sano/')
+    expect(A.asarFiles).toEqual(['sano-dist/index.html', 'sano-dist/BUILD.json'])
+    expect(lib.SANOVIDS.asarFiles).toBeUndefined()
+    expect(cfg.files).toContain('sano-dist/**/*')
+    expect(cfg.win.extraFiles).toContainEqual({ from: A.notices, to: 'THIRD-PARTY-NOTICES.txt' })
+    expect(A.sanoPin).toBe('sano-agent/sano.json')
+  })
+
+  it('checkSanoBuild: sano-dist/BUILD.json is built from exactly the pinned SANO commit', () => {
+    const pin = JSON.parse(fs.readFileSync(path.join(root, A.sanoPin), 'utf8'))
+    expect(pin).toEqual({ repo: 'JameSteven404/SANO-AGENT', commit: expect.stringMatching(/^[0-9a-f]{40}$/) })
+    const other = 'a'.repeat(40)
+    expect(lib.checkSanoBuild({ commit: pin.commit, version: '1.0.0' }, pin)).toBeNull()
+    expect(lib.checkSanoBuild({ commit: other, version: '1.0.0' }, pin)).toMatch(new RegExp(`commit aaaaaaa, cần ${pin.commit.slice(0, 7)}`))
+    for (const bad of [null, undefined, {}, { commit: pin.commit.slice(0, 7) }, { commit: pin.commit.toUpperCase() }, 'x', []]) {
+      expect(lib.checkSanoBuild(bad, pin), JSON.stringify(bad)).toMatch(/BUILD\.json trong app không có commit SANO/)
+      expect(lib.checkSanoBuild({ commit: pin.commit }, bad), JSON.stringify(bad)).toMatch(/sano\.json không có commit SANO hợp lệ/)
+    }
+  })
+
+  it('picks the product from the command line; its package is the config over the repo package.json', () => {
+    expect(lib.productFromArgv(['node', 'x', '--dry-run'])).toBe(lib.SANOVIDS)
+    expect(lib.productFromArgv(['node', 'x', '--sano-agent', '--dry-run'])).toBe(A)
+    expect(lib.effectivePackage(repoPkg, null)).toBe(repoPkg)
+    const eff = lib.effectivePackage(repoPkg, cfg)
+    expect(eff).toMatchObject({ name: 'sano-agent', productName: 'Sano Agent', version: AV, sanovids: repoPkg.sanovids, scripts: repoPkg.scripts, build: cfg })
+  })
+
+  it('file names, assets (public feed only, no Mac), titles and notes name Sano Agent', () => {
+    const f = releaseFiles(AV, A)
+    expect([f.setup, f.portable, f.blockmap]).toEqual([`SanoAgent-Setup-${AV}.exe`, `SanoAgent-Portable-${AV}.exe`, `SanoAgent-Setup-${AV}.exe.blockmap`])
+    expect(assetsFor('public', AV, { product: A })).toEqual([`SanoAgent-Setup-${AV}.exe`, `SanoAgent-Setup-${AV}.exe.blockmap`, 'latest.yml', `SanoAgent-Portable-${AV}.exe`, SIGNING_CERT_FILE])
+    expect(releaseTitle(AV, 'Bản đầu', A)).toBe(`Sano Agent ${AV} — Bản đầu`)
+    expect(updateNotesText('', AV, A)).toEqual({ found: false, text: `Sano Agent ${AV}\n` })
+    const changelog = fs.readFileSync(path.join(root, A.changelog), 'utf8')
+    expect(updateNotesText(changelog, AV, A).found).toBe(true)
+    const notes = buildReleaseNotes({ version: AV, body: '✨ a', sha256: { [f.setup]: SHA_A, [f.portable]: SHA_B }, audience: 'public', product: A })
+    expect(notes).toContain(`| **SanoAgent-Setup-${AV}.exe** |`)
+    expect(notes).not.toContain('SanoVids-Setup')
+    // SanoVids keeps its own names
+    expect(releaseFiles('0.6.0').setup).toBe('SanoVids-Setup-0.6.0.exe')
+    expect(releaseTitle('0.6.0', null)).toBe('SanoVids 0.6.0')
+  })
+
+  it('checkAppUpdateYml: its own public repo and its own updater cache folder', () => {
+    const feed = { owner: 'JameSteven404', repo: 'sano-agent-releases', provider: 'github', releaseType: 'release', publisherName: [AUTHOR], updaterCacheDirName: 'sano-agent-updater' }
+    const want = { publisherName: AUTHOR, repo: A.publicRepoName, cacheDir: A.cacheDir }
+    expect(checkAppUpdateYml(feed, want)).toEqual([])
+    expect(checkAppUpdateYml({ ...feed, updaterCacheDirName: 'sanovids-updater' }, want)).toEqual(['updaterCacheDirName là "sanovids-updater", cần "sano-agent-updater".'])
+    expect(checkAppUpdateYml({ ...feed, repo: 'sanovids-releases' }, want)[0]).toMatch(/cần "sano-agent-releases"/)
+    // SanoVids: unchanged defaults (its repo, no cache check)
+    expect(checkAppUpdateYml(feed, { publisherName: AUTHOR })[0]).toMatch(/cần "sanovids-releases"/)
+  })
+
+  it('checkPackagedIdentity: only Sano Agent carries a SANO address, exactly its own', () => {
+    const eff = { ...lib.effectivePackage(repoPkg, cfg), sanoAgent: { url: A.url, apiUrl: 'https://sa.sanogroup.tv' } }
+    const inner = { ...eff, build: undefined }
+    expect(checkPackagedIdentity(inner, eff)).toEqual([])
+    expect(checkPackagedIdentity({ ...inner, sanoAgent: { url: 'http://evil.example.vn/' } }, eff)[0]).toMatch(/^sanoAgent /)
+    expect(checkPackagedIdentity({ ...repoPkg, sanoAgent: { url: A.url } }, repoPkg)[0]).toMatch(/^sanoAgent /)
+  })
+
+  it('checkPackagedIdentity: a baked account server must be there and https (a loopback SANO_API_URL left in the shell is a test build)', () => {
+    const eff = lib.effectivePackage(repoPkg, cfg)
+    const at = (apiUrl) => {
+      const sanoAgent = { url: A.url, ...(apiUrl === undefined ? {} : { apiUrl }) }
+      return checkPackagedIdentity({ ...eff, build: undefined, sanoAgent }, { ...eff, sanoAgent })
+    }
+    expect(at('http://127.0.0.1:8796')).toEqual(['sanoAgent.apiUrl "http://127.0.0.1:8796" (bản phát hành chỉ nhận https://; bản build thử nghiệm?)'])
+    expect(at('https://sano.example.vn')).toEqual([])
+    // built and checked without SANO_API_URL (like 1.0): the testers' betas would update to a build with no sign-in
+    expect(at(undefined)).toEqual(['không có sanoAgent.apiUrl (bản phát hành Sano Agent phải nướng máy chủ tài khoản: build và kiểm với SANO_API_URL=https://sa.sanogroup.tv)'])
+    // built with the server but checked in a shell without it: re-check in the right shell, do not rebuild
+    const built = { ...eff, build: undefined, sanoAgent: { url: A.url, apiUrl: 'https://sa.sanogroup.tv' } }
+    expect(checkPackagedIdentity(built, { ...eff, sanoAgent: { url: A.url } })).toEqual([
+      'sanoAgent {"url":"app://sano/","apiUrl":"https://sa.sanogroup.tv"} (cần {"url":"app://sano/"}: chạy lại kiểm trong shell có SANO_API_URL=https://sa.sanogroup.tv)',
+    ])
+    // SanoVids never carries one and needs none
+    expect(checkPackagedIdentity({ ...repoPkg, build: undefined }, repoPkg)).toEqual([])
+  })
+
+  it('checkSameElectron: the Electron of the newest public SanoVids, or ✗', () => {
+    const lock = (v) => JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/electron': { version: v } } })
+    expect(lib.lockElectronVersion(lock('44.5.1'))).toBe('44.5.1')
+    expect(lib.lockElectronVersion('{')).toBeNull()
+    expect(lib.lockElectronVersion(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'))).toMatch(/^\d+\.\d+\.\d+$/)
+    expect(lib.checkSameElectron({ ours: '44.5.1', theirs: '44.5.1', sanovidsVersion: '0.6.0' }).level).toBe('ok')
+    expect(lib.checkSameElectron({ ours: '45.0.0', theirs: '44.5.1', sanovidsVersion: '0.6.0' }).level).toBe('fail')
+    expect(lib.checkSameElectron({ ours: '44.5.1', theirs: null, sanovidsVersion: '0.6.0' }).level).toBe('fail')
+    expect(lib.checkSameElectron({ ours: '44.5.1', theirs: '44.5.1', sanovidsVersion: null }).level).toBe('fail')
+    // before the final SanoVids: exactly the same Electron, even a same-major patch is ✗
+    expect(lib.checkSameElectron({ ours: '44.10.1', theirs: '44.5.1', sanovidsVersion: '0.6.0' }).level).toBe('fail')
+    // D236: SanoVids stopped at its final 1.0.0: same major and not older passes (security patches)
+    const final = (ours) => lib.checkSameElectron({ ours, theirs: '44.5.1', sanovidsVersion: lib.SANOVIDS_FINAL_VERSION })
+    expect(final('44.5.1').level).toBe('ok')
+    expect(final('44.10.1')).toMatchObject({ level: 'ok', text: expect.stringContaining('cùng major') })
+    expect(final('44.5.0')).toMatchObject({ level: 'fail', text: expect.stringContaining('không bao giờ hạ') })
+    expect(final('45.0.0')).toMatchObject({ level: 'fail', text: expect.stringContaining('cần Minh quyết định mới') })
+    expect(final('43.9.9')).toMatchObject({ level: 'fail', text: expect.stringContaining('cần Minh quyết định mới') })
+    expect(final(null).level).toBe('fail')
+  })
+
+  it('checkSameCommit: built from the commit of the newest public SanoVids (same renderer code), or ✗', () => {
+    const [a, b] = ['a'.repeat(40), 'b'.repeat(40)]
+    expect(lib.checkSameCommit({ head: a, theirs: a, sanovidsVersion: '0.6.0' }).level).toBe('ok')
+    const other = lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.6.0' })
+    expect(other).toMatchObject({ level: 'fail' })
+    expect(other.text).toContain('phát hành SanoVids từ commit này trước')
+    expect(lib.checkSameCommit({ head: a, theirs: null, sanovidsVersion: '0.6.0' }).level).toBe('fail')
+    // D236: Sano Agent first, SanoVids of the same version right after: its tag at HEAD here AND on GitHub
+    const next = { version: '1.0.0', local: a, remote: a }
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.6.0', next })).toMatchObject({ level: 'ok' })
+    expect(lib.checkSameCommit({ head: a, theirs: null, sanovidsVersion: '0.6.0', next }).level).toBe('ok')
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.6.0', next: { ...next, remote: null } }).level).toBe('fail')
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.6.0', next: { ...next, remote: b } }).level).toBe('fail')
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.6.0', next: { ...next, local: b } }).level).toBe('fail')
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.6.0', next: { ...next, version: '0.5.0' } }).level).toBe('fail')
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.6.0', next: { ...next, local: null } }).text).toContain('đặt tag v1.0.0 của SanoVids')
+    // D236: SanoVids stopped at its final 1.0.0: no common commit any more (Electron still checked)
+    expect(lib.SANOVIDS_FINAL_VERSION).toBe('1.0.0')
+    const stopped = lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '1.0.0', next: { version: '1.1.0', local: null, remote: null } })
+    expect(stopped).toMatchObject({ level: 'ok' })
+    expect(stopped.text).toContain('đã ngừng ở bản cuối 1.0.0')
+    expect(lib.checkSameCommit({ head: a, theirs: null, sanovidsVersion: '1.0.0' }).level).toBe('ok')
+    const newer = lib.checkSameCommit({ head: a, theirs: a, sanovidsVersion: '1.0.1', next })
+    expect(newer).toMatchObject({ level: 'fail' })
+    expect(newer.text).toContain('lẽ ra đã ngừng')
+    expect(lib.checkSameCommit({ head: a, theirs: b, sanovidsVersion: '0.9.9' }).level).toBe('fail') // older: old rule
+    const src = fs.readFileSync(path.join(root, 'scripts', 'publish-release.mjs'), 'utf8')
+    expect(src).toContain("git(['rev-parse', '-q', '--verify', `${tagRef(sanovidsVersion, SANOVIDS)}^{commit}`])")
+    expect(src).toContain("git(['ls-remote', '--tags', 'origin', tagRef(V, SANOVIDS), `${tagRef(V, SANOVIDS)}^{}`])")
+    expect(src).toContain('checkSameCommit({ head, theirs: sanovidsCommit.code === 0 ? sanovidsCommit.out : null, sanovidsVersion, next })')
+  })
+
+  it('publish-release: every source tag goes through the product (sano-agent-v…), the feed tag stays v…', () => {
+    const src = fs.readFileSync(path.join(root, 'scripts', 'publish-release.mjs'), 'utf8')
+    expect(src).not.toContain('refs/tags/v${')
+    expect(src).toContain('const tagRef = (version, product = PRODUCT) => `refs/tags/${product.sourceTagPrefix}${version}`')
+    expect(src).toContain("git(['show', `${tagRef(sanovidsVersion, SANOVIDS)}:package-lock.json`])")
+    expect(src).toContain('const TAG = `v${V}`')
+    expect(src).toContain("const AUDIENCES = PRODUCT.privateRelease ? ['private', 'public'] : ['public']")
+    expect(src).toContain('if (PRODUCT.mac) {')
+    expect(A).toMatchObject({ sourceTagPrefix: 'sano-agent-v', privateRelease: false, mac: false })
+    expect(lib.SANOVIDS).toMatchObject({ sourceTagPrefix: 'v', publicRepoName: lib.PUBLIC_REPO.split('/')[1], privateRelease: true, mac: true })
   })
 })

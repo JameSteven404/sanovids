@@ -914,11 +914,15 @@ export function estimateDependsOnZoom(type: string | undefined, size?: Size | nu
 /**
  * Viewport that shows every node (padding 0.12, zoom 0.1 – 1: the old `fitView` options), from each node's measured
  * size, else its stored size, else its estimate (initialWidth / initialHeight) — never only the measured nodes:
- * nodes that were never on screen are never measured. Used on open and by "fit everything" (F, toolbar, after
- * "Sắp xếp"). null = no node, or a stage without a size yet.
+ * nodes that were never on screen are never measured. Used by "fit everything" (F, toolbar, after "Sắp xếp") and,
+ * through openingViewport, on open. null = no node, or a stage without a size yet.
  */
 export function initialViewport(nodes: readonly Node[], width: number, height: number): Viewport | null {
   if (!nodes.length || !(width > 0 && height > 0)) return null
+  return getViewportForBounds(nodesBounds(nodes), width, height, 0.1, 1, 0.12)
+}
+
+function nodesBounds(nodes: readonly Node[]) {
   // React Flow's getNodesBounds without a nodeLookup (= same chain: measured → width → initialWidth) warns in dev.
   let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity
   for (const n of nodes) {
@@ -929,7 +933,22 @@ export function initialViewport(nodes: readonly Node[], width: number, height: n
     x2 = Math.max(x2, n.position.x + w)
     y2 = Math.max(y2, n.position.y + h)
   }
-  return getViewportForBounds({ x: x1, y: y1, width: x2 - x1, height: y2 - y1 }, width, height, 0.1, 1, 0.12)
+  return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 }
+}
+
+const OPEN_ZOOM = 0.8
+/**
+ * Viewport a project opens at: initialViewport, unless that shrinks a tall board below LOD_ZOOM (a long column of
+ * scenes at 19 % in a narrow window); then the board's top fits the stage's width (at most OPEN_ZOOM, so a wide window
+ * still shows several rows), the next rows a scroll away.
+ */
+export function openingViewport(nodes: readonly Node[], width: number, height: number): Viewport | null {
+  const all = initialViewport(nodes, width, height)
+  if (!all || all.zoom >= LOD_ZOOM) return all
+  const b = nodesBounds(nodes)
+  // The zoom that fits the board's width, then the top slice the stage holds at it (padding 0.12 = /1.12).
+  const zoom = getViewportForBounds({ ...b, height: 0 }, width, height, 0.1, OPEN_ZOOM, 0.12).zoom
+  return getViewportForBounds({ ...b, height: Math.min(b.height, height / 1.12 / zoom) }, width, height, 0.1, OPEN_ZOOM, 0.12)
 }
 
 /**

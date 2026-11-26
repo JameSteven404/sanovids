@@ -29,10 +29,10 @@ import { sanovids } from '../../package.json'
 import type { AppPlacementKind } from './appPlacement'
 import type { AppSignature } from './appSignature'
 import { PLATFORM, type Platform } from './platform'
-import { UPDATE_RELEASES_PAGE_LABEL, type UpdateKind } from './updateTypes'
+import { PRODUCT_NAME, UPDATE_RELEASES_PAGE_LABEL, type UpdateKind } from './updateTypes'
 
 export const ABOUT_TITLE = 'Giới thiệu'
-export const ABOUT_DESC = 'Phiên bản, tác giả, bản quyền và chữ ký số của SanoVids.'
+export const ABOUT_DESC = `Phiên bản, tác giả, bản quyền và chữ ký số của ${PRODUCT_NAME}.`
 export const ABOUT_KEYWORDS =
   'about thông tin tác giả author bản quyền copyright nguyễn giang minh jame steven sano group đồng hành chữ ký số ký số chứng chỉ certificate signature vân tay thumbprint bản gốc chính thức phiên bản version giấy phép license mã nguồn mở open source electron trang tải về download github'
 
@@ -43,7 +43,7 @@ export const ABOUT_COPYRIGHT = '© 2026 Nguyễn Giang Minh (Jame Steven). Mọi
 export const ABOUT_LICENSE_NOTE =
   'Chỉ dùng khi được tác giả cho phép (ví dụ: trong nội bộ nhóm). Không sao chép, chỉnh sửa, dịch ngược hay phân phối lại khi chưa có đồng ý bằng văn bản của tác giả.'
 export const ABOUT_OPEN_SOURCE =
-  'SanoVids dùng các thành phần mã nguồn mở (Electron, Chromium, React…). Giấy phép của chúng nằm trong thư mục cài đặt (LICENSE.electron.txt, LICENSES.chromium.html, THIRD-PARTY-NOTICES.txt).'
+  `${PRODUCT_NAME} dùng các thành phần mã nguồn mở (Electron, Chromium, React…). Giấy phép của chúng nằm trong thư mục cài đặt (LICENSE.electron.txt, LICENSES.chromium.html, THIRD-PARTY-NOTICES.txt).`
 /** The Mac build keeps them inside the app bundle (package.json build.mac.extraResources → Contents/Resources). */
 export const ABOUT_OPEN_SOURCE_MAC =
   'SanoVids dùng các thành phần mã nguồn mở (Electron, Chromium, React…). Giấy phép của chúng nằm trong gói ứng dụng: chuột phải SanoVids → Hiển thị nội dung gói (Show Package Contents) → Contents/Resources (LICENSE.electron.txt, LICENSES.chromium.html, THIRD-PARTY-NOTICES.txt).'
@@ -175,7 +175,7 @@ export function signatureView(sig: AppSignature | null, platform: Platform = PLA
     case 'tampered':
       return {
         tone: 'warn',
-        title: 'File của SanoVids đã bị thay đổi',
+        title: `File của ${PRODUCT_NAME} đã bị thay đổi`,
         detail: 'Chữ ký số không còn khớp với nội dung file. Hãy tải lại bản chính thức ở trang tải về rồi cài đè.',
       }
     case 'unsigned':
@@ -209,7 +209,7 @@ export interface PlacementNote {
 export const PLACEMENT_PORTABLE_TEXT =
   'Bản Portable: không có icon ở Desktop / Start và không tự cập nhật. Muốn có icon và tự cập nhật, hãy cài bản Setup.'
 export const PLACEMENT_TEMP_TEXT =
-  'SanoVids đang chạy từ thư mục tạm của Windows — thư mục này có thể bị xoá bất cứ lúc nào. Hãy cài bản Setup để có icon và tự cập nhật.'
+  `${PRODUCT_NAME} đang chạy từ thư mục tạm của Windows — thư mục này có thể bị xoá bất cứ lúc nào. Hãy cài bản Setup để có icon và tự cập nhật.`
 
 /**
  * The reminder to install the Setup build: a Portable build, or a copy running from Windows' temp folder (what an

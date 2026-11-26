@@ -213,6 +213,20 @@ export interface Take {
    * retries and cancel until a job id is stored; such a take is only re-sent as itself (same key), never as a new take.
    */
   submitUnknown?: boolean
+  /** Its job came back with SANO's mode 'simulator': a sample clip, nothing billed (providers/sano). */
+  simulated?: boolean
+  /**
+   * Queued while SANO said it runs its simulator (the Run dialog: no fee): sent only while SANO still says so — never
+   * billed behind that promise (providers/sano SANO_NOW_LIVE).
+   */
+  expectSimulated?: boolean
+  /**
+   * The provider account (VideoProvider.account: SANO's token sub as a key) its job was sent or looked up under: SANO
+   * jobs are per account, so under another one the take waits (store/runs cannotRunHere), never failed or sent again.
+   */
+  account?: string
+  /** Enqueue-time identity is not verified yet: persisted so another tab cannot submit the cached account. */
+  accountBindingPending?: true
   /** Cost was taken from the local (demo) credit counter → refunded on failure/cancel. Missing = true. */
   charged?: boolean
   /**
@@ -279,9 +293,10 @@ export interface TakeImport {
  * Provider that runs a take (same ids as providers/types ProviderId):
  *   'dev'        development mode — an in-app simulation of canvasapp.io.vn (no network, fake credits);
  *   'canvasapp'  the real canvasapp.io.vn gateway (desktop only, real credits);
- *   'mock'       the old demo provider ("Demo cũ"): only takes saved before development mode existed.
+ *   'mock'       the old demo provider ("Demo cũ"): only takes saved before development mode existed;
+ *   'sano-gateway' the SANO server, for the web build running inside the SANO app (providers/sano).
  */
-export type TakeProvider = 'mock' | 'canvasapp' | 'dev'
+export type TakeProvider = 'mock' | 'canvasapp' | 'dev' | 'sano-gateway'
 
 export interface CompiledImage {
   /** 1-based N in @image_N */

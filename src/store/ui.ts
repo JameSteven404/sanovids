@@ -14,6 +14,8 @@ export interface Toast {
   action?: ToastAction
   /** Stays until dismissed (its action runs, or dismissToast) — never times out, never pushed out by newer toasts. */
   persistent?: boolean
+  /** The close button says this word (e.g. "Để sau") instead of showing an X. */
+  closeLabel?: string
 }
 
 export type DialogState =
@@ -168,7 +170,7 @@ export interface UIState {
   closeDialog: () => void
 
   /** Show a toast; returns its id. `persistent` = no timeout (dismiss it with dismissToast). */
-  toast: (text: string, opts?: { tone?: Toast['tone']; action?: ToastAction; ms?: number; persistent?: boolean }) => number
+  toast: (text: string, opts?: { tone?: Toast['tone']; action?: ToastAction; ms?: number; persistent?: boolean; closeLabel?: string }) => number
   dismissToast: (id: number) => void
 }
 
@@ -273,6 +275,7 @@ export const useUI = create<UIState>()((set, get) => ({
     const id = toastSeq++
     const t: Toast = { id, text, tone: opts.tone ?? 'info', action: opts.action }
     if (opts.persistent) t.persistent = true
+    if (opts.closeLabel) t.closeLabel = opts.closeLabel
     set((s) => ({ toasts: keepToasts([...s.toasts, t]) }))
     if (!opts.persistent) {
       // "Thời gian hiện thông báo" scales every toast (explicit times too: a 20 s "waiting" toast becomes 36 s on 'long').

@@ -171,7 +171,7 @@ function Invoke-Main {
   Write-Host ''
   Write-Host 'Việc cần làm tiếp:'
   Write-Host '  - Cất file .pfx về lại nơi an toàn (USB). Đừng để bản chép nào trên Desktop / Downloads của máy này.'
-  Write-Host '  - Kiểm tra: npm run release:check sau khi build để chắc bản cài được ký đúng.'
+  Write-Host '  - Kiểm tra: npm run release:check:sano-agent sau khi build để chắc bản cài được ký đúng.'
   return 0
 }
 

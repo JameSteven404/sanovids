@@ -1,0 +1,59 @@
+// Sano Agent (D220/D223): the SANO desktop app — SanoVids' own build config (package.json build) with its own identity,
+// signed and checked exactly like SanoVids. npm run dist:sano-agent passes it as --config, so electron-builder reads
+// only this file. Spreads, not -c.x=y overrides: those would union the arrays (win.target, files, signExts) with the
+// originals. appId, productName and name are permanent once released (NSIS GUID, install entry, update feed and cache).
+// docs/SANO-DESKTOP.md "Phát hành Sano Agent". One version for both apps (D235): package.json's.
+const { build, version } = require('../package.json')
+const { accountApiUrl } = require('../electron/sano-account-rules.cjs')
+
+// D253: SANO's account server for the in-app sign-in, baked from SANO_API_URL at build time (a packaged app never reads
+// the environment). Unset → no apiUrl: the build is unconfigured, exactly like 1.0, and from 1.1 the release check
+// refuses it (releaseLib checkPackagedIdentity). Set but refused → no build.
+const API_URL = process.env.SANO_API_URL ? accountApiUrl(process.env.SANO_API_URL) : null
+if (process.env.SANO_API_URL && !API_URL) throw new Error('SANO_API_URL must be https://host[:port] or http://127.0.0.1|localhost|[::1]:port')
+
+const { mac: _mac, dmg: _dmg, ...base } = build // Windows only
+const ART = 'sano-agent/brand/build'
+const NAME = 'Sano Agent'
+
+module.exports = {
+  ...base,
+  appId: 'com.sanoagent.app',
+  productName: NAME,
+  // = productName: NSIS names the uninstaller after it, and the updater (updater-rules detectKind) looks for
+  // `Uninstall ${app.getName()}.exe` to know it runs from an install.
+  executableName: NAME,
+  directories: { ...base.directories, output: 'release/sano-agent' },
+  // D240: SANO's web app (scripts/build-sano.mjs), served at app://sano/. Never in SanoVids' build.
+  files: [...base.files, 'sano-dist/**/*'],
+  extraMetadata: {
+    ...base.extraMetadata,
+    name: 'sano-agent',
+    productName: NAME,
+    version,
+    description: 'Sano Agent — app SANO trên máy tính, khu Canvas là SanoVids',
+    homepage: 'https://github.com/JameSteven404/sano-agent-releases',
+    // The SANO web app the window opens (electron/hardening-rules sanoShell): inside the integrity-checked app.asar,
+    // and since D240 the page itself too (sano-dist/), so no SANO server is needed.
+    sanoAgent: { url: 'app://sano/', ...(API_URL ? { apiUrl: API_URL } : {}) },
+  },
+  icon: `${ART}/icon.png`,
+  // THIRD-PARTY-NOTICES.txt also lists SANO's packages (scripts/build-sano.mjs writes that file).
+  win: {
+    ...base.win,
+    icon: `${ART}/icon.ico`,
+    extraFiles: base.win.extraFiles.map((f) => (f.to === 'THIRD-PARTY-NOTICES.txt' ? { ...f, from: 'build/license-third-party-sano-agent.txt' } : f)),
+  },
+  nsis: {
+    ...base.nsis,
+    shortcutName: NAME,
+    uninstallDisplayName: NAME,
+    artifactName: 'SanoAgent-Setup-${version}.${ext}',
+    installerIcon: `${ART}/icon.ico`,
+    installerSidebar: `${ART}/installerSidebar.bmp`,
+    uninstallerSidebar: `${ART}/uninstallerSidebar.bmp`,
+    installerHeader: `${ART}/installerHeader.bmp`,
+  },
+  portable: { artifactName: 'SanoAgent-Portable-${version}.${ext}' },
+  publish: [{ provider: 'github', owner: 'JameSteven404', repo: 'sano-agent-releases', releaseType: 'release' }],
+}

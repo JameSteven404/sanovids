@@ -183,8 +183,14 @@ describe('development mode locked: visibleGroups', () => {
     // the declared list is untouched
     expect(all.find((g) => g.id === 'gateway')?.level).toBe('advanced')
   })
+  it('canvasapp retired: locked drops "gateway" too (no deep link); open keeps everything', () => {
+    const v = visibleGroups(all, false, true)
+    expect(v.map((g) => `${g.id}:${g.level}`)).toEqual(['appearance:basic', 'about:basic'])
+    expect(v.find((g) => g.id === 'gateway')).toBeUndefined()
+    expect(visibleGroups(all, true, true)).toEqual(all)
+  })
   it('SettingsDialog filters its GROUPS through visibleGroups with the lock (search and deep link)', () => {
-    expect(settingsDialogSource).toContain('const groups = useMemo(() => visibleGroups(GROUPS, devOpen).map')
+    expect(settingsDialogSource).toContain('const groups = useMemo(() => visibleGroups(GROUPS, devOpen, CANVASAPP_RETIRED && !sanoBuild()).map')
     expect(settingsDialogSource).toContain('const target = section ? groups.find((g) => g.id === section) : undefined')
     expect(settingsDialogSource).toContain('matchSettings(groups, level, query)')
     expect(settingsDialogSource).not.toContain('matchSettings(GROUPS')

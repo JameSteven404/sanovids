@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_DOWNLOAD_PREFS, DOWNLOAD_PREFS_KEY, FOLDER_TRASH_PREF_KEY, freeNames, numberedName, parseDownloadPrefs, useDownloadPrefs, validDownloadPatch } from '../downloads'
+import { canPickFolder, DEFAULT_DOWNLOAD_PREFS, DOWNLOAD_PREFS_KEY, FOLDER_TRASH_PREF_KEY, freeNames, numberedName, parseDownloadPrefs, useDownloadPrefs, validDownloadPatch } from '../downloads'
 
 describe('saving into the chosen folder never overwrites a file', () => {
   it('numbers like the browser does', () => {
@@ -61,5 +61,27 @@ describe('"Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rá
     vi.stubGlobal('localStorage', { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, v), removeItem: (k: string) => void data.delete(k) })
     useDownloadPrefs.getState().set({ zipPrompts: false })
     expect(JSON.parse(data.get(DOWNLOAD_PREFS_KEY)!)).toMatchObject({ futurePref: 'x', zipPrompts: false })
+  })
+})
+
+describe('canPickFolder: the folder picker is refused in a frame of another origin (SANO desktop)', () => {
+  afterEach(() => vi.unstubAllGlobals())
+  const win = (top: () => unknown) => {
+    const w: Record<string, unknown> = { showDirectoryPicker: () => undefined }
+    Object.defineProperty(w, 'top', { get: top })
+    return w
+  }
+
+  it('top-level page or a same-origin frame: available; a cross-origin frame or no picker: not', () => {
+    const top = win(() => top)
+    top.location = { href: 'app://bdp/' }
+    vi.stubGlobal('window', top)
+    expect(canPickFolder()).toBe(true)
+    vi.stubGlobal('window', win(() => ({ location: { href: 'http://127.0.0.1:5173/' } })))
+    expect(canPickFolder()).toBe(true)
+    vi.stubGlobal('window', win(() => ({ get location() { throw new DOMException('Blocked a frame', 'SecurityError') } })))
+    expect(canPickFolder()).toBe(false)
+    vi.stubGlobal('window', {})
+    expect(canPickFolder()).toBe(false)
   })
 })

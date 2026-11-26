@@ -48,6 +48,7 @@ import {
   clearableTakes,
   isUncertainSubmit,
   isUnverifiableSubmit,
+  JOB_UNREACHABLE,
   MAX_REMOTE_CONCURRENCY,
   requestInFlight,
   onRunEvent,
@@ -67,6 +68,7 @@ import {
   JOBS_KEY,
   MAX_CONCURRENCY,
   memoryStorage,
+  otherAccountText,
   PROFILES_TTL_MS,
   STATE_KEY,
   type CanvasappProvider,
@@ -193,6 +195,8 @@ function fakeCanvasapp() {
     exposeKey: false,
     /** GET /api/video-jobs shows only the newest N jobs of the project (null = all). VERIFY: paging / limit unknown. */
     listCap: null as number | null,
+    /** GET /api/video-jobs of a project this account does not have: an empty list or a 404. VERIFY on the live site. */
+    foreignJobList: 'empty' as 'empty' | 404,
     /** GET /api/video-profiles answer (`profiles` key, as canvasapp's page reads it). */
     profiles: Object.values(MODELS).map((m) => ({
       model_profile: m.id as string,
@@ -326,6 +330,7 @@ function fakeCanvasapp() {
     if (path === '/api/video-jobs' && req.method === 'POST') return createJob(req.json as Json)
     if (path === '/api/video-jobs' && req.method === 'GET') {
       const pid = new URLSearchParams(query).get('project_id')
+      if (state.foreignJobList === 404 && !state.projects.some((p) => p.project_id === pid)) return refuse(404, 'Project not found', path)
       const all = state.jobs.filter((j) => j.project_id === pid)
       return ok((state.listCap === null ? all : all.slice(-state.listCap)).map(advance).map(publicJob))
     }
@@ -1864,6 +1869,42 @@ describe('gateway e2e: Đăng xuất / đăng nhập lại while canvasapp takes
     expect(fake.jobPosts().map((b) => b.project_id)).toEqual(['proj1']) // nothing sent on B's account
     expect(take(t.id)).toMatchObject({ status: 'failed', error: UNVERIFIABLE_SUBMIT_ERROR, submitUnknown: true, remoteId: null })
   })
+
+  it.each([['an empty list', 'empty'], ['a 404', 404]] as const)(
+    'another account stays logged in for many polls (A’s bridge reads %s to it): A’s takes keep running, never failed, the reason shown; back on A they complete',
+    async (_label, answer) => {
+      fake.state.script = LONG
+      fake.state.foreignJobList = answer
+      const first = enqueue('s1', 's2')
+      await run(5_000)
+      expect(first.map((t) => take(t.id).remoteId)).toEqual(['proj1:job1', 'proj1:job2'])
+
+      await logout()
+      await login('B')
+      const [other] = enqueue('s3') // B's own take on B's own bridge: followed meanwhile, also next to A's refused list
+      await run(5 * 60_000) // ~15 polls: three would have failed A's takes as "không thấy job"
+      expect(first.map((t) => take(t.id))).toMatchObject([
+        { status: 'processing', error: null },
+        { status: 'processing', error: null },
+      ])
+      expect(useRuns.getState().providerIssue).toMatchObject({ provider: 'canvasapp', code: JOB_UNREACHABLE, message: otherAccountText(2) })
+      expect(take(other.id)).toMatchObject({ status: 'processing', remoteId: 'bproj1:bjob1' })
+      expect(fake.count('GET', '/api/projects')).toBeLessThanOrEqual(4) // "not ours" is trusted for a while: a few reads, not one per poll
+
+      fake.state.jobs[0].script = [{ status: 'completed', progress: 100, download_available: true }]
+      await run(60_000)
+      expect(take(other.id).status).toBe('completed') // B's own take finished while A's waited
+
+      await logout()
+      await login('A')
+      await run(30_000)
+      expect(useRuns.getState().providerIssue).toBeNull()
+      finishAll()
+      await run(60_000)
+      expect(first.map((t) => take(t.id).status)).toEqual(['completed', 'completed'])
+      expect(fake.jobPosts().map((b) => b.project_id)).toEqual(['proj1', 'proj1', 'bproj1']) // nothing posted again
+    },
+  )
 
   it('another account logs in meanwhile: its own bridge, none of the first one’s pictures or nodes; back on the first, its running nodes stay', async () => {
     fake.state.script = LONG

@@ -15,7 +15,9 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type Componen
 import { CLICK_TO_CUT_TRASH_NOTE, FOLDER_UNLINK_TRASH_ROW } from '../../core/folderTrash'
 import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE, PLACEMENT_KEYWORDS } from '../../lib/aboutModel'
 import { BIG_PROJECT_ROW, NODE_EDITOR_ROW, WHEEL_ROW } from '../../lib/canvasPrefs'
-import { useDevAllowed } from '../../providers'
+import { PRODUCT_NAME } from '../../lib/updateTypes'
+import { CANVASAPP_RETIRED, useDevAllowed } from '../../providers'
+import { sanoBuild } from '../../providers/sano'
 import { oneOf, parsePref, useUI } from '../../store/ui'
 import { Modal } from '../common/Modal'
 import './dialogs.css'
@@ -156,11 +158,11 @@ const GROUPS: Group[] = [
       {
         id: 'updateAutoDownload',
         label: 'Tự động tải bản cập nhật',
-        hint: 'Bản mới được tải ngầm khi có mạng và tự cài khi bạn tắt SanoVids. Tắt: chỉ báo có bản mới, bạn bấm để tải.',
+        hint: `Bản mới được tải ngầm khi có mạng và tự cài khi bạn tắt ${PRODUCT_NAME}. Tắt: chỉ báo có bản mới, bạn bấm để tải.`,
         keywords: 'tự động tải update download nền ngầm',
         C: UpdateAutoDownloadSetting,
       },
-      { id: 'updateCheck', label: 'Kiểm tra cập nhật', hint: 'SanoVids tự kiểm tra khi mở và 4 giờ một lần.', keywords: 'check kiểm tra ngay', C: UpdateCheckSetting },
+      { id: 'updateCheck', label: 'Kiểm tra cập nhật', hint: `${PRODUCT_NAME} tự kiểm tra khi mở và 4 giờ một lần.`, keywords: 'check kiểm tra ngay', C: UpdateCheckSetting },
     ],
   },
   {
@@ -365,10 +367,11 @@ const LEVEL_HINT: Record<SettingsLevel, string> = { basic: 'Dùng hằng ngày',
 export function SettingsDialog({ section }: { section?: string } = {}) {
   useKeyCaptureHost()
   const closeDialog = useUI((s) => s.closeDialog)
-  // Development mode locked (release builds): no "Chế độ Phát triển" group, "Nhà cung cấp video" in "Cơ bản".
+  // Development mode locked (release builds): no "Chế độ Phát triển" group, and no "Nhà cung cấp video" (canvasapp
+  // retired, D270) outside the SANO build.
   const devOpen = useDevAllowed()
   const keyLabels = useKeymap((s) => s.resolved.allLabels)
-  const groups = useMemo(() => visibleGroups(GROUPS, devOpen).map((g) => g.id.startsWith('keys')
+  const groups = useMemo(() => visibleGroups(GROUPS, devOpen, CANVASAPP_RETIRED && !sanoBuild()).map((g) => g.id.startsWith('keys')
     ? { ...g, rows: g.rows?.map((r) => ({ ...r, keywords: `${r.keywords} ${keyLabels[r.id as ActionId]}` })) } : g), [devOpen, keyLabels])
   const target = section ? groups.find((g) => g.id === section) : undefined
   const [level, setLevel] = useState<SettingsLevel>(() => target?.level ?? readLevel())

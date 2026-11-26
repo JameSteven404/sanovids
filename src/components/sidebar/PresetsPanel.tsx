@@ -204,7 +204,8 @@ const PresetRow = memo(function PresetRow({ preset, usage, selected, active, edi
               {formatCredits(cost, creditKind, { short: true })}
             </b>
             {CREDIT_MARK[creditKind] && <span className="sb-demo-mark">{CREDIT_MARK[creditKind]}</span>}
-            {usage > 0 ? ` · dùng ở ${usage} cảnh` : ' · chưa dùng'}
+            {' · '}
+            <span className="sb-nowrap">{usage > 0 ? `dùng ở ${usage} cảnh` : 'chưa dùng'}</span>
           </div>
         </div>
         <div className="sb-preset-actions" onClick={(e) => e.stopPropagation()}>

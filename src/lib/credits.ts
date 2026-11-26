@@ -8,7 +8,8 @@
 //                ('mock', saved before development mode) were paid with it — kept for their cost lines.
 //
 // ---- API ----
-//   creditKindOf(providerId)                 'dev' → 'dev', 'canvasapp' → 'canvasapp', 'mock' → 'demo'.
+//   creditKindOf(providerId)                 'dev' → 'dev', 'canvasapp' → 'canvasapp', 'mock' → 'demo'; 'sano-gateway'
+//                                            → 'canvasapp' (real money, never held back by the demo wallet).
 //   isSimulatedCredit(kind)                  'dev' / 'demo': not real money.
 //   formatCredits(n, kind, { short? })       "1.234 credit dev" | "1.234 credit demo" | "1.234 credit"; short: "1.234 cr"
 //                                            for every kind (the UI adds its small mark next to a short fake amount).
@@ -47,7 +48,9 @@ export const CREDIT_SOURCE_LABEL: Record<CreditKind, string> = { demo: 'credit d
 /** Small mark drawn next to a short simulated amount ("20 cr dev"), so it is never taken for real credits. */
 export const CREDIT_MARK: Record<CreditKind, string | null> = { demo: 'demo', dev: 'dev', canvasapp: null }
 
-export const creditKindOf = (provider: ProviderId): CreditKind => (provider === 'canvasapp' ? 'canvasapp' : provider === 'dev' ? 'dev' : 'demo')
+// shortcut: SANO bills real money with no wallet of its own here yet — give it its own kind once SANO shows costs.
+export const creditKindOf = (provider: ProviderId): CreditKind =>
+  provider === 'canvasapp' || provider === 'sano-gateway' ? 'canvasapp' : provider === 'dev' ? 'dev' : 'demo'
 
 /** Not real money: development-mode or old-demo credits. */
 export const isSimulatedCredit = (kind: CreditKind): boolean => kind !== 'canvasapp'

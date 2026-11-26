@@ -23,6 +23,8 @@ import {
   SESSION_CHANGED_TEXT,
   memoryStorage,
   MIN_POLL_MS,
+  otherAccountText,
+  OWN_PROJECTS_RECHECK_MS,
   PROFILES_FALLBACK_TEXT,
   PROFILES_FORCE_MIN_MS,
   PROFILES_RETRY_MS,
@@ -462,6 +464,93 @@ describe('canvasapp adapter', () => {
       states.push((await provider.poll([remoteId]))[0].state)
     }
     expect(states).toEqual(['processing', 'processing', 'failed'])
+  })
+
+  it('a job of another account (its bridge is not among the logged-in account’s projects): kept running, never failed — followed again once that account is back', async () => {
+    const { provider, server, clock } = setup()
+    const a = await provider.submit(req()) // account A: proj1:job1
+    const b = await provider.submit(req({ key: 'take_2', takeId: 'take_2', sceneId: 'scene_b' })) // proj1:job2
+    provider.reset() // Đăng xuất
+    // account B logged in: no "SanoVids bridge" of its own; A's bridge reads empty to it
+    const listOf = (r: TransportRequest) => r.method === 'GET' && r.path.startsWith('/api/video-jobs?')
+    const projectsRead = (r: TransportRequest) => r.method === 'GET' && r.path === '/api/projects'
+    server.state.extra = (r) => (listOf(r) ? json([]) : projectsRead(r) ? json([{ project_id: 'bproj', name: BRIDGE_PROJECT_NAME }]) : undefined)
+    const reads = () => server.calls.filter(projectsRead).length
+    const before = reads()
+    const text = otherAccountText(2)
+    for (let i = 0; i < 6; i++) {
+      clock.t += MIN_POLL_MS + 1
+      expect(await provider.poll([a.remoteId, b.remoteId])).toEqual([
+        { remoteId: a.remoteId, state: 'processing', waiting: text },
+        { remoteId: b.remoteId, state: 'processing', waiting: text },
+      ])
+    }
+    expect(text).toContain('2 video')
+    expect(reads() - before).toBe(1) // asked once: "not ours" is trusted for a while
+    clock.t += OWN_PROJECTS_RECHECK_MS
+    await provider.poll([a.remoteId])
+    expect(reads() - before).toBe(2)
+    // ...also when canvasapp refuses B the list of A's bridge (404 / 403): kept, and nothing else is held back
+    for (const status of [404, 403]) {
+      server.state.extra = (r) => (listOf(r) ? json({ detail: 'Project not found' }, status) : projectsRead(r) ? json([]) : undefined)
+      clock.t += OWN_PROJECTS_RECHECK_MS
+      expect(await provider.poll([a.remoteId])).toEqual([{ remoteId: a.remoteId, state: 'processing', waiting: otherAccountText(1) }])
+    }
+    // account A again (Đăng xuất → đăng nhập): its jobs are listed — followed as before, nothing failed meanwhile
+    provider.reset()
+    server.state.extra = null
+    server.state.jobs[0].status = 'processing'
+    clock.t += MIN_POLL_MS + 1
+    expect(await provider.poll([a.remoteId, b.remoteId])).toEqual([
+      { remoteId: a.remoteId, state: 'processing', progress: undefined },
+      { remoteId: b.remoteId, state: 'queued', progress: undefined },
+    ])
+  })
+
+  it('a missing job on a bridge the account owns still fails after a few polls; a take this computer never sent, too', async () => {
+    const { provider, server, clock } = setup()
+    const { remoteId } = await provider.submit(req())
+    server.state.jobs = []
+    const projectsRead = () => server.calls.filter((r) => r.method === 'GET' && r.path === '/api/projects').length
+    const before = projectsRead()
+    const states: (string | undefined)[] = []
+    for (let i = 0; i < 3; i++) {
+      clock.t += MIN_POLL_MS + 1
+      const [st] = await provider.poll([remoteId])
+      states.push(st.waiting ?? st.state)
+    }
+    expect(states).toEqual(['processing', 'processing', 'failed'])
+    expect(projectsRead() - before).toBe(3) // "ours" is checked again at each missing job (another login may be in between)
+    // not in this computer's ledger (another computer's take, a reset simulation…): missing as before, nothing asked
+    const other = setup(fakeServer({ projects: [] }))
+    const foreign = 'pX:jobX'
+    const seen: string[] = []
+    for (let i = 0; i < 3; i++) {
+      other.clock.t += MIN_POLL_MS + 1
+      seen.push((await other.provider.poll([foreign]))[0].state)
+    }
+    expect(seen).toEqual(['processing', 'processing', 'failed'])
+    expect(other.server.calls.filter((r) => r.path === '/api/projects')).toHaveLength(0)
+  })
+
+  it('whose bridge it is cannot be told (GET /api/projects fails): a missing job of this computer is not counted missing; a 401 is rethrown', async () => {
+    const { provider, server, clock } = setup()
+    const { remoteId } = await provider.submit(req())
+    provider.reset()
+    const listOf = (r: TransportRequest) => r.method === 'GET' && r.path.startsWith('/api/video-jobs?')
+    let projects: TransportResponse = json({ detail: 'boom' }, 500)
+    server.state.extra = (r) => (listOf(r) ? json([]) : r.method === 'GET' && r.path === '/api/projects' ? projects : undefined)
+    for (let i = 0; i < 5; i++) {
+      clock.t += MIN_POLL_MS + 1
+      expect(await provider.poll([remoteId])).toEqual([{ remoteId, state: 'processing' }])
+    }
+    projects = json({ detail: 'Not authenticated' }, 401)
+    clock.t += MIN_POLL_MS + 1
+    await expect(provider.poll([remoteId])).rejects.toMatchObject({ code: 'login-required' })
+    // a refused list of a bridge the account has: as before (the engine keeps the takes and backs off)
+    server.state.extra = (r) => (listOf(r) ? json({ detail: 'Forbidden' }, 403) : undefined)
+    clock.t += MIN_POLL_MS + 1
+    await expect(provider.poll([remoteId])).rejects.toMatchObject({ code: 'forbidden' })
   })
 
   it('reset() forgets the bridge project and the upload cache', async () => {

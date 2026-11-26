@@ -18,10 +18,12 @@ import { App } from './App'
 import { initDevAccess } from './devAccessActions'
 import { initMotion } from './lib/canvasPrefs'
 import { initPwa, registerServiceWorker } from './lib/pwa'
+import { initSanoBridge } from './lib/sanoBridge'
 import { initTheme } from './lib/theme'
 import { initAntiDebug } from './lib/antiDebug'
 import { initRetiredVideoNotice } from './videoRetired'
 import { showPlacementNoticeOnLaunch } from './placementNotice'
+import { showMergedNoticeOnLaunch } from './mergedNotice'
 
 // Appearance (Sáng / Tối / Theo hệ thống) before the first render, so nothing paints in the wrong theme; it then
 // follows the OS while the choice is "Theo hệ thống". index.html painted the page background inline to avoid a
@@ -32,6 +34,9 @@ document.documentElement.style.removeProperty('background')
 initAntiDebug()
 // "Hiệu ứng chuyển động" (Settings): <html data-motion>, followed by styles/app.css everywhere.
 initMotion()
+// Inside SANO: <html data-embedded> before the first paint, and the hello listener before React and bootstrap(), since
+// SANO posts its single hello on the frame's load event.
+initSanoBridge()
 
 // Before the first render: the one-shot beforeinstallprompt event can fire very early.
 initPwa()
@@ -44,6 +49,8 @@ initRetiredVideoNotice()
 // A Mac run from a .dmg / Tải về / an external drive: once per launch, how to move the app into Applications (never
 // moved automatically).
 void showPlacementNoticeOnLaunch()
+// The last SanoVids release (D236): once per launch, SanoVids has moved into Sano Agent, with its download button.
+showMergedNoticeOnLaunch()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

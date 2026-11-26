@@ -102,7 +102,9 @@ describe('license files', () => {
 
   it('carry the author, partner, pinned thumbprint and the six clauses', () => {
     const body = text('LICENSE.txt')
-    expect(body.startsWith('SANOVIDS — GIẤY PHÉP SỬ DỤNG\n')).toBe(true)
+    // one licence for the one product (D235): Sano Agent, Canvas = SanoVids
+    expect(body.startsWith('SANO AGENT — GIẤY PHÉP SỬ DỤNG\n')).toBe(true)
+    expect(body).toContain('1. Sano Agent (gồm khu Canvas — SanoVids) là phần mềm thuộc quyền sở hữu của tác giả')
     expect(body).toContain(`Bản quyền © 2026 ${AUTHOR}. Mọi quyền được bảo lưu.`)
     expect(body).toContain('Đồng hành: Sano Group.')
     expect(body).toContain(PINNED)

@@ -519,7 +519,7 @@ export async function inspectWindowsBuild({ setupPath, portablePath, unpackedDir
  * resources/app-update.yml of a build: releaseLib.checkAppUpdateYml (public feed, publisherName required and equal)
  * plus the raw bytes holding the exact UTF-8 of publisherName (not "Nguy?n"). → results in group 'Nguồn cập nhật'.
  */
-export function inspectAppUpdateYml(ymlPath, publisherName) {
+export function inspectAppUpdateYml(ymlPath, publisherName, { repo, cacheDir } = {}) {
   const group = 'Nguồn cập nhật'
   if (!isFile(ymlPath)) return [{ level: 'fail', group, text: 'Thiếu resources/app-update.yml.' }]
   const out = []
@@ -530,7 +530,7 @@ export function inspectAppUpdateYml(ymlPath, publisherName) {
   } catch {
     feed = null
   }
-  const problems = checkAppUpdateYml(feed, { publisherName })
+  const problems = checkAppUpdateYml(feed, { publisherName, repo, cacheDir })
   for (const p of problems) out.push({ level: 'fail', group, text: p })
   const want = typeof publisherName === 'string' ? publisherName.normalize('NFC') : ''
   // Only when the field is there at all (a missing one is already reported above).

@@ -13,6 +13,7 @@ import preloadSource from '../../../electron/preload.cjs?raw'
 import devAccessSource from '../../../electron/devaccess.cjs?raw'
 import devAccessRulesSource from '../../../electron/devaccess-rules.cjs?raw'
 import pkgRaw from '../../../package.json?raw'
+import sanoBatSource from '../../../sano-desktop.bat?raw'
 
 type ProfileSource = 'env' | 'baked' | 'default'
 type SigStatus = 'signed' | 'unsigned' | 'other-signer' | 'tampered' | 'unknown'
@@ -37,9 +38,21 @@ interface Hardening {
   downloadLogLabel(url: unknown, filename: unknown): string
   DEFAULT_SESSION_PERMISSIONS: readonly string[]
   permissionAllowed(p: unknown): boolean
+  defaultPermissionAllowed(permission: unknown, o: Record<string, unknown>): boolean
   sha256Base64(bytes: Uint8Array): string
   inlineScriptHashes(html: unknown): string[]
-  contentSecurityPolicy(html: unknown): string
+  contentSecurityPolicy(html: unknown, frameAncestors?: string): string
+  SANO_IN_APP_URL: string
+  SANO_PAGE_CSP: string
+  sanoShell(o: unknown): { url: string; origin: string } | null | false
+  mainWindowAllows(url: unknown, o: unknown): boolean
+  SANO_FAILED_RESTART: string
+  sanoFailedDialog(message: string, detail: string): { buttons: string[]; defaultId: number; cancelId: number; detail: string } & Record<string, unknown>
+  sanoFailedAction(response: unknown): 'retry' | 'canvas' | 'quit'
+  appFrames(wc: unknown): { url: string }[]
+  TITLE_BAR_HEIGHT: number
+  TITLE_BAR_START: Readonly<Record<'dark' | 'light', { color: string; symbolColor: string }>>
+  titleBarOverlay(colors: unknown): { color: string; symbolColor: string; height: number } | null
   appSignaturePayload(verdict: unknown, opts: { packaged: boolean }): Payload
   SIGNED_DLLS: readonly string[]
   MICROSOFT_DLLS: readonly string[]
@@ -314,9 +327,423 @@ describe('hardening rules: Content-Security-Policy', () => {
     expect(h.contentSecurityPolicy('')).toBe(
       "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' data: blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'",
     )
+    // SANO desktop: only the frame-ancestors directive changes
+    expect(h.contentSecurityPolicy('', 'http://127.0.0.1:5173')).toBe(h.contentSecurityPolicy('').replace("frame-ancestors 'none'", 'frame-ancestors http://127.0.0.1:5173'))
     const policy = h.contentSecurityPolicy(indexBytes)
     expect(policy).not.toMatch(/unsafe-eval|\*/)
     expect(policy.split('; ').find((d) => d.startsWith('script-src '))).not.toMatch(/unsafe/)
+  })
+})
+
+describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
+  const shell = (value: unknown, isPackaged = false) => h.sanoShell({ isPackaged, value })
+
+  it('from source: https anywhere, http on this machine only, origin only', () => {
+    expect(shell('https://sano.example.vn/app?x=1#y')).toEqual({ url: 'https://sano.example.vn/', origin: 'https://sano.example.vn' })
+    expect(shell('http://127.0.0.1:5173')).toEqual({ url: 'http://127.0.0.1:5173/', origin: 'http://127.0.0.1:5173' })
+    expect(shell('http://localhost:8080/')).toEqual({ url: 'http://localhost:8080/', origin: 'http://localhost:8080' })
+  })
+
+  it('packaged: only the address baked into app.asar (Sano Agent), never the environment; from source: never the baked one', () => {
+    // D240: Sano Agent bakes app://sano/ (its packed SANO page); a baked server address works the same way
+    const SANO_AGENT = { url: 'app://sano/', origin: 'app://sano' }
+    expect(h.SANO_IN_APP_URL).toBe(SANO_AGENT.url)
+    expect(h.sanoShell({ isPackaged: true, value: 'https://evil.example.vn', baked: 'app://sano/' })).toEqual(SANO_AGENT)
+    expect(h.sanoShell({ isPackaged: true, value: 'app://sano/' })).toBeNull()
+    expect(h.sanoShell({ isPackaged: true, value: 'app://sano/', baked: 'http://127.0.0.1:8080/' })).toEqual({ url: 'http://127.0.0.1:8080/', origin: 'http://127.0.0.1:8080' })
+    expect(h.sanoShell({ isPackaged: true, value: 'https://evil.example.vn' })).toBeNull()
+    expect(h.sanoShell({ isPackaged: true, baked: 'http://sano.example.vn/' })).toBe(false)
+    expect(h.sanoShell({ isPackaged: false, baked: 'app://sano/' })).toBeNull()
+    expect(h.sanoShell({ isPackaged: false, baked: 'http://127.0.0.1:8080/' })).toBeNull()
+    expect(mainSource).toMatch(/return pkg && pkg\.sanoAgent && typeof pkg\.sanoAgent\[key\] === 'string' \? pkg\.sanoAgent\[key\] : undefined/)
+  })
+
+  it('D240 app://sano: exactly that address, origin hard-coded (Node’s URL says "null" for a custom scheme)', () => {
+    expect(new URL('app://sano/api/x').origin).toBe('null')
+    expect(shell('app://sano/')).toEqual({ url: 'app://sano/', origin: 'app://sano' })
+    expect(shell('app://sano/', true)).toBeNull() // packaged: the environment never counts
+    for (const bad of ['app://sano', 'app://sano/index.html', 'app://sano/?x=1', 'APP://SANO/', 'app://Sano/', ' app://sano/', 'app://sano/ ', 'app://sano.evil.vn/', 'app://u@sano/', 'app://sano:1/', 'app://bdp/', 'app:sano']) {
+      expect(shell(bad), bad).toBe(false)
+    }
+  })
+
+  it('unset or packaged → null (plain SanoVids); anything else → false (main refuses to start)', () => {
+    expect(shell(undefined)).toBeNull()
+    expect(shell('')).toBeNull()
+    expect(shell('https://sano.example.vn', true)).toBeNull()
+    expect(h.sanoShell(null)).toBeNull()
+    for (const bad of ['http://sano.example.vn', 'http://127.0.0.1.evil.vn', 'file:///C:/x.html', 'app://bdp/', 'javascript:alert(1)', 'https://u:p@sano.example.vn', 'not a url', 'sano.example.vn', 'http://[::1]:5173/', 'https://*.example.vn', 'https://a;b.vn']) {
+      expect(shell(bad), bad).toBe(false)
+    }
+  })
+
+  it('wiring: refused before anything is written; subframe preload, SANO origin home, no in-app Google popup', () => {
+    const at = (s: string) => {
+      const i = mainSource.indexOf(s)
+      expect(i, s).toBeGreaterThan(-1)
+      return i
+    }
+    expect(at("const SANO = hardening.sanoShell({ isPackaged: PACKAGED, value: process.env.SANO_URL, baked: readBakedSanoAgent('url') })")).toBeLessThan(at('fs.mkdirSync(profile.dir'))
+    expect(mainSource).toMatch(/if \(SANO === false\) \{\s+console\.error\([^)]*\)\s+process\.exit\(2\)/)
+    expect(mainSource).toContain('nodeIntegrationInSubFrames: !!SANO,')
+    // D223: shared projects with SanoVids — set before ready, SANO mode only, the only Chromium switch main adds
+    const shared = at("if (SANO) app.commandLine.appendSwitch('disable-features', 'ThirdPartyStoragePartitioning')")
+    expect(shared).toBeLessThan(at('app.whenReady()'))
+    expect(mainSource.split('commandLine.appendSwitch(').length - 1).toBe(1)
+    expect(mainSource.split('nodeIntegrationInSubFrames').length - 1).toBe(1)
+    // TH-36: no Google sign-in in an app window — an accounts.google.com link opens the default browser like any other
+    expect(mainSource).toMatch(/\n {2}webContents\.setWindowOpenHandler\(\(\{ url \}\) => \{\s+if \(isExternal\(url\)\) void shell\.openExternal\(url\)\s+return \{ action: 'deny' \}\s+\}\)/)
+    expect(mainSource).not.toContain('accounts.google.com')
+    expect(mainSource).not.toContain('guardGooglePopup')
+    expect(mainSource).not.toContain("if (SANO) webContents.on('did-create-window'")
+    expect(hardeningSource).not.toContain('GOOGLE_SIGN_IN')
+    expect(mainSource).toContain('const stays = (url) => hardening.mainWindowAllows(url, { sanoUrl: SANO ? SANO.url : undefined, canvas })')
+    expect(mainSource).toContain('if (stays(url)) return')
+    expect(mainSource).toContain('void win.loadURL(SANO ? SANO.url : `${ORIGIN}/index.html`)')
+    // server redirects of SANO's page are held to the same home
+    // refused on the first load: plain SanoVids prints and exits; SANO mode prints too (from source) and asks in the window
+    expect(mainSource).toMatch(/webContents\.on\('will-redirect', \(event, url\) => \{\s+if \(!event\.isMainFrame \|\| stays\(url\)\) return\s+event\.preventDefault\(\)\s+(?:\/\/[^\n]*\n\s+)+if \(canvas \|\| \(SANO \? sanoOpened : mainWindowShown\)\) return\s+console\.error\([^\n]*\)\s+if \(SANO\) sanoFailed\(`SANO tại \$\{SANO\.url\} chuyển hướng sang \$\{url\}`, '[^'\n]*địa chỉ cuối[^'\n]*'\)\s+else app\.exit\(2\)\s+\}\)/)
+    // a redirect is the server's, never opened in the browser (only will-navigate, the user's click, is)
+    const redirect = mainSource.slice(at("webContents.on('will-redirect'"), at("webContents.on('will-redirect'") + 400)
+    expect(redirect.slice(0, redirect.indexOf('\n  })'))).not.toContain('openExternal')
+    // every start, either mode (same data folder): leftover Google account cookies of the default session go
+    expect(mainSource).toMatch(/\n {4}void keepLoginRules\.removeGoogleAccountCookies\(session\.defaultSession\.cookies\)\n/)
+  })
+
+  it('SANO mode window: Sano Agent title, the exe icon on Windows, and a retry / quit dialog when SANO does not load', () => {
+    expect(mainSource).toContain("title: SANO ? 'Sano Agent' : TITLE,")
+    expect(mainSource).toContain("...(SANO && process.platform === 'win32' ? {} : { icon: path.join(DIST, 'icons', process.platform === 'win32' ? 'icon.ico' : 'icon-512.png') }),")
+    const fail = mainSource.slice(mainSource.indexOf("webContents.on('did-fail-load'"), mainSource.indexOf('void win.loadURL(SANO ? SANO.url'))
+    expect(mainSource).toMatch(/if \(SANO\) \{\s+webContents\.on\('did-fail-load'/)
+    expect(fail).toContain('if (canvas || !isMainFrame || errorCode === -3) return')
+    expect(fail).toContain('sanoFailed(`Không mở được SANO tại ${SANO.url}`, ')
+    // one dialog for both (did-fail-load, a refused first redirect): shown in the window, Thử lại / Thoát
+    const dialogAt = mainSource.indexOf('const sanoFailed = (message, detail) => {')
+    expect(dialogAt).toBeGreaterThan(-1)
+    const failed = mainSource.slice(dialogAt, mainSource.indexOf("webContents.on('will-redirect'"))
+    // shown through the window's one first-show path (ready-to-show never fires once the dialog showed it)
+    expect(failed).toContain('firstShow()')
+    expect(failed).not.toContain('win.show()')
+    expect(mainSource).toContain("win.once('ready-to-show', firstShow)")
+    expect(mainSource).toMatch(/if \(SANO\) webContents\.on\('did-navigate', \(_event, url\) => \{\s+if \(url\.startsWith\(SANO\.url\)\) sanoOpened = true/)
+    expect(failed).toContain('.showMessageBox(win, hardening.sanoFailedDialog(message, detail))')
+    // Thử lại after SANO had loaded once: the retry's own redirect is explained again (sanoOpened reset first)
+    expect(failed).toMatch(/const action = hardening\.sanoFailedAction\(response\)\s+if \(action === 'quit'\) return app\.quit\(\)/)
+    expect(failed).toMatch(/\n\s+sanoOpened = false[^\n]*\n\s+void win\.loadURL\(SANO\.url\)/)
+    expect(failed).not.toContain('app.exit')
+    // the page learns which app it is (download page label), from main only
+    expect(preloadSource).toContain("product: productArg ? productArg.slice('--bdp-product='.length) : '',")
+  })
+
+  it('D237 mainWindowAllows: SANO’s address only, or app://bdp only once “Mở Canvas” opened SanoVids on its own', () => {
+    const sanoUrl = 'http://127.0.0.1:8080/'
+    // plain SanoVids: app://bdp/ only
+    for (const o of [{}, { sanoUrl: '' }, { canvas: true }, null, undefined]) {
+      expect(h.mainWindowAllows('app://bdp/index.html', o)).toBe(true)
+      expect(h.mainWindowAllows(sanoUrl, o)).toBe(false)
+    }
+    // SANO desktop: SANO's address only (SanoVids is its frame, never the window's page)
+    expect(h.mainWindowAllows('http://127.0.0.1:8080/canvas?x=1', { sanoUrl })).toBe(true)
+    expect(h.mainWindowAllows('app://bdp/index.html', { sanoUrl })).toBe(false)
+    expect(h.mainWindowAllows('app://bdp/index.html', { sanoUrl, canvas: 'true' })).toBe(false)
+    // Canvas: app://bdp and nothing else, SANO included
+    const canvas = { sanoUrl, canvas: true }
+    for (const ok of ['app://bdp/', 'app://bdp/index.html', 'app://bdp/index.html#/x']) expect(h.mainWindowAllows(ok, canvas), ok).toBe(true)
+    for (const bad of [sanoUrl, 'http://127.0.0.1:8080/x', 'http://localhost:8080/', 'app://bdpx/', 'app://bdp.evil.vn/', 'app://other/', 'https://accounts.google.com/', 'file:///C:/x.html', 'about:blank', 'APP://BDP/', '', undefined, null, 7]) {
+      expect(h.mainWindowAllows(bad, canvas), String(bad)).toBe(false)
+    }
+  })
+
+  it('D240 app://sano: the window stays on app://sano (app://bdp only via Mở Canvas); its page policy; Canvas framed by it', () => {
+    const sanoUrl = h.SANO_IN_APP_URL
+    expect(h.mainWindowAllows('app://sano/', { sanoUrl })).toBe(true)
+    expect(h.mainWindowAllows('app://sano/index.html#/x', { sanoUrl })).toBe(true)
+    for (const bad of ['app://bdp/index.html', 'app://sanox/', 'app://sano.evil.vn/', 'app://other/', 'http://127.0.0.1:8080/', 'https://accounts.google.com/', 'about:blank', 'APP://SANO/']) {
+      expect(h.mainWindowAllows(bad, { sanoUrl }), bad).toBe(false)
+    }
+    expect(h.mainWindowAllows('app://bdp/index.html', { sanoUrl, canvas: true })).toBe(true)
+    expect(h.mainWindowAllows('app://sano/', { sanoUrl, canvas: true })).toBe(false)
+    // SANO's page: its own files only, no inline script, SanoVids (app://bdp) its only frame, never framed itself
+    const sano = h.SANO_PAGE_CSP.split('; ')
+    expect(sano).toEqual([
+      "default-src 'self'",
+      "script-src 'self'",
+      "style-src 'self' 'unsafe-inline'",
+      "connect-src 'self'",
+      'frame-src app://bdp',
+      "object-src 'none'",
+      "base-uri 'none'",
+      "form-action 'none'",
+      "frame-ancestors 'none'",
+    ])
+    expect(h.SANO_PAGE_CSP).not.toMatch(/unsafe-eval|\*|https?:|data:|blob:/)
+    // SanoVids' policy: only frame-ancestors changes, to SANO's page
+    expect(h.contentSecurityPolicy(indexBytes, 'app://sano')).toBe(h.contentSecurityPolicy(indexBytes).replace("frame-ancestors 'none'", 'frame-ancestors app://sano'))
+    // Canvas keeps its permissions inside app://sano (clipboard, fullscreen, folders, persistent storage); SANO's page gets none
+    const perm = { requestingUrl: 'app://bdp/index.html', requestingOrigin: 'app://bdp', topUrl: 'app://sano/', embeddingOrigin: 'app://sano', sanoOrigin: 'app://sano' }
+    for (const p of h.DEFAULT_SESSION_PERMISSIONS) expect(h.defaultPermissionAllowed(p, perm), p).toBe(true)
+    expect(h.defaultPermissionAllowed('fileSystem', { ...perm, embeddingOrigin: undefined })).toBe(true)
+    expect(h.defaultPermissionAllowed('media', perm)).toBe(false)
+    expect(h.defaultPermissionAllowed('fileSystem', { ...perm, requestingUrl: 'app://sano/', requestingOrigin: 'app://sano' })).toBe(false)
+    for (const top of ['app://sanox/', 'app://sano.evil.vn/', 'app://u@sano/', 'app://sano:1/', 'http://127.0.0.1:8080/', 'https://sano.example.vn/']) {
+      expect(h.defaultPermissionAllowed('fileSystem', { ...perm, topUrl: top, embeddingOrigin: undefined }), top).toBe(false)
+    }
+    expect(h.defaultPermissionAllowed('fileSystem', { ...perm, embeddingOrigin: 'app://sano.evil.vn' })).toBe(false)
+    // without app://sano configured (plain SanoVids, a server SANO) that page is no container
+    expect(h.defaultPermissionAllowed('fileSystem', { ...perm, sanoOrigin: undefined })).toBe(false)
+    expect(h.defaultPermissionAllowed('fileSystem', { ...perm, sanoOrigin: 'http://127.0.0.1:8080' })).toBe(false)
+  })
+
+  it('D240 wiring: app://sano is served from sano-dist only in that mode, its API forwarded with SANO_API (else a JSON 404), a missing build stops the start', () => {
+    const at = (s: string) => {
+      const i = mainSource.indexOf(s)
+      expect(i, s).toBeGreaterThan(-1)
+      return i
+    }
+    expect(mainSource).toContain("const SANO_DIST = path.join(__dirname, '..', 'sano-dist')")
+    expect(mainSource).toContain('const SANO_IN_APP = !!SANO && SANO.url === hardening.SANO_IN_APP_URL')
+    // checked before the profile is touched: a clear dialog, never a blank window
+    const missing = at("if (SANO_IN_APP && !fs.existsSync(path.join(SANO_DIST, 'index.html'))) {")
+    expect(missing).toBeLessThan(at('fs.mkdirSync(profile.dir'))
+    expect(mainSource.slice(missing, missing + 500)).toMatch(/dialog\.showErrorBox\('Sano Agent', '[^'\n]*sano-dist\/index\.html[^'\n]*'\)\s+process\.exit\(2\)/)
+    const [s, e] = [at('async function serveDist(request) {'), at('let htmlCspPromise = null')]
+    const serve = mainSource.slice(s, e)
+    // plain SanoVids and a server SANO: every host but bdp stays 404
+    expect(serve).toContain("const sano = SANO_IN_APP && url.host === 'sano'")
+    expect(serve).toContain("if (url.host !== HOST && !sano) return new Response('Not found', { status: 404 })")
+    // /api and /api/… : the forward when SANO_API (sano-api-rules.cjs), else the 1.0 JSON 404, before any file or index.html fallback
+    expect(serve).toMatch(/if \(sano && \/\^\\\/api\(\?:\\\/\|\$\)\/\.test\(rel\)\) \{\s+if \(sanoApi\) return sanoApi\.forward\(request, url\)\s+return new Response\(JSON\.stringify\(\{ error: '[^']+' \}\), \{ status: 404, headers: \{ 'content-type': MIME\['\.json'\]/)
+    expect(serve.indexOf('/^\\/api(?:\\/|$)/.test(rel)')).toBeLessThan(serve.indexOf('const root = sano ? SANO_DIST : DIST'))
+    // the forward and the docs windows exist only with app://sano/ and SANO_API, and so does the page's flag
+    expect(mainSource.match(/\bsanoApi = /g)).toHaveLength(2) // `let sanoApi = null` + the one below
+    expect(mainSource.match(/\bsanoDocs = /g)).toHaveLength(2) // `let sanoDocs = null` + registerDocs
+    expect(mainSource).toMatch(/\n {2}if \(SANO_IN_APP && SANO_API\) \{\n {4}sanoApi = apiRules\.createApiForward\(\{ apiUrl: SANO_API, fetch: \(url, init\) => fetch\(url, init\), account, log \}\)\n {4}registerDocs\(\)\n {2}\}/)
+    // the account and /api lines also go to <profile>\logs\sano-account.log: a packaged Windows app has no console
+    const register = mainSource.slice(at('function registerAccount() {'), at('accountRules.registerAccountIpc('))
+    expect(register).toContain("const logFile = path.join(profile.dir, 'logs', 'sano-account.log')")
+    expect(register).toMatch(/const log = \(line\) => \{\s+console\.error\(line\)\s+try \{\s+fs\.mkdirSync\(path\.dirname\(logFile\), \{ recursive: true \}\)\s+fs\.appendFileSync\(logFile, `\$\{new Date\(\)\.toISOString\(\)\} \$\{line\}\\n`\)/)
+    expect(register).toMatch(/google: newGoogleSignIn\(\),\s+log,\n/)
+    // Node's fetch trusts the Windows store too, before any account call (the union keeps Node's own roots)
+    expect(mainSource).toContain("tls.setDefaultCACertificates([...new Set([...tls.getCACertificates('default'), ...tls.getCACertificates('system')])])")
+    expect(at('tls.setDefaultCACertificates(')).toBeLessThan(at('function registerAccount() {'))
+    expect(mainSource.split('--bdp-sano-api-forward').length - 1).toBe(1)
+    expect(mainSource).toContain("...(SANO_IN_APP && SANO_API ? ['--bdp-sano-api-forward'] : [])")
+    // a real main-window close only asks (the page's beforeunload can still cancel it); closed destroys the windows
+    const create = mainSource.slice(at('function createWindow() {'), at('function showMainWindow() {'))
+    expect(create).toMatch(/if \(updating \|\| hardening\.mainWindowCloseHides\(\{ platform: process\.platform, quitting, quittingForUpdate: updating \}\)\) return\s+if \(!sanoDocs\.confirmClose\(\)\) \{?\s*event\.preventDefault\(\)/)
+    expect(create).not.toContain('sanoDocs.closeAll({ ask: true })')
+    // macOS: a docs prompt's "Ở lại" cancels ⌘Q, so `quitting` goes back to false (the red button hides again)
+    expect(create).toMatch(/if \(!sanoDocs\.confirmClose\(\)\) \{\s+event\.preventDefault\(\)\s+if \(process\.platform === 'darwin'\) quitting = false/)
+    expect(create).toContain('if (sanoDocs) sanoDocs.closeAll({ ask: false })')
+    // docs IPC: SANO's page itself only
+    expect(mainSource).toContain("ipcMain.handle('docs:open', (event, input) => (fromSano(event) ? sanoDocs.open(input) : accountRules.NOT_ALLOWED))")
+    expect(mainSource).toContain("ipcMain.handle('docs:closeAll', (event) => (fromSano(event) ? { ok: true, value: sanoDocs.closeAll({ ask: true }) } : accountRules.NOT_ALLOWED))")
+    // the docs window: no preload, its in-memory partition, Electron's own user agent
+    const docs = mainSource.slice(at('function registerDocs() {'), at('async function sanoDesktopClientId()'))
+    expect(docs).toContain('partition: docsRules.PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false,')
+    expect(docs).not.toMatch(/preload|setUserAgent|userAgent|persist:/)
+    expect(docs).toMatch(/if \(choice === 1\) event\.preventDefault\(\)\s+else if \(process\.platform === 'darwin' && !macQuitForUpdate\) quitting = false/)
+    // show:false windows (documents and popups) still show when their first load fails or a redirect is refused (-3)
+    expect(docs).toMatch(/win\.once\('ready-to-show', \(\) => win\.show\(\)\)\s+\/\/[^\n]*\n\s+wc\.on\('did-fail-load', \(_e, _code, _desc, _url, isMainFrame\) => \{\s+if \(isMainFrame && !win\.isDestroyed\(\) && !win\.isVisible\(\)\) win\.show\(\)/)
+    expect(serve).toContain('const csp = () => (sano ? hardening.SANO_PAGE_CSP : htmlCsp())')
+    expect(serve).toContain("if (file !== root && !file.startsWith(root + path.sep)) return new Response('Forbidden', { status: 403 })")
+    expect(serve).toContain("const index = await fs.promises.readFile(path.join(root, 'index.html')).catch(() => null)")
+    expect(serve.match(/\bDIST\b/g)).toEqual(['DIST']) // files only through `root`
+  })
+
+  it('D237 failure dialog: Thử lại / Mở Canvas / Thoát; Enter retries, Esc quits (never Mở Canvas); one restart sentence', () => {
+    const d = h.sanoFailedDialog('Không mở được SANO tại http://127.0.0.1:8080/', 'Kiểm tra máy chủ SANO đã chạy chưa, rồi bấm Thử lại.')
+    expect(d).toEqual({
+      type: 'error',
+      title: 'Sano Agent',
+      message: 'Không mở được SANO tại http://127.0.0.1:8080/',
+      detail: `Kiểm tra máy chủ SANO đã chạy chưa, rồi bấm Thử lại. ${h.SANO_FAILED_RESTART}`,
+      buttons: ['Thử lại', 'Mở Canvas', 'Thoát'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+    })
+    expect(d.buttons.map((_, i) => h.sanoFailedAction(i))).toEqual(['retry', 'canvas', 'quit'])
+    expect(h.sanoFailedAction(d.defaultId)).toBe('retry')
+    expect(h.sanoFailedAction(d.cancelId)).toBe('quit')
+    for (const other of [-1, 3, 1.5, '1', null, undefined, Number.NaN]) expect(h.sanoFailedAction(other), String(other)).toBe('quit')
+    // one short sentence: restarting the app goes back to SANO
+    expect(h.SANO_FAILED_RESTART).toMatch(/^[^.]{10,60}\.$/)
+    expect(h.SANO_FAILED_RESTART).toContain('mở lại app')
+    // both callers (did-fail-load, a refused first redirect) get it
+    expect(mainSource.split('sanoFailed(`').length - 1).toBe(2)
+  })
+
+  it('D237 wiring: Mở Canvas loads app://bdp as the window’s page after the guard switched; no SANO dialog in Canvas', () => {
+    const dialogAt = mainSource.indexOf('const sanoFailed = (message, detail) => {')
+    const failed = mainSource.slice(dialogAt, mainSource.indexOf("webContents.on('will-redirect'"))
+    expect(failed).toMatch(/if \(action === 'canvas'\) \{\s+canvas = true[^\n]*\n\s+win\.setTitle\(app\.getName\(\)\)\n\s+return void win\.loadURL\(`\$\{ORIGIN\}\/index\.html`\)\s+\}/)
+    // the window stays "Sano Agent" in Canvas (taskbar, Alt+Tab), not SanoVids' page title
+    expect(mainSource).toContain("if (SANO) win.on('page-title-updated', (event) => { if (canvas) event.preventDefault() })")
+    // the guard's switch: declared once in createWindow, set only by Mở Canvas, never back
+    expect(mainSource.split('let canvas = false').length - 1).toBe(1)
+    expect(mainSource.match(/\bcanvas = (?:true|false)\b/g)).toEqual(['canvas = false', 'canvas = true'])
+    // SanoVids as the main frame: main's pushes (updates:state, devAccess:state) reach it, the bridge answers it (fromApp)
+    expect(h.appFrames({ mainFrame: { framesInSubtree: [{ url: 'app://bdp/index.html', isDestroyed: () => false }] } })).toHaveLength(1)
+    expect(mainSource).toContain("return url.startsWith(ORIGIN + '/')")
+    // its permissions hold top-level in Sano Agent too; SANO's page never gets them
+    const perm = { requestingUrl: 'app://bdp/index.html', topUrl: 'app://bdp/index.html', sanoOrigin: 'http://127.0.0.1:8080' }
+    expect(h.defaultPermissionAllowed('fileSystem', perm)).toBe(true)
+    expect(h.defaultPermissionAllowed('fileSystem', { ...perm, requestingUrl: 'http://127.0.0.1:8080/' })).toBe(false)
+    // CSP: the one app://bdp policy stays valid top-level (frame-ancestors only matters when framed)
+    const policy = h.contentSecurityPolicy(indexBytes, 'http://127.0.0.1:8080')
+    expect(policy.split('; ').filter((x) => x.startsWith('frame-ancestors'))).toEqual(['frame-ancestors http://127.0.0.1:8080'])
+    expect(policy.replace('frame-ancestors http://127.0.0.1:8080', "frame-ancestors 'none'")).toBe(h.contentSecurityPolicy(indexBytes))
+  })
+
+  it('D237 preload run: app://bdp gets bdpDesktop, never sanoDesktop; SANO’s page gets sanoDesktop only', () => {
+    const run = (origin: string, sano: boolean, sanoOrigin = 'http://127.0.0.1:8080', isMainFrame = true) => {
+      const exposed: string[] = []
+      const electron = {
+        contextBridge: { exposeInMainWorld: (key: string) => void exposed.push(key), executeInMainWorld: ({ func, args }: { func: (...a: unknown[]) => unknown; args: unknown[] }) => new Function(`return (${func})`)()(...args) },
+        ipcRenderer: { invoke: () => Promise.resolve(), on: () => undefined, removeListener: () => undefined },
+      }
+      const argv = ['--bdp-version=1.0.0', '--bdp-product=Sano Agent', ...(sano ? [`--bdp-sano-origin=${sanoOrigin}`] : [])]
+      const proc = { argv, versions: { electron: '44.0.0' }, platform: 'win32', isMainFrame }
+      new Function('require', 'process', 'location', 'window', preloadSource)(() => electron, proc, { origin }, { addEventListener: () => undefined })
+      return exposed
+    }
+    expect(run('app://bdp', true)).toEqual(['bdpDesktop'])
+    expect(run('app://bdp', false)).toEqual(['bdpDesktop'])
+    expect(run('http://127.0.0.1:8080', true)).toEqual(['sanoDesktop'])
+    expect(run('https://accounts.google.com', true)).toEqual([])
+    expect(run('http://127.0.0.1:8080', false)).toEqual([])
+    // D240: Sano Agent's packed page (Chromium's origin for the standard app scheme is 'app://sano')
+    expect(run('app://sano', true, 'app://sano')).toEqual(['sanoDesktop'])
+    expect(run('app://bdp', true, 'app://sano')).toEqual(['bdpDesktop'])
+    expect(run('null', true, 'app://sano')).toEqual([])
+    expect(run('app://sano', true)).toEqual([])
+    // TH-36: a frame inside SANO's page at SANO's origin gets nothing
+    expect(run('app://sano', true, 'app://sano', false)).toEqual([])
+  })
+
+  it('appFrames: the live app://bdp frames of a window (main frame or SANO’s Dựng phim frame), never SANO’s page', () => {
+    const frame = (url: string, destroyed = false) => ({ url, isDestroyed: () => destroyed })
+    const sano = frame('http://127.0.0.1:8080/')
+    const bdp = frame('app://bdp/index.html')
+    expect(h.appFrames({ mainFrame: { framesInSubtree: [sano, bdp, frame('app://bdp/x', true), frame('app://bdpx/')] } })).toEqual([bdp])
+    expect(h.appFrames({ mainFrame: { framesInSubtree: [bdp] } })).toEqual([bdp])
+    expect(h.appFrames({ get mainFrame() { throw new Error('Object has been destroyed') } })).toEqual([])
+    expect(h.appFrames(null)).toEqual([])
+  })
+
+  it("Google sign-in IPC (TH-36): SANO mode only; SANO's top frame in the main window only (fromSano, not fromApp)", () => {
+    expect(mainSource).toContain('\n    if (SANO) registerGoogleSignIn()\n')
+    for (const handler of [
+      "ipcMain.handle('sano:googleSignIn', (event) => (fromSano(event) ? google.signIn() : gatewayError('not-allowed', 'Nguồn gọi không hợp lệ.')))",
+      "ipcMain.handle('sano:googleToken', (event) => (fromSano(event) ? google.token() : null))",
+      "ipcMain.handle('sano:googleSignOut', (event) => (fromSano(event) ? google.signOut() : false))",
+    ]) {
+      expect(mainSource).toContain(handler)
+      expect(mainSource.split(handler.slice(0, handler.indexOf(','))).length - 1, handler).toBe(1)
+    }
+    const from = mainSource.slice(mainSource.indexOf('function fromSano(event) {'), mainSource.indexOf('async function sanoDesktopClientId()'))
+    expect(from).toContain('event.senderFrame === win.webContents.mainFrame && event.senderFrame.origin === SANO.origin')
+    // the client id comes from SANO's account server (app://sano/ has no API), else SANO's own; Google's endpoints are
+    // constants of google-signin-rules.cjs
+    expect(mainSource).toContain('await net.fetch(`${SANO_API || SANO.origin}/api/assistant/status`, { signal: AbortSignal.timeout(15_000) })')
+    expect(mainSource).not.toMatch(/googleapis|oauth2/)
+    // the gateway still answers app://bdp frames only
+    expect(mainSource).toContain("return url.startsWith(ORIGIN + '/')")
+  })
+
+  it("preload: the bridge goes to app://bdp only; SANO's top frame learns where SanoVids is and gets Google sign-in", () => {
+    expect(preloadSource).toContain("const expose = location.origin === 'app://bdp' ? (key, api) => contextBridge.exposeInMainWorld(key, api) : () => undefined")
+    expect(preloadSource).toContain("expose('bdpDesktop', {")
+    const direct = [...preloadSource.matchAll(/contextBridge\.exposeInMainWorld\('(\w+)'/g)].map((m) => m[1])
+    expect(direct).toEqual(['sanoDesktop'])
+    expect(preloadSource).toContain("if (sanoArg && process.isMainFrame && location.origin === sanoArg.slice('--bdp-sano-origin='.length)) {")
+    const sano = /\n {2}contextBridge\.exposeInMainWorld\('sanoDesktop', \{\n([\s\S]*?)\n {2}\}\)\n/.exec(preloadSource)
+    expect(sano).not.toBeNull()
+    expect([...sano![1].matchAll(/^ {4}(\w+): /gm)].map((m) => m[1])).toEqual(['sanovidsUrl', 'google'])
+    // D253: the account object is built in the page's world (its Errors keep their code), then exposed here; step 4:
+    // apiForward and docs only with main's --bdp-sano-api-forward
+    expect(sano![1]).toMatch(/\n {4}account,\n(?: {4}\/\*\*[^\n]*\*\/\n)? {4}\.\.\.\(forward \? \{ apiForward: true, docs \} : \{\}\),\n {4}\/\*\*[^\n]*\*\/\n {4}\.\.\.\(titleBar \? \{ titleBar: [^\n]*\} : \{\}\),$/)
+    expect(preloadSource).toContain('  const account = contextBridge.executeInMainWorld({')
+    expect(sano![1]).toContain("sanovidsUrl: 'app://bdp/',")
+    // no argument crosses: main decides the client, the endpoints and where the tokens go
+    const google = sano![1]
+    expect([...google.matchAll(/^ {6}(\w+): (.*)$/gm)].map((m) => `${m[1]}: ${m[2]}`)).toEqual([
+      "signIn: () => ipcRenderer.invoke('sano:googleSignIn'),",
+      "token: () => ipcRenderer.invoke('sano:googleToken'),",
+      "signOut: () => ipcRenderer.invoke('sano:googleSignOut'),",
+    ])
+  })
+
+  it('TH-46 titleBarOverlay: two exact #rrggbb → the 43 px overlay (above the 1 px bar border), anything else → null; the start colors pass', () => {
+    expect(h.TITLE_BAR_HEIGHT).toBe(43)
+    expect(h.titleBarOverlay({ color: '#1b1e22', symbolColor: '#EDF0F5' })).toEqual({ color: '#1b1e22', symbolColor: '#EDF0F5', height: 43 })
+    // only the two colors cross: the page never picks the height
+    expect(h.titleBarOverlay({ color: '#000000', symbolColor: '#ffffff', height: 400, x: 1 })).toEqual({ color: '#000000', symbolColor: '#ffffff', height: 43 })
+    for (const bad of ['red', '#fff', '#ffffff00', 'ffffff', '#gggggg', ' #ffffff', '#ffffff ', '#ffffff\n', 'rgb(0,0,0)', '', 0x123456, null, undefined]) {
+      expect(h.titleBarOverlay({ color: bad, symbolColor: '#ffffff' }), String(bad)).toBeNull()
+      expect(h.titleBarOverlay({ color: '#ffffff', symbolColor: bad }), String(bad)).toBeNull()
+    }
+    for (const bad of [null, undefined, '#ffffff', ['#ffffff', '#000000'], {}]) expect(h.titleBarOverlay(bad), String(bad)).toBeNull()
+    expect(Object.isFrozen(h.TITLE_BAR_START)).toBe(true)
+    // SANO web/theme.css --bar-bg / --bar-fg, so min/max/close match the bar before the page pushes its colors
+    expect(h.TITLE_BAR_START).toEqual({ dark: { color: '#17191c', symbolColor: '#edf0f5' }, light: { color: '#ffffff', symbolColor: '#20242c' } })
+    for (const theme of ['dark', 'light'] as const) {
+      expect(Object.isFrozen(h.TITLE_BAR_START[theme]), theme).toBe(true)
+      expect(h.titleBarOverlay(h.TITLE_BAR_START[theme]), theme).toEqual({ ...h.TITLE_BAR_START[theme], height: 43 })
+    }
+  })
+
+  it("TH-46 wiring: Sano Agent's main window on Windows only; the colors come from SANO's page itself (fromSano)", () => {
+    expect(mainSource).toContain("const TITLE_BAR = SANO_IN_APP && process.platform === 'win32'")
+    // the main window alone loses its frame (docs, sign-in, checkout windows keep theirs), themed like the system at first
+    const create = mainSource.slice(mainSource.indexOf('function createWindow() {'), mainSource.indexOf('function showMainWindow() {'))
+    expect(create).toContain("...(TITLE_BAR ? { titleBarStyle: 'hidden', titleBarOverlay: hardening.titleBarOverlay(hardening.TITLE_BAR_START[nativeTheme.shouldUseDarkColors ? 'dark' : 'light']) } : {}),")
+    expect(mainSource.split('titleBarStyle').length - 1).toBe(1)
+    expect(mainSource.split('titleBarOverlay:').length - 1).toBe(1)
+    // one handler, only with the overlay; the sender is checked first, then the colors; one place recolors
+    expect(mainSource).toContain('\n    if (TITLE_BAR) registerTitleBar()\n')
+    const body = mainSource.slice(mainSource.indexOf('function registerTitleBar() {'), mainSource.indexOf('/** A Google sign-in of its own'))
+    expect(body).toMatch(/ipcMain\.handle\('sano:titleBarColors', \(event, colors\) => \{\s+if \(!fromSano\(event\)\) return false\s+const overlay = hardening\.titleBarOverlay\(colors\)\s+if \(!overlay\) return false\s+mainWindow\.setTitleBarOverlay\(overlay\)\s+return true\s+\}\)/)
+    expect(mainSource.split("'sano:titleBarColors'").length - 1).toBe(1)
+    expect(mainSource.split('setTitleBarOverlay(').length - 1).toBe(1)
+    expect(mainSource.split('--bdp-sano-title-bar').length - 1).toBe(1)
+    expect(preloadSource).toContain("const titleBar = process.argv.includes('--bdp-sano-title-bar')")
+  })
+
+  it("TH-46 preload run: titleBar only in SANO's top frame with main's --bdp-sano-title-bar; two short strings cross", async () => {
+    const invoked: [string, unknown][] = []
+    let exposed: Record<string, Record<string, unknown>> = {}
+    const electron = {
+      contextBridge: { exposeInMainWorld: (key: string, api: never) => void (exposed[key] = api), executeInMainWorld: ({ func, args }: { func: (...a: unknown[]) => unknown; args: unknown[] }) => new Function(`return (${func})`)()(...args) },
+      ipcRenderer: { invoke: async (ch: string, input: unknown) => (invoked.push([ch, input]), true), on: () => undefined, removeListener: () => undefined },
+    }
+    const run = (origin: string, titleBar: boolean, isMainFrame = true) => {
+      exposed = {}
+      const argv = ['--bdp-version=1.0.0', '--bdp-sano-origin=app://sano', ...(titleBar ? ['--bdp-sano-title-bar'] : [])]
+      new Function('require', 'process', 'location', 'window', preloadSource)(() => electron, { argv, versions: { electron: '44.0.0' }, platform: 'win32', isMainFrame }, { origin }, { addEventListener: () => undefined })
+      return exposed
+    }
+    expect(run('app://sano', false).sanoDesktop).not.toHaveProperty('titleBar')
+    expect(run('app://sano', true, false)).toEqual({})
+    expect(Object.keys(run('app://bdp', true))).toEqual(['bdpDesktop'])
+    expect(exposed.bdpDesktop).not.toHaveProperty('titleBar')
+    expect(Object.keys(run('app://sano', true).sanoDesktop)).toEqual(['sanovidsUrl', 'google', 'account', 'titleBar'])
+    const bar = exposed.sanoDesktop.titleBar as { setColors: (c: unknown) => Promise<unknown> }
+    expect(Object.keys(bar)).toEqual(['setColors'])
+    expect(await bar.setColors({ color: '#1b1e22', symbolColor: '#edf0f5', height: 400 })).toBe(true)
+    expect(invoked.at(-1)).toEqual(['sano:titleBarColors', { color: '#1b1e22', symbolColor: '#edf0f5' }])
+    // cut one past #rrggbb, so main refuses an overlong value instead of a cut one
+    await bar.setColors({ color: '#1b1e22ff00', symbolColor: 7 })
+    expect(invoked.at(-1)).toEqual(['sano:titleBarColors', { color: '#1b1e22f', symbolColor: '' }])
+    await bar.setColors(null)
+    expect(invoked.at(-1)).toEqual(['sano:titleBarColors', { color: '', symbolColor: '' }])
+  })
+
+  it('sano-desktop.bat: SANO_URL expands inside quotes only (cmd runs & | > of a query string as operators)', () => {
+    const lines = sanoBatSource.split('\n').filter((l) => l.includes('%SANO_URL%'))
+    expect(lines.length).toBeGreaterThan(0)
+    for (const l of lines) for (const m of l.matchAll(/%SANO_URL%/g)) expect(l.slice(0, m.index).split('"').length % 2, l).toBe(0)
   })
 })
 
@@ -726,8 +1153,8 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     for (const later of ['app.enableSandbox()', "app.setPath('userData'", 'requestSingleInstanceLock', 'app.whenReady()']) expect(strip, later).toBeLessThan(idx(later))
   })
 
-  it('DevTools: devTools: DEVTOOLS on the 3 webPreferences, shortcuts only inside if (DEVTOOLS)', () => {
-    expect(count('devTools: DEVTOOLS')).toBe(3)
+  it('DevTools: devTools: DEVTOOLS on the 4 webPreferences, shortcuts only inside if (DEVTOOLS)', () => {
+    expect(count('devTools: DEVTOOLS')).toBe(4) // main window, canvasapp login, checkout, Tài liệu
     expect(mainSource).toContain('const DEVTOOLS = hardening.allowDevTools({ isPackaged: PACKAGED, profileSource: profile.source, testBuild: TEST_BUILD })')
     const [start, end] = blockAt(idx('if (DEVTOOLS) {'))
     const toggles = [...mainSource.matchAll(/toggleDevTools|openDevTools/g)].map((m) => m.index!)
@@ -767,16 +1194,19 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(idx('hardening.downloadAllowed(')).toBeLessThan(idx('item.setSavePath('))
     expect(mainSource).toContain('item.cancel()')
     // default session permissions
-    expect(mainSource).toContain('ses.setPermissionRequestHandler((_wc, permission, callback) => callback(hardening.permissionAllowed(permission)))')
-    expect(mainSource).toContain('ses.setPermissionCheckHandler((_wc, permission) => hardening.permissionAllowed(permission))')
-    expect(count('setDevicePermissionHandler(() => false)')).toBe(2) // default session + canvasapp partition
+    // Origin/frame decisions of these registered handlers are exercised with fake WebContents in desktopPermissions.
+    expect(mainSource).toContain('ses.setPermissionRequestHandler((wc, permission, callback, details)')
+    expect(mainSource).toContain('ses.setPermissionCheckHandler((wc, permission, requestingOrigin, details)')
+    expect(mainSource).toContain('hardening.defaultPermissionAllowed(permission, {')
+    expect(count('setDevicePermissionHandler(() => false)')).toBe(3) // default session + canvasapp and Tài liệu partitions
     // exactly one bluetooth handler per webContents (app-wide)
     expect(count("'select-bluetooth-device'")).toBe(1)
     expect(idx("'select-bluetooth-device'")).toBeGreaterThan(idx("app.on('web-contents-created'"))
     // CSP on every HTML response of serveDist (file + SPA fallback), from hardening-rules
     expect(count("'content-security-policy'")).toBe(2)
-    expect(mainSource).toContain("if (ext === '.html') headers['content-security-policy'] = await htmlCsp()")
-    expect(mainSource).toContain('hardening.contentSecurityPolicy(bytes)')
+    // D240: app://sano pages get SANO_PAGE_CSP, app://bdp pages htmlCsp()
+    expect(mainSource).toContain("if (ext === '.html') headers['content-security-policy'] = await csp()")
+    expect(mainSource).toContain('hardening.contentSecurityPolicy(bytes, SANO ? SANO.origin : undefined)')
     // canvasapp login popups: every level gets the https-only handler
     expect(mainSource).toContain("w.webContents.on('did-create-window', (child) => guardPopups(child))")
   })
@@ -814,7 +1244,13 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     // a navigation that happened (committed), never one main may still cancel (did-start-navigation fires before
     // will-navigate: a dropped link that opens in the browser would end every download of a page that stays)
     expect(watch).toContain("wc.on('did-navigate', closeAll)")
+    // SANO desktop: SanoVids' own reload inside SANO's page is a subframe navigation
+    expect(watch).toContain("wc.on('did-frame-navigate', (_event, url, _code, _status, isMainFrame) => {")
+    expect(watch).toContain("if (!isMainFrame && url.startsWith(ORIGIN + '/')) closeAll()")
     expect(watch).not.toContain('did-start-navigation')
+    // SANO desktop: SANO removing SanoVids' frame (or sending it elsewhere) has no WebContents event: its pagehide ends them
+    expect(mainSource).toContain("ipcMain.handle('canvasapp:downloadCloseAll', guard((event) => (canvasappDownloads.closeAll(event.sender.id), { ok: true })))")
+    expect(preloadSource).toContain("if (location.origin === 'app://bdp') window.addEventListener('pagehide', () => void ipcRenderer.invoke('canvasapp:downloadCloseAll').catch(() => undefined))")
     // logout: no download may start from its first line (before anything awaits) until it is done; every download is
     // ended before the session is wiped and again after (properties, not line positions: the keep-login branch rewrites
     // this function)
@@ -931,8 +1367,9 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(count("'canvasapp:keepLogin'") + count("'canvasapp:setKeepLogin'")).toBe(2) // main: one handler each
     // the keep-login rules module is pure like hardening-rules (no require), and main never adds a quit hook for it
     expect(mainSource).toContain("const keepLoginRules = require('./keeplogin-rules.cjs')")
-    // no quit hook for the keep-login copy: the only 'before-quit' is macOS's window flag (tested below)
-    expect(mainSource).not.toMatch(/'will-quit'/)
+    // no quit hook for the keep-login copy: the only 'before-quit' is macOS's window flag, the only 'will-quit' macOS's
+    // save of Google's snapshots (both tested below)
+    expect(count("'will-quit'")).toBe(1)
     expect(count("app.on('before-quit'")).toBe(1)
   })
 
@@ -1003,8 +1440,9 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
   })
 
   it('downloads: one will-download listener on the default session, registered at ready (never per window); the page is not told', () => {
-    expect(count("'will-download'")).toBe(1)
+    expect(count("'will-download'")).toBe(2) // + the Tài liệu partition's, set once with it (registerDocs)
     expect(fnBody('registerDownloads')).toContain("session.defaultSession.on('will-download', (_event, item) => {")
+    expect(fnBody('registerDocs')).toContain("ses.on('will-download', (_event, item) => {")
     expect(fnBody('createWindow')).not.toContain('will-download')
     const [rs, re] = blockAt(idx('app.whenReady().then(() => {'))
     const call = idx('    registerDownloads()')
@@ -1024,6 +1462,9 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(create).toContain('hardening.mainWindowCloseHides({ platform: process.platform, quitting, quittingForUpdate: updating })')
     expect(create).toContain('const updating = macQuitForUpdate || !!(updater && updater.isQuittingForUpdate())')
     expect(create).toMatch(/return\s+event\.preventDefault\(\)\s+hideMainWindow\(win, work\)/)
+    // a page's beforeunload veto: an update quit ignores it, anything else asks (Electron alone ignores X silently)
+    const unload = create.slice(create.indexOf("webContents.on('will-prevent-unload', (event) => {"))
+    expect(unload).toMatch(/^webContents\.on\('will-prevent-unload', \(event\) => \{\s+if \(updater && updater\.isQuittingForUpdate\(\)\) return event\.preventDefault\(\)\s+const choice = dialog\.showMessageBoxSync\(win, \{ type: 'question', buttons: \['Ở lại', 'Vẫn rời đi'\], defaultId: 0, cancelId: 0, message: '[^'\n]+' \}\)\s+if \(choice === 1\) event\.preventDefault\(\)\s+else if \(process\.platform === 'darwin' && !macQuitForUpdate\) quitting = false/)
     // one hidden-work controller per main window, macOS only (Windows: null, nothing listens)
     expect(create).toContain("const work = process.platform === 'darwin' ? hiddenWorkOf(win) : null")
     expect(create).toContain("win.on('show', () => work.show())")
@@ -1066,13 +1507,29 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(mainSource.slice(us, ue)).toMatch(/^\{\s+macQuitForUpdate = true\s+\}$/)
     // the Dock icon and a second launch bring THE main window back (never the first window found)
     expect(mainSource).toContain("app.on('activate', () => showMainWindow())")
-    expect(mainSource).toContain("app.on('second-instance', () => showMainWindow())")
+    const second = mainSource.slice(...blockAt(idx("app.on('second-instance', () => {")))
+    expect(second).toMatch(/^\{\s+\/\/[^\n]*\n\s+if \(quitAfterSave\) \{\s+quitAfterSave = false\s+const exe = portableFile\(\)[^\n]*\n\s+app\.relaunch\(exe \? \{ execPath: exe, args: \[\] \} : undefined\)\s+return\s+\}\s+showMainWindow\(\)\s+\}$/)
     expect(mainSource).not.toContain('getAllWindows()')
     const show = fnBody('showMainWindow')
     expect(show).toContain('if (!mainWindowShown) return')
     expect(show).toContain("if (process.platform === 'darwin' && app.isReady() && !macQuitForUpdate) {")
-    // Windows: the app still quits with its last window
-    expect(mainSource).toMatch(/app\.on\('window-all-closed', \(\) => \{\s+if \(process\.platform !== 'darwin'\) app\.quit\(\)/)
+    // Windows: the app still quits with its last window, once Google's cookies are saved (capped, quits either way);
+    // a launch during that save is not lost (second-instance above relaunches)
+    expect(mainSource).toMatch(/app\.on\('window-all-closed', \(\) => \{\s+if \(process\.platform !== 'darwin'\) \{\s+quitAfterSave = true\s+void saveGoogle\(GOOGLE_SAVE_CAP_MS\)\.finally\(\(\) => app\.quit\(\)\)\s+\}\s+\}\)/)
+    // macOS ⌘Q: the same capped save once every window is closed (will-quit, nothing can veto then); not for an update's
+    // quit (beforeInstall saved)
+    const willQuitAt = idx("app.on('will-quit', (event) => {")
+    expect(inDarwinBlock(willQuitAt)).toBe(true)
+    expect(mainSource.slice(...blockAt(willQuitAt))).toMatch(/^\{\s+if \(quitAfterSave \|\| macQuitForUpdate\) return\s+quitAfterSave = true\s+event\.preventDefault\(\)\s+void saveGoogle\(GOOGLE_SAVE_CAP_MS\)\.finally\(\(\) => app\.quit\(\)\)\s+\}$/)
+    expect(count('quitAfterSave = true')).toBe(2)
+    expect(mainSource).toContain('const GOOGLE_SAVE_CAP_MS = 1500')
+    const save = fnBody('saveGoogle')
+    expect(save).toContain('return Promise.race([all, new Promise((resolve) => setTimeout(resolve, capMs))])')
+    expect(save).toContain('Promise.allSettled([googleKeepCanvasapp && googleKeepCanvasapp.save(), googleKeepDocs && googleKeepDocs.save(), flush(session.defaultSession), flush(canvasappSession())])')
+    // Windows sign-out / shut-down: saved too, never vetoed; an update install saves before the installer kills the app
+    expect(fnBody('createWindow')).toContain("win.on('query-session-end', () => void saveGoogle(GOOGLE_SAVE_CAP_MS))")
+    expect(mainSource).not.toMatch(/query-session-end[^\n]*preventDefault/)
+    expect(mainSource).toContain('beforeInstall: () => saveGoogle(GOOGLE_SAVE_CAP_MS) })')
   })
 
   it('checkout window: never modal on macOS (a sheet has no close button), setMenu on Windows only', () => {
@@ -1133,7 +1590,7 @@ describe('development-mode lock wiring (main.cjs / preload.cjs / devaccess*.cjs 
     const setup = idx(mainSource, "devAccess = setupDevAccess({ userDataDir: app.getPath('userData'), buildOpen: DEV_OPEN_BUILD, isAppSender: fromApp, getMainWindow: () => mainWindow })")
     expect(setup).toBeGreaterThan(ready)
     expect(setup).toBeLessThan(mainSource.indexOf('createWindow()', ready))
-    expect(mainSource).toContain("additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`]")
+    expect(mainSource).toContain("additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`, `--bdp-product=${app.getName()}`, ...(SANO ? [`--bdp-sano-origin=${SANO.origin}`] : []), ...(SANO_IN_APP && SANO_API ? ['--bdp-sano-api-forward'] : []), ...(TITLE_BAR ? ['--bdp-sano-title-bar'] : [])]")
     expect(mainSource).toContain('if (devAccess) devAccess.attachWindow(win)')
     // only one place builds the unlock module, and nothing else in main touches its channels
     expect(mainSource.split('setupDevAccess(').length - 1).toBe(1)

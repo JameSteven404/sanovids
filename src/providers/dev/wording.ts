@@ -29,16 +29,17 @@ export function devError(e: unknown): unknown {
   return e
 }
 
-/** A provider's answer with its `error` / `reason` texts in development-mode words (arrays item by item). */
+/** A provider's answer with its `error` / `reason` / `waiting` texts in development-mode words (arrays item by item). */
 export function devResult(v: unknown): unknown {
   if (Array.isArray(v)) return v.map(devResult)
   if (!v || typeof v !== 'object' || (typeof Blob !== 'undefined' && v instanceof Blob)) return v
   const o = v as Record<string, unknown>
-  if (typeof o.error !== 'string' && typeof o.reason !== 'string') return v
+  if (typeof o.error !== 'string' && typeof o.reason !== 'string' && typeof o.waiting !== 'string') return v
   return {
     ...o,
     ...(typeof o.error === 'string' ? { error: devWording(o.error) } : {}),
     ...(typeof o.reason === 'string' ? { reason: devWording(o.reason) } : {}),
+    ...(typeof o.waiting === 'string' ? { waiting: devWording(o.waiting) } : {}),
   }
 }
 

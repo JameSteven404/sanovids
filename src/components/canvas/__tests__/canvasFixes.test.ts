@@ -269,7 +269,7 @@ describe('review fixes wired in the components (source guards)', () => {
   it('an old project whose rows were spaced on open is fitted again once React Flow has the moved nodes', () => {
     const view = read('CanvasView.tsx')
     expect(view).toMatch(/if \(!maybeSpaceRows\(\) \|\| savedViewport\) return/)
-    expect(view).toMatch(/s\.nodes === before[\s\S]{0,200}initialViewport\(rf\.getNodes\(\), s\.width, s\.height\)/)
+    expect(view).toMatch(/s\.nodes === before[\s\S]{0,200}openingViewport\(rf\.getNodes\(\), s\.width, s\.height\)/)
   })
   it('the "+" slot names what it does: the next scene (references and settings kept) when a scene is selected', () => {
     expect(read('ToolbarBar.tsx')).toContain("label: sceneCount ? 'Cảnh tiếp theo (giữ ảnh tham chiếu và cấu hình)' : 'Cảnh mới'")

@@ -1,10 +1,10 @@
-import { Bug, FlaskConical, LoaderCircle, LogIn, Play, RefreshCw, Sparkles, TriangleAlert, Wallet } from 'lucide-react'
+import { Bug, Cloud, FlaskConical, LoaderCircle, LogIn, Play, RefreshCw, Sparkles, TriangleAlert, Wallet } from 'lucide-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { openDevPanel, runNow } from '../../actions'
 import { compileScene, sceneCode } from '../../core/compile'
 import { MODELS, settingsLabel } from '../../core/models'
 import type { Asset, Scene } from '../../core/types'
-import { devAllowed, PROVIDER_LABEL, providerOf } from '../../providers'
+import { devAllowed, PROVIDER_LABEL, providerOf, sanoGatewayProvider } from '../../providers'
 import { limitsSite } from '../../providers/limits'
 import {
   CREDIT_HINT,
@@ -99,6 +99,13 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
   // A read in flight may still turn a "sẽ chạy" into "bị bỏ qua" (or back): say so instead of a silent flip.
   const limitsPending = limitsInfo.reading && !(limits.source === 'server' && limits.firm)
   const site = limitsSite(provider)
+  // Inside the SANO app: SANO owns the account and the costs (no balance to show, no canvasapp words).
+  const sano = provider === 'sano-gateway'
+  // What SANO said it runs (read with its limits, whose revision re-renders this): real costs only when it said 'live'.
+  const sanoMode = sano ? sanoGatewayProvider().mode() : null
+  // SANO's simulator: a sample clip, nothing billed — the amounts below are shown struck, never as the run's cost
+  const free = sanoMode === 'simulator'
+  const sanoSays = sanoMode === 'live' ? 'video thật, chi phí do SANO quản lý' : sanoMode === 'simulator' ? 'Giả lập — clip mẫu, không phát sinh phí' : 'Máy chủ SANO chưa báo chế độ chạy'
 
   // Development mode locked: a scene that had simulated (DEV) takes now runs for real — say so next to the cost.
   const hadDevTakes = useMemo(() => {
@@ -158,12 +165,18 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
   return (
     <ModalShell
       title={title}
-      headerExtra={<CreditSourceBadge kind={kind} />}
+      headerExtra={<CreditSourceBadge kind={kind} sano={sano} />}
       onClose={close}
       footer={
         <>
           <div className="rq-foot-info">
-            <FooterBalance preview={preview} info={info} />
+            {sano ? (
+              <span className="rq-balance real">
+                <Cloud size={14} /> Tạo video qua máy chủ SANO · {sanoSays}
+              </span>
+            ) : (
+              <FooterBalance preview={preview} info={info} />
+            )}
           </div>
           <button type="button" className="btn" onClick={close}>
             Huỷ
@@ -183,11 +196,13 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
                     ? 'Gửi sang canvasapp giả lập (chế độ Phát triển) — trừ credit dev khi máy chủ giả lập nhận job (không phải tiền thật)'
                     : demo
                       ? 'Gửi vào hàng đợi (demo cũ — credit giả lập)'
-                      : 'Gửi sang canvasapp.io.vn — trừ credit canvasapp (tiền thật) khi job được nhận'
+                      : sano
+                        ? `Tạo video qua máy chủ SANO — ${sanoSays}`
+                        : 'Gửi sang canvasapp.io.vn — trừ credit canvasapp (tiền thật) khi job được nhận'
             }
           >
             <Play size={14} fill="currentColor" />
-            Chạy {runnable.length} cảnh · {formatCredits(total, kind)}
+            Chạy {runnable.length} cảnh · {free ? 'không phát sinh phí' : formatCredits(total, kind)}
           </button>
         </>
       }
@@ -198,12 +213,12 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
           <b className="mono">{runnable.length}</b>
           <small>trên {shown.length} cảnh</small>
         </div>
-        <div className={`rq-stat${sim ? '' : ' real'}`} title={CREDIT_HINT[kind] ?? undefined}>
+        <div className={`rq-stat${sim || free ? '' : ' real'}`} title={CREDIT_HINT[kind] ?? undefined}>
           <span>Chi phí</span>
-          <b className="mono">{sim ? formatCreditNumber(total) : `≈ ${formatCreditNumber(total)}`}</b>
-          <small>{sim ? `${unit} · giả lập` : `${unit} canvasapp · ≈ ${formatVnd(total)}`}</small>
+          <b className="mono">{sim ? formatCreditNumber(total) : free ? <s>{`≈ ${formatCreditNumber(total)}`}</s> : `≈ ${formatCreditNumber(total)}`}</b>
+          <small>{sim ? `${unit} · giả lập` : free ? 'giả lập · không phát sinh phí' : sano ? `${unit} · ước tính` : `${unit} canvasapp · ≈ ${formatVnd(total)}`}</small>
         </div>
-        {demo ? (
+        {sano ? null : demo ? (
           <div className={`rq-stat${short ? ' short' : ''}`} title={CREDIT_HINT.demo ?? undefined}>
             <span>Số dư demo sau khi chạy</span>
             <b className="mono">{formatCreditNumber(preview.after)}</b>
@@ -279,7 +294,7 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
                 <th>Cấu hình</th>
                 <th title="Ảnh tham chiếu (@image_N)">Ảnh</th>
                 <th>Cảnh báo</th>
-                <th className="num" title={sim ? `${unit} (giả lập, không phải tiền thật)` : 'Credit canvasapp (ước tính, tiền thật)'}>
+                <th className="num" title={sim ? `${unit} (giả lập, không phải tiền thật)` : sano ? `Credit (ước tính)${sanoMode === 'live' ? ' — chi phí thật do SANO tính' : ''}` : 'Credit canvasapp (ước tính, tiền thật)'}>
                   Credit
                 </th>
                 <th>Trạng thái</th>
@@ -316,6 +331,20 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
         <div className="rq-confirm-note">
           <Sparkles size={13} />
           <span>Demo cũ: video giả, không gửi đi đâu. {CREDIT_HINT.demo}. Credit demo của job lỗi/huỷ được hoàn lại.</span>
+        </div>
+      ) : sano ? (
+        <div className={`rq-confirm-note ${sanoMode === 'simulator' ? 'sim' : 'real'}`}>
+          <Cloud size={13} />
+          <span>
+            {sanoMode === 'live' ? (
+              <>
+                Tạo video qua <b>máy chủ SANO</b> bằng tài khoản SANO đang đăng nhập — video thật, chi phí do SANO quản lý.
+              </>
+            ) : (
+              <b>{sanoSays}.</b>
+            )}{' '}
+            Huỷ take trong SanoVids chỉ dừng được job còn đang chờ trên SANO.
+          </span>
         </div>
       ) : (
         <div className="rq-confirm-note real">
@@ -426,7 +455,15 @@ function ModalShell({
 }
 
 /** Header: which credits this run spends. */
-function CreditSourceBadge({ kind }: { kind: CreditInfo['kind'] }) {
+function CreditSourceBadge({ kind, sano }: { kind: CreditInfo['kind']; sano: boolean }) {
+  if (sano) {
+    return (
+      <span className="rq-src real" title="Máy chủ SANO tạo video bằng tài khoản SANO đang đăng nhập">
+        <Cloud size={12} />
+        Tạo video qua máy chủ SANO
+      </span>
+    )
+  }
   if (kind === 'dev') {
     return (
       <span className="rq-src demo" title={CREDIT_HINT.dev ?? undefined}>

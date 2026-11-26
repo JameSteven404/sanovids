@@ -2244,6 +2244,18 @@ button.in-code-chip:focus-visible {
 .in-empty-actions .btn {
   flex: 1;
 }
+/* Inside SANO (lib/sanoBridge): the tip cards fold into one button to the Phím tắt dialog (its "Cách nối" holds the
+   same tips), so the empty state fits the column SANO's assistant slides over without scrolling. */
+.btn.in-guide {
+  display: none;
+}
+:root[data-embedded] .btn.in-guide {
+  display: inline-flex;
+  align-self: flex-start;
+}
+:root[data-embedded] .in-empty .in-tips {
+  display: none;
+}
 .in-empty-foot {
   display: flex;
   align-items: center;

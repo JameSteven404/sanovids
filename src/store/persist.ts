@@ -187,6 +187,24 @@ const baseRevs = new Map<string, number | null>()
 /** Projects another tab saved (or deleted) after this tab loaded them: never written by this tab again. */
 const stale = new Set<string>()
 
+/** Only committed bindings may be merged into a save that captured an older pending take. */
+const accountBindings = new Map<string, Map<string, string>>()
+function withAccountBindings(data: RunsData, bindings?: ReadonlyMap<string, string>): RunsData {
+  if (!bindings?.size) return data
+  let changed = false
+  const takes = data.takes.map(take => {
+    const account = bindings.get(take.id)
+    if (!account) return take
+    // A proved legacy owner may be filled, but a late read never changes an already submitted job's owner.
+    if (take.account && (!take.accountBindingPending || take.remoteId || take.submitUnknown || take.startedAt !== null)) return take
+    changed = true
+    const bound = { ...take, account }
+    delete bound.accountBindingPending
+    return bound
+  })
+  return changed ? { ...data, takes } : data
+}
+
 type WriteResult = 'ok' | 'conflict' | 'error'
 
 /**
@@ -209,7 +227,8 @@ async function guardedWrite(projectId: string, entries: [string, unknown][], met
           out.stamp = nextStamp(stored, TAB_ID)
           for (const [key, value] of entries) {
             const finish = mark?.(key.startsWith('runs:') ? 'autosaveRuns' : 'autosaveProject')
-            store.put(value, key)
+            // A queued save captured before freshAccount resolved must not overwrite the binding with old data.
+            store.put(key === K.runs(projectId) ? withAccountBindings(value as RunsData, accountBindings.get(projectId)) : value, key)
             finish?.()
           }
           store.put(out.stamp, K.rev(projectId))
@@ -646,9 +665,59 @@ async function syncBeforeEngine(projectId: string): Promise<boolean> {
   return true
 }
 
+/**
+ * Merge a late identity into its original project's stored takes in one transaction, preserving all other edits.
+ * Pending takes cannot run in any tab; clear that gate atomically with their verified account.
+ */
+async function saveAccountBinding(projectId: string, takeIds: readonly string[], account: string): Promise<readonly string[]> {
+  // A fresh read can finish before autosave has stored the new, pending takes.
+  if (useProject.getState().project.id === projectId) await flush()
+  const ids = new Set(takeIds)
+  const requested = new Map(takeIds.map(id => [id, account]))
+  try {
+    const result = await db('readwrite', (store) => new Promise<{ conflict: boolean; bound: string[]; stamp: RevStamp | null }>((resolve, reject) => {
+      const out = { conflict: false, bound: [] as string[], stamp: null as RevStamp | null }
+      const req = store.get(K.rev(projectId))
+      req.onsuccess = () => {
+        const stamp = (req.result as RevStamp | undefined) ?? null
+        if (stamp?.deleted) return
+        out.conflict = stale.has(projectId) || isForeignWrite(stamp, baseRevs.get(projectId) ?? null, TAB_ID)
+        const runs = store.get(K.runs(projectId))
+        runs.onsuccess = () => {
+          const stored = runs.result as RunsData | undefined
+          if (!stored) return
+          const next = withAccountBindings(stored, requested)
+          out.bound = next.takes.filter(take => ids.has(take.id) && take.account === account && !take.accountBindingPending).map(take => take.id)
+          if (next === stored) return // deleted takes are never recreated
+          store.put(next, K.runs(projectId))
+          out.stamp = nextStamp(stamp, TAB_ID)
+          store.put(out.stamp, K.rev(projectId))
+        }
+      }
+      const tx = store.transaction
+      tx.oncomplete = () => resolve(out)
+      tx.onabort = tx.onerror = () => reject(tx.error)
+    }))
+    if (result.bound.length) {
+      const committed = accountBindings.get(projectId) ?? new Map<string, string>()
+      for (const id of result.bound) committed.set(id, account)
+      accountBindings.set(projectId, committed)
+    }
+    // This tab's copy is older than the stored one either way: only a write from a current copy becomes its base.
+    if (result.conflict) markStale(projectId)
+    else if (result.stamp) baseRevs.set(projectId, result.stamp.rev)
+    if (result.stamp) broadcast('saved', projectId)
+    return result.conflict ? [] : result.bound
+  } catch {
+    useUI.getState().toast('Chưa lưu được tài khoản của take. Take vẫn chờ xác minh; hãy huỷ rồi chạy lại khi lưu được.', { tone: 'error' })
+    return []
+  }
+}
+
 setEngineHooks({
   mayRun: () => !stale.has(useProject.getState().project.id),
   beforeTakeover: syncBeforeEngine,
+  accountBound: saveAccountBinding,
 })
 
 /**

@@ -54,7 +54,7 @@ import { useEffect, useMemo } from 'react'
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 import { creditKindOf, type CreditKind } from '../lib/credits'
-import { activeGateway, activeProviderId, CANVASAPP_OFF_REASON, canvasappOff, getProvider, useProviderPrefs } from '../providers'
+import { activeGateway, activeProviderId, CANVASAPP_OFF_REASON, CANVASAPP_RETIRED_REASON, canvasappOff, canvasappRetired, getProvider, useProviderPrefs } from '../providers'
 import { accountKeyOf, type CanvasappProvider } from '../providers/canvasapp/adapter'
 import { CanvasappError, canvasappErrorText, isLoginRequired, type CanvasappApi } from '../providers/canvasapp/api'
 import { WEB_UNAVAILABLE } from '../providers/canvasapp/transport'
@@ -322,7 +322,7 @@ const gatewayOff = (): boolean => activeProviderId() === 'canvasapp' && canvasap
 
 const realCredits = createRealCredits({
   api: () => activeGateway().api,
-  blocked: () => (gatewayOff() ? CANVASAPP_OFF_REASON : null),
+  blocked: () => (gatewayOff() ? (canvasappRetired() ? CANVASAPP_RETIRED_REASON : CANVASAPP_OFF_REASON) : null),
   // The balance's account is the one logged in now: another one than the gateway's bridge state was built under (a
   // kept login restored after a restart, another account logged in on canvasapp's page) resets that state, like Đăng
   // xuất. A reset() of this store on a gateway switch drops a stale answer before it gets here.
@@ -422,9 +422,9 @@ export function useCreditKind(): CreditKind {
   return creditKindOf(activeProviderId())
 }
 
-/** The canvasapp gateway is turned off now (locked development mode, not chosen): a boolean selector. */
+/** The canvasapp gateway is turned off now (locked development mode, CANVASAPP_RETIRED): a boolean selector. */
 export function useGatewayOff(): boolean {
-  return useProviderPrefs((s) => s.active === 'canvasapp' && s.provider !== 'canvasapp' && gatewayOff())
+  return useProviderPrefs((s) => s.active === 'canvasapp' && gatewayOff())
 }
 
 /** Balance to show for the active provider (see the API notes at the top). Starts the background sync. */

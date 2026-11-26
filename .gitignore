@@ -6,6 +6,9 @@ dist-ssr/
 coverage/
 # Ghi chú cập nhật tạo lại mỗi lần build (scripts/update-notes.mjs → latest.yml)
 build/release-notes.md
+# Web SANO và giấy phép của Sano Agent, tạo lại mỗi lần build (scripts/build-sano.mjs)
+sano-dist/
+build/license-third-party-sano-agent.txt
 
 # Log
 npm-debug.log*

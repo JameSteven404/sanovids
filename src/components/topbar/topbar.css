@@ -546,6 +546,19 @@
   color: var(--text);
 }
 
+/* Inside SANO (lib/sanoBridge, <html data-embedded>): SANO's shell names the app; "+ ▾" and "?" cover "Nhập prompt"
+   and "Phím tắt". "Trợ lý" opens SANO's project assistant, styled like "Phát liền". */
+:root[data-embedded] :is(.tb-brand, .tb-brand + .tb-divider, .tb-import, .tb-keys) {
+  display: none;
+}
+.tb-assistant {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.tb-assistant .lucide {
+  color: var(--accent);
+}
+
 @media (max-width: 1360px) {
   .tb-hide-md {
     display: none;

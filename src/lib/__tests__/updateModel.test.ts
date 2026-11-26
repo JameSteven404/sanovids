@@ -2,7 +2,7 @@
 // dates read in Vietnamese, and the pill / dialog / toasts say exactly what the spec says for every state.
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   autoDownloadNote,
   dialogView,
@@ -712,6 +712,34 @@ describe('Mac build (kind mac-manual): check only, never download or install', (
     const windowsOnly = /Windows|PowerShell|Setup|[Pp]ortable|Properties|Digital Signatures|Thumbprint|\.exe\b|Ctrl/
     for (const s of macStates()) {
       for (const text of macTexts(s)) expect(text, `${JSON.stringify(s)} → ${text}`).not.toMatch(windowsOnly)
+    }
+  })
+})
+
+describe('Sano Agent (window.bdpDesktop.product)', () => {
+  it('names itself, never SanoVids, in the Windows update and Giới thiệu texts', async () => {
+    vi.stubGlobal('window', { bdpDesktop: { product: 'Sano Agent' } })
+    vi.resetModules()
+    try {
+      const m = await import('../updateModel')
+      const a = await import('../aboutModel')
+      const ctx: UpdateDialogCtx = { blockers: ['1 video đang tạo'], installWhenIdle: false, autoDownload: true, busy: null }
+      const err = (code: keyof typeof m.UPDATE_ERROR_TEXT) => st({ status: 'error', version: '0.5.92', error: { code, message: m.UPDATE_ERROR_TEXT[code] } })
+      const texts = [
+        ...[err('offline'), err('signature'), err('signature-unverified'), st({ status: 'downloading', version: '0.5.1' }), st({ status: 'ready', version: '0.5.1' })].map((s) =>
+          JSON.stringify(m.dialogView(s, ctx)),
+        ),
+        ...m.installBlockers({ processing: 1, queued: 1, sending: 1, pendingDownloads: 1, topupInFlight: true }),
+        a.ABOUT_DESC,
+        a.aboutOpenSource('win'),
+        a.signatureView({ status: 'tampered', packaged: true }, 'win').title,
+        a.placementNote('temp-copy')!.text,
+      ]
+      for (const text of texts) expect(text).not.toContain('SanoVids')
+      expect(texts.join(' ')).toContain('Sano Agent')
+    } finally {
+      vi.unstubAllGlobals()
+      vi.resetModules()
     }
   })
 })

@@ -8,6 +8,7 @@
 //   SV1 codes                            'no-keys' (the simulation pins no owner key); linking never opens here.
 //   setSimLocked(false)                  "Bỏ khoá giả lập": back to the build-opened state.
 import { bareState, registerDevAccessSim, SIM_LOCKED_KEY, type DevAccessBridge, type DevAccessState, type DevKeepDays } from '../devAccess'
+import { sanoGatewayAvailable } from '../sano'
 
 /** The public RFC 6238 test secret (Appendix B, SHA-1) — nothing to protect, it is printed in the standard. */
 export const SIM_TOTP_SECRET_B32 = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'
@@ -115,9 +116,9 @@ export const simDevAccess: DevAccessBridge & { setSimLocked(on: boolean): void; 
   isSimLocked: () => locked,
 }
 
-/** Registers the simulation (ignored inside Electron and on hosts other than loopback). */
+/** Registers the simulation (ignored inside Electron, inside the SANO app and on hosts other than loopback). */
 export function installDevAccessSim(hostname: string | undefined): boolean {
-  if (!(hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1')) return false
+  if (!(hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1') || sanoGatewayAvailable()) return false
   registerDevAccessSim(simDevAccess)
   return true
 }

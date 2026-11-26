@@ -1,6 +1,7 @@
 // Development-mode wording (providers/dev/wording.ts): the real gateway's messages, rewritten for 'dev' takes so they
 // never send the user to canvasapp.io.vn for a job that only exists in the simulation.
 import { describe, expect, it } from 'vitest'
+import { otherAccountText } from '../canvasapp/adapter'
 import { CanvasappError, errorFromResponse } from '../canvasapp/api'
 import { devError, devResult, devWording, withDevWording } from '../dev/wording'
 import {
@@ -29,7 +30,7 @@ describe('devWording', () => {
     }
   })
 
-  it('devError keeps the error (code, status, flags) and only changes its words; devResult rewrites error / reason', () => {
+  it('devError keeps the error (code, status, flags) and only changes its words; devResult rewrites error / reason / waiting', () => {
     const e = new CanvasappError('network', 'Không kết nối được tới canvasapp.io.vn.', { uncertain: true, status: 0 })
     expect(devError(e)).toBe(e)
     expect(e).toMatchObject({ code: 'network', uncertain: true, message: 'Không kết nối được tới canvasapp giả lập.' })
@@ -39,6 +40,10 @@ describe('devWording', () => {
       { remoteId: 'b', state: 'processing' },
     ])
     expect(devResult({ ok: false, reason: 'Chưa đăng nhập canvasapp.io.vn.' })).toEqual({ ok: false, reason: 'Chưa đăng nhập canvasapp giả lập.' })
+    // a take of another (simulated) account: its waiting text names the simulation
+    const [elsewhere] = devResult([{ remoteId: 'c', state: 'processing', waiting: otherAccountText(1) }]) as { waiting: string }[]
+    expect(elsewhere.waiting).toContain('tài khoản canvasapp giả lập khác')
+    expect(elsewhere.waiting).not.toContain('canvasapp.io.vn')
     const blob = new Blob(['v'])
     expect(devResult(blob)).toBe(blob)
   })

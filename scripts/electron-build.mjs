@@ -1,5 +1,5 @@
-// Runs electron-builder for release builds (npm run dist:win: `node scripts/electron-build.mjs --win nsis portable
-// --publish never`) with the guarantees signed releases need:
+// Runs electron-builder for release builds (npm run dist:sano-agent: `node scripts/electron-build.mjs --config
+// sano-agent/electron-builder.cjs --win nsis portable --publish never`) with the guarantees signed releases need:
 //   - ELECTRON_BUILDER_DISABLE_BUILD_CACHE=true: electron-builder's exe cache key ignores electron fuses, so a cached
 //     exe could ship with stale fuses;
 //   - refuses ELECTRON_BUILDER_OFFLINE: electron-builder then signs WITHOUT an RFC 3161 timestamp and says nothing;

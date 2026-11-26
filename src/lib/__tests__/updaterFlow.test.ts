@@ -71,14 +71,14 @@ function feed(version: string, bytes: Buffer, sha512 = sha(bytes)): FeedInfo {
 
 // ---- fake modules ----
 
-const appState = { userData: '', version: '0.5.0' }
+const appState = { userData: '', version: '0.5.0', name: APP }
 const appEvents = new EventEmitter()
 const handlers = new Map<string, Handler>()
 const fakeElectron = {
   app: {
     getPath: () => appState.userData,
     getVersion: () => appState.version,
-    getName: () => APP,
+    getName: () => appState.name,
     isPackaged: true,
     once: (ev: string, fn: (...a: unknown[]) => void) => appEvents.once(ev, fn),
   },
@@ -217,7 +217,7 @@ function inject(id: string, exports: unknown) {
   req.cache[id] = m
 }
 
-let setupUpdater: (o: { isAppSender: (e: unknown) => boolean; getMainWindow: () => null; profileSource: string }) => Updater
+let setupUpdater: (o: { isAppSender: (e: unknown) => boolean; getMainWindow: () => unknown; profileSource: string; beforeInstall?: () => Promise<unknown> }) => Updater
 const savedExecPath = process.execPath
 const savedPortable = process.env.PORTABLE_EXECUTABLE_FILE
 let root = ''
@@ -256,10 +256,11 @@ describe.runIf(process.platform === 'win32')('updater.cjs flow (fake electron-up
     handlers.clear()
     appEvents.removeAllListeners()
     appState.version = '0.5.0'
+    appState.name = APP
   })
 
   let n = 0
-  function boot(o: { userData?: string; updaterJson?: unknown; version?: string; failingClears?: number; pendingClearRetryMs?: number[]; platform?: string } = {}) {
+  function boot(o: { userData?: string; updaterJson?: unknown; version?: string; failingClears?: number; pendingClearRetryMs?: number[]; platform?: string; win?: unknown; beforeInstall?: () => Promise<unknown> } = {}) {
     const userData = o.userData ?? nodeFs.mkdtempSync(nodePath.join(root, `p${++n}-`))
     if (o.updaterJson !== undefined) nodeFs.writeFileSync(nodePath.join(userData, 'updater.json'), JSON.stringify(o.updaterJson))
     appState.userData = userData
@@ -274,9 +275,10 @@ describe.runIf(process.platform === 'win32')('updater.cjs flow (fake electron-up
     try {
       updater = setupUpdater({
         isAppSender: () => true,
-        getMainWindow: () => null,
+        getMainWindow: () => o.win ?? null,
         profileSource: 'env',
         ...(o.pendingClearRetryMs ? { pendingClearRetryMs: o.pendingClearRetryMs } : {}),
+        ...(o.beforeInstall ? { beforeInstall: o.beforeInstall } : {}),
       })
     } finally {
       Object.defineProperty(process, 'platform', platform)
@@ -298,6 +300,28 @@ describe.runIf(process.platform === 'win32')('updater.cjs flow (fake electron-up
     await b.settle(['ready', 'error'])
     return b.state()
   }
+
+  it('SANO desktop: state pushes reach SanoVids’ app://bdp frame only, never SANO’s page around it', async () => {
+    const sanoSent: unknown[] = []
+    const appSent: UpdState[] = []
+    const frame = (url: string, into: unknown[]) => ({ url, isDestroyed: () => false, send: (_channel: string, s: unknown) => into.push(s) })
+    const frames = [frame('http://127.0.0.1:8080/', sanoSent), frame('app://bdp/index.html', appSent)]
+    const b = boot({ win: { isDestroyed: () => false, webContents: { mainFrame: { framesInSubtree: frames } } } })
+    expect((await b.invoke('updates:check')).ok).toBe(true)
+    await b.settle(['none'])
+    expect(appSent.map((s) => s.status)).toEqual(['checking', 'none'])
+    expect(sanoSent).toEqual([])
+  })
+
+  it('Sano Agent: its own updater files in the shared data folder, never SanoVids’ updater.json / updater.log', async () => {
+    appState.name = 'Sano Agent'
+    const b = boot()
+    expect((await b.invoke('updates:setPrefs', { autoDownload: false })).ok).toBe(true)
+    const files = nodeFs.readdirSync(b.userData)
+    expect(files).toContain('updater-sano-agent.json')
+    expect(files).not.toContain('updater.json')
+    expect(nodeFs.readdirSync(nodePath.join(b.userData, 'logs'))).toEqual(['updater-sano-agent.log'])
+  })
 
   it('a genuine installer: verified twice (hook + update-downloaded), ready, installs on quit while intact', async () => {
     const b = boot()
@@ -355,6 +379,31 @@ describe.runIf(process.platform === 'win32')('updater.cjs flow (fake electron-up
     expect(sigState.calls).toHaveLength(3) // hook, update-downloaded, install
     expect(b.file().attempt).toMatchObject({ version: '0.5.1' })
     expect(b.updater.isQuittingForUpdate()).toBe(true)
+  })
+
+  it('"Khởi động lại": main’s beforeInstall (the capped cookie save) runs after the re-check, before the attempt and quitAndInstall; a failure still installs', async () => {
+    const seen: string[] = []
+    let release = () => {}
+    const b = boot({ beforeInstall: () => new Promise<void>((r) => void (seen.push(`before ${sigState.calls.length}`), (release = r))) })
+    const bytes = installer(signed('0.5.1'), 'genuine 0.5.1')
+    b.au.served = { info: feed('0.5.1', bytes), bytes }
+    expect((await checkAndSettle(b)).status).toBe('ready')
+    const answer = b.invoke('updates:install')
+    await vi.waitFor(() => expect(seen).toEqual(['before 3'])) // after the install's own signature check
+    expect(b.file().attempt).toBeUndefined()
+    expect(b.updater.isQuittingForUpdate()).toBe(false)
+    release()
+    expect(await answer).toEqual({ ok: true })
+    await new Promise((r) => setImmediate(r))
+    expect(b.au.quitAndInstallCalls).toBe(1)
+    expect(b.file().attempt).toMatchObject({ version: '0.5.1' })
+
+    const failing = boot({ beforeInstall: () => Promise.reject(new Error('flush')) })
+    failing.au.served = { info: feed('0.5.1', bytes), bytes }
+    expect((await checkAndSettle(failing)).status).toBe('ready')
+    expect(await failing.invoke('updates:install')).toEqual({ ok: true })
+    await new Promise((r) => setImmediate(r))
+    expect(failing.au.quitAndInstallCalls).toBe(1)
   })
 
   it('"Khởi động lại": a file swapped after the async re-check never runs (synchronous re-hash before quitAndInstall)', async () => {
