@@ -20,6 +20,7 @@ import { initMotion } from './lib/canvasPrefs'
 import { initPwa, registerServiceWorker } from './lib/pwa'
 import { initSanoBridge } from './lib/sanoBridge'
 import { initTheme } from './lib/theme'
+import { initAntiDebug } from './lib/antiDebug'
 import { initRetiredVideoNotice } from './videoRetired'
 import { showPlacementNoticeOnLaunch } from './placementNotice'
 import { showMergedNoticeOnLaunch } from './mergedNotice'
@@ -29,6 +30,8 @@ import { showMergedNoticeOnLaunch } from './mergedNotice'
 // flash before the CSS loaded: the stylesheets are in now, so drop it (it would stay on the old theme's color).
 initTheme()
 document.documentElement.style.removeProperty('background')
+// Anti-debug (release bundle only; no-op elsewhere).
+initAntiDebug()
 // "Hiệu ứng chuyển động" (Settings): <html data-motion>, followed by styles/app.css everywhere.
 initMotion()
 // Inside SANO: <html data-embedded> before the first paint, and the hello listener before React and bootstrap(), since

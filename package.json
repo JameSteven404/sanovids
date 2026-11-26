@@ -35,7 +35,7 @@
     "icons": "node scripts/make-icons.mjs",
     "desktop": "vite build && electron .",
     "build:sano": "node scripts/build-sano.mjs",
-    "dist:sano-agent": "node scripts/update-notes.mjs --sano-agent && node scripts/third-party-notices.mjs --check && vite build && node scripts/build-sano.mjs && node scripts/electron-build.mjs --config sano-agent/electron-builder.cjs --win nsis portable --publish never && node scripts/tidy-release.mjs --sano-agent",
+    "dist:sano-agent": "node scripts/update-notes.mjs --sano-agent && node scripts/third-party-notices.mjs --check && vite build --mode release && node scripts/build-sano.mjs && node scripts/pack-electron.mjs --config sano-agent/electron-builder.cjs --win nsis portable --publish never && node scripts/tidy-release.mjs --sano-agent",
     "release:check:sano-agent": "node scripts/publish-release.mjs --sano-agent --dry-run",
     "release:publish:sano-agent": "node scripts/publish-release.mjs --sano-agent"
   },
@@ -53,6 +53,7 @@
     "electron": "^44.10.1",
     "electron-builder": "^26.15.3",
     "idb-keyval": "^6.3.0",
+    "javascript-obfuscator": "5.10.1",
     "js-yaml": "^4.1.0",
     "jszip": "^3.10.2",
     "lucide-react": "^1.49.0",

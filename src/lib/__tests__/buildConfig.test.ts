@@ -441,7 +441,7 @@ describe('Sano Agent (sano-agent/electron-builder.cjs: SanoVids build, own ident
 
   it('npm scripts: dist:sano-agent has the release guards with this config and builds SANO first; release:check / publish take --sano-agent', () => {
     expect(pkg.scripts['dist:sano-agent']).toBe(
-      'node scripts/update-notes.mjs --sano-agent && node scripts/third-party-notices.mjs --check && vite build && node scripts/build-sano.mjs && node scripts/electron-build.mjs --config sano-agent/electron-builder.cjs --win nsis portable --publish never && node scripts/tidy-release.mjs --sano-agent',
+      'node scripts/update-notes.mjs --sano-agent && node scripts/third-party-notices.mjs --check && vite build --mode release && node scripts/build-sano.mjs && node scripts/pack-electron.mjs --config sano-agent/electron-builder.cjs --win nsis portable --publish never && node scripts/tidy-release.mjs --sano-agent',
     )
     expect(pkg.scripts['build:sano']).toBe('node scripts/build-sano.mjs')
     expect(pkg.scripts['release:check:sano-agent']).toBe('node scripts/publish-release.mjs --sano-agent --dry-run')

@@ -1,6 +1,25 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+import { RENDERER_OPTIONS, obfuscate } from './scripts/obfuscate.mjs'
+
+// `vite build --mode release` (used by dist:win / dist:mac) obfuscates every emitted JS chunk after minification.
+// Plain `vite build` (npm run desktop, perf, web) is left readable so local debugging stays sane. Options are
+// CSP-safe (no eval/Function) — see scripts/obfuscate.mjs.
+function obfuscateRenderer(): Plugin {
+  return {
+    name: 'bdp:obfuscate',
+    apply: 'build',
+    enforce: 'post',
+    generateBundle(_options, bundle) {
+      for (const file of Object.values(bundle)) {
+        if (file.type !== 'chunk' || !file.fileName.endsWith('.js')) continue
+        if (/(^|\/)(sw|workbox-)[^/]*\.js$/.test(file.fileName)) continue // left to workbox
+        file.code = obfuscate(file.code, RENDERER_OPTIONS)
+      }
+    },
+  }
+}
 
 // `start.bat` (vite preview) and `npm run dev` share http://localhost:5180 on purpose (same origin = same
 // IndexedDB projects). The preview registers the production service worker, which would keep serving the old
@@ -42,6 +61,7 @@ export default defineConfig(({ mode }) => {
   resolve: { alias: perf ? [{ find: /^react-dom\/client$/, replacement: 'react-dom/profiling' }] : [] },
   plugins: [
     devServiceWorkerKillSwitch(),
+    mode === 'release' ? obfuscateRenderer() : null,
     react(),
     VitePWA({
       disable: perf,
