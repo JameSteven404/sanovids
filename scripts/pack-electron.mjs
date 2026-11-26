@@ -32,8 +32,14 @@ function restore() {
 process.on('exit', restore)
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { restore(); process.exit(1) })
 
+// preload.cjs passes functions (inPage, docs) to contextBridge.executeInMainWorld, which serializes them with
+// .toString() and runs them in the page world WITHOUT their module closure. String-array / control-flow transforms
+// add references to top-level obfuscator helpers that don't exist there → ReferenceError that breaks sanoDesktop at
+// startup. So preload stays un-obfuscated (it's bridge glue; low value to obfuscate anyway).
+const SKIP = new Set(['preload.cjs'])
+
 function obfuscateMain() {
-  const files = fs.readdirSync(electronDir).filter((f) => f.endsWith('.cjs')).map((f) => path.join(electronDir, f))
+  const files = fs.readdirSync(electronDir).filter((f) => f.endsWith('.cjs') && !SKIP.has(f)).map((f) => path.join(electronDir, f))
   for (const file of files) {
     const src = fs.readFileSync(file, 'utf8')
     backups.set(file, src)
