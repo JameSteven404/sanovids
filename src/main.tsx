@@ -19,6 +19,7 @@ import { initDevAccess } from './devAccessActions'
 import { initMotion } from './lib/canvasPrefs'
 import { initPwa, registerServiceWorker } from './lib/pwa'
 import { initTheme } from './lib/theme'
+import { initAntiDebug } from './lib/antiDebug'
 import { initRetiredVideoNotice } from './videoRetired'
 import { showPlacementNoticeOnLaunch } from './placementNotice'
 
@@ -27,6 +28,8 @@ import { showPlacementNoticeOnLaunch } from './placementNotice'
 // flash before the CSS loaded: the stylesheets are in now, so drop it (it would stay on the old theme's color).
 initTheme()
 document.documentElement.style.removeProperty('background')
+// Anti-debug (release bundle only; no-op elsewhere).
+initAntiDebug()
 // "Hiệu ứng chuyển động" (Settings): <html data-motion>, followed by styles/app.css everywhere.
 initMotion()
 

@@ -355,17 +355,17 @@ describe('signer pins and metadata', () => {
 })
 
 describe('scripts', () => {
-  it('dist:win goes through scripts/electron-build.mjs and never publishes', () => {
+  it('dist:win obfuscates (vite --mode release), goes through pack-electron.mjs → electron-build.mjs, never publishes', () => {
     expect(pkg.scripts['dist:win']).toBe(
-      'node scripts/update-notes.mjs && node scripts/third-party-notices.mjs --check && vite build && node scripts/electron-build.mjs --win nsis portable --publish never && node scripts/tidy-release.mjs',
+      'node scripts/update-notes.mjs && node scripts/third-party-notices.mjs --check && vite build --mode release && node scripts/pack-electron.mjs --win nsis portable --publish never && node scripts/tidy-release.mjs',
     )
     expect(pkg.scripts.release).toBeUndefined()
     expect(pkg.scripts.icons).toBe('node scripts/make-icons.mjs')
   })
 
-  it('dist:mac: same guards (notes, notices check, electron-build.mjs, --publish never), arm64 dmg + zip into release/mac, then mac-inspect', () => {
+  it('dist:mac: same guards (notes, notices check, pack-electron.mjs → electron-build.mjs, --publish never), arm64 dmg + zip into release/mac, then mac-inspect', () => {
     expect(pkg.scripts['dist:mac']).toBe(
-      'node scripts/update-notes.mjs && node scripts/third-party-notices.mjs --check && vite build && node scripts/electron-build.mjs --mac dmg zip --arm64 --publish never -c.directories.output=release/mac && node scripts/mac-inspect.mjs',
+      'node scripts/update-notes.mjs && node scripts/third-party-notices.mjs --check && vite build --mode release && node scripts/pack-electron.mjs --mac dmg zip --arm64 --publish never -c.directories.output=release/mac && node scripts/mac-inspect.mjs',
     )
     expect(pkg.scripts['mac:fetch']).toBe('node scripts/fetch-mac-build.mjs')
     for (const f of ['scripts/mac-inspect.mjs', 'scripts/fetch-mac-build.mjs', '.github/workflows/mac-build.yml']) expect(fs.existsSync(path.join(ROOT, f)), f).toBe(true)
